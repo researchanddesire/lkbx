@@ -18,6 +18,8 @@
 
 #include <esp_heap_caps.h>
 
+#include <cstring>
+
 namespace {
 
 struct LoaderContext {
@@ -257,6 +259,19 @@ void LKBX::drawBreakEndRequest(const String& requestedBy) {
 void LKBX::drawLockedActions() {
     // A new page clears the timer framebuffer even when its value is unchanged.
     bumpFreezeDisplayVersion();
+
+    // The locking animation tints every frame with the user's hue shift, so the
+    // static locked page must apply the same tint or the lock snaps back to the
+    // stock red the moment the animation hands over. Read it before taking the
+    // display mutex, in the same order as drawLockAnimationTask.
+    int hueShiftAmount = 0;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::base);
+        hueShiftAmount = preferences.getInt(Keys::Base::hueShift, 0);
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+
     if (xSemaphoreTake(displayMutex, 100) == pdTRUE) {
         clearScreen(display);
         if (sm->is("locked.frozen"_s)) {
@@ -302,8 +317,17 @@ void LKBX::drawLockedActions() {
         const int lockX = Display::WIDTH / 2 - lockIconSize / 2;
         const int lockY =
             Display::HEIGHT / 2 - lockIconSize / 2 + Display::StatusbarHeight;
-        ui::fastBlit(display, lockX, lockY, lock_icons[lock_icons_length - 1],
-                     lockIconSize, lockIconSize);
+        const uint16_t* lockFrame = lock_icons[lock_icons_length - 1];
+        ui::RGB565Canvas tinted;
+        if (hueShiftAmount != 0 &&
+            tinted.allocate(lockIconSize, lockIconSize)) {
+            memcpy(tinted.buffer(), lockFrame, tinted.byteSize());
+            ui::applyHueShift(tinted.buffer(), lockIconSize * lockIconSize,
+                              hueShiftAmount);
+            lockFrame = tinted.buffer();
+        }
+        ui::fastBlit(display, lockX, lockY, lockFrame, lockIconSize,
+                     lockIconSize);
         drawButtons(display, {Str::Menu::MENU}, Action{.visible = false});
         xSemaphoreGive(displayMutex);
     }
