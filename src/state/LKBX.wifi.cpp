@@ -437,6 +437,13 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
                 default:
                     break;
             }
+            // The server never recorded the lock this box holds: its accept
+            // report was lost. Repeat it; the report carries the box's dates.
+            if (outcome.serverMissedLock && isLocked()) {
+                ESP_LOGW(MQTT_CONNECT_TAG,
+                         "Server has no record of the held lock, re-reporting");
+                plkbx->sendMessage(Str::Protocol::LOCKED);
+            }
             // Offline expiry can leave the state unchanged by reconciliation.
             // Publish the physical state even when no transition was needed.
             plkbx->sendActivityLog("reconnected");
