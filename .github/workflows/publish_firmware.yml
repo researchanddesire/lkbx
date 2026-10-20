@@ -1,6 +1,8 @@
 name: Publish immutable firmware candidate
 
 on:
+  # Manual runs republish the current branch head after a failed candidate.
+  workflow_dispatch:
   push:
     branches: [main, staging]
     paths:

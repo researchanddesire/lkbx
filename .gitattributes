@@ -4,3 +4,5 @@
 *.kicad_pcb filter=lfs diff=lfs merge=lfs -text
 *.kicad_pro filter=lfs diff=lfs merge=lfs -text
 *.kicad_sch filter=lfs diff=lfs merge=lfs -text
+# The KiCanvas viewer needs this board as a plain file; keep it out of LFS.
+assembly-docs/assets/kicanvas/LockBox.kicad_pcb -filter -diff -merge -text
