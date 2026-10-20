@@ -1,0 +1,9 @@
+#ifndef LOCKBOX_VERSION_H
+#define LOCKBOX_VERSION_H
+
+#define VERSION "1.21.62"
+#define MAJOR_VERSION 1
+#define MINOR_VERSION 21
+#define PATCH_VERSION 62
+
+#endif  // LOCKBOX_VERSION_H

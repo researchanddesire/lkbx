@@ -1,0 +1,1145 @@
+#ifndef LOCKBOX_LKBX_H
+#define LOCKBOX_LKBX_H
+
+#include "utils/trustedClock.h"
+#include <pages/TextPages.h>
+
+#include <boost/sml.hpp>
+
+#include "../constants/LogTags.h"
+#include "../constants/Pins.h"
+#include "../services/ina.h"
+#include "../services/mqtt.h"
+#include "../services/sleep.h"
+#include "../services/serverOnline.h"
+#include "../services/tasks.h"
+#include "../services/wm.h"
+#include "../utils/RecusiveMutex.h"
+#include "../utils/StateLogger.h"
+#include "../utils/clockCorrection.h"
+#include "../utils/update.h"
+#include "Actions.h"
+#include "Adafruit_ST7789.h"
+#include "AiEsp32RotaryEncoder.h"
+#include "Events.h"
+#include "Guard.h"
+#include "motor/Motor.h"
+#include "structs/Action.h"
+#include "structs/MenuItem.h"
+#include "utils/breakTiming.h"
+#include "utils/getPairingCode.h"
+#include "utils/lockedReport.h"
+#include "utils/normalizeOption.h"
+#include "utils/savedTimerSleep.h"
+#include "utils/stringFormat.h"
+
+namespace sml = boost::sml;
+
+extern long delayTimeout;
+
+// static default actions
+// continue
+static Action continueAction = {Str::Action::CONTINUE, false};
+static Action backAction = {Str::Action::BACK, false};
+
+class LKBX {
+  private:
+    static void delayTask(void *pvParameters);
+    void immediateTransition();
+    void startPreflightScreen();
+    static void drawPreflightTask(void *pvParameters);
+    void startPreflight() const;
+    void startBreakPreflight() const;
+    void drawLoadingScreen(const String &title, const String &description);
+    // Preflight loading animation (looping spinner + dynamic caption).
+    void drawLoadingAnimation();
+    void pauseLoadingAnimation();
+    void playLoadingAnimation();
+    void setLoadingText(const char *text);
+    void stopLoadingAnimation();
+    void drawPage(const TextPage *page);
+    void startUnlockTimer();
+    void startBreakTimer();
+    void drawBreakCooldown(bool initial);
+    void checkBreakCooldown();
+    uint32_t breakCooldownUpdatedMs = 0;
+    void checkOfferedLock();
+    uint32_t offerStartedMs = 0;
+    String offerSessionId;
+    uint32_t decisionPublishedMs = 0;
+    void startUpdate();
+    static void updateTask(void *pvParameters);
+    void startDeferredServices();
+    void startWifiConnection();
+    void startMqttConnection();
+    static void startMqttConnectionTask(void *pvParameters);
+    void calibrate();
+    void calibrateButton();
+    static void calibrateTask(void *pvParameters);
+    /**
+     * ///////////////////////////////////////////
+     * ////
+     * ////  OSSM State Machine
+     * ////
+     * ///////////////////////////////////////////
+     *
+     * This is the state machine that controls the OSSM.
+     * It's based on the Boost SML library, and you don't need to be an expert
+     *to use it, just follow the examples in this table:
+     *
+     * https://boost-ext.github.io/sml/tutorial.html#:~:text=3.%20Create%20a%20transition%20table
+     *
+     * Here are the basic rules:
+     *  1. Each row in the table is a transition.
+     *  2. Each transition has a source state, an event, a guard, an action, and
+     *      a target state.
+     *  3. The source state is the state that the machine must be in for the
+     *      transition to be valid.
+     *  4. (optional) The event is the event that triggers the transition.
+     *  5. (optional) The guard is a function that returns true or false. If it
+     *      returns true, then the transition is valid.
+     *  6. (optional) The action is a function that is called when the
+     *transition is triggered, it can't block the main thread and cannot return
+     *a value.
+     *  7. The target state is the state that the machine will be in after the
+     *      transition is complete.
+     *
+     * Have fun!
+     */
+    struct InnerStateMachine {
+        auto operator()() const {
+            // Action definitions to make the table easier to read.
+            auto drawHello = [](LKBX &o) { o.drawHello(); };
+
+            auto returnToLockScreen = [](LKBX &o) { o.immediateTransition(); };
+            auto startDelay = [](LKBX &) { delayTimeout = 2000; };
+            auto startPreflight = [](LKBX &o) { o.startPreflight(); };
+            auto startUnlockTimer = [](LKBX &o) { o.startUnlockTimer(); };
+            auto startUpdate = [](LKBX &o) { o.startUpdate(); };
+            auto startDeferredServices = [](LKBX &o) {
+                o.startDeferredServices();
+            };
+            auto startWifiConnection = [](LKBX &o) { o.startWifiConnection(); };
+            auto startMqttConnection = [](LKBX &o) { o.startMqttConnection(); };
+            auto startBreakPreflight = [](LKBX &o) { o.startBreakPreflight(); };
+            auto startBreakTimer = [](LKBX &o) { o.startBreakTimer(); };
+            // Most paths into a break send no message (server or reconnect
+            // driven), so an unconfirmed LOCKED report must be dropped here or
+            // its retry would end the break.
+            auto clearLockedReport = [](LKBX &) { lockedReport::tracker.clear(); };
+
+            auto drawMenu = [](LKBX &o) {
+                o.activeMenu = mainMenu;
+                o.menuSize = numMainMenu;
+                o.drawMenu();
+            };
+            auto drawSettingsMenu = [](LKBX &o) {
+                o.activeMenu = settingsMenu;
+                o.menuSize = numSettingsMenu;
+                o.drawMenu();
+            };
+            auto drawEmergencyMenu = [](LKBX &o) { o.drawEmergencyMenu(); };
+            auto drawTimerConfig = [](LKBX &o) { o.drawTimerConfig(); };
+            auto drawLockAnimation = [](LKBX &o) { o.drawLockAnimation(); };
+            auto drawLockedActions = [](LKBX &o) { o.drawLockedActions(); };
+            auto drawReadyToUnlock = [](LKBX &o) { o.drawReadyToUnlock(); };
+            auto drawAddTimeQR = [](LKBX &o) {
+                o.drawQRCode("Add time", "Scan to add time to this session on your dashboard.",
+                             String(RAD_SERVER) + "/app", "Dashboard",
+                             Action{.visible = false}, backAction);
+            };
+
+            auto sendMessage = [](const char *message) {
+                return [message](LKBX &o) { o.sendMessage(message); };
+            };
+
+            auto saveDuration = [](LKBX &o) {
+                saveLocalLockTimerDuration(o.duration);
+            };
+
+            auto drawLoadingScreen = [](const char *title,
+                                        const char *description) {
+                return [title, description](LKBX &o) {
+                    o.drawLoadingScreen(title, description);
+                };
+            };
+
+            auto drawPage = [](const TextPage *page) {
+                return [page](LKBX &o) { o.drawPage(page); };
+            };
+
+            auto isOption = [](MenuItemE value) {
+                return [value](LKBX &o) {
+                    auto currentOption =
+                        normalizeOption(o.encoder.readEncoder(), o.menuSize);
+                    auto indexOfValue = -1;
+
+                    for (int i = 0; i < o.menuSize; i++) {
+                        if (o.activeMenu[i].id == value) {
+                            indexOfValue = i;
+                            break;
+                        }
+                    }
+
+                    return currentOption == indexOfValue;
+                };
+            };
+
+            auto drawWifiSetupQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::WIFI_SETUP_TITLE,
+                             portalWifiInstructions(),
+                             portalWifiQRCode(), Str::Label::WIFI);
+            };
+
+            auto drawWifiErrorNetworkQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::WIFI_ERROR_NETWORK_TITLE,
+                             Str::Screen::WIFI_ERROR_NETWORK_DESC,
+                             Str::Url::DOCS_WIFI_ERROR, Str::Label::HELP,
+                             {Str::Action::SKIP}, {Str::Action::RETRY});
+            };
+
+            auto drawWifiErrorAuthQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::WIFI_ERROR_AUTH_TITLE,
+                             Str::Screen::WIFI_ERROR_AUTH_DESC,
+                             Str::Url::DOCS_WIFI_ERROR, Str::Label::HELP,
+                             {Str::Action::SKIP}, {Str::Action::RETRY});
+            };
+
+            auto drawWifiErrorNoIpQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::WIFI_ERROR_NO_IP_TITLE,
+                             Str::Screen::WIFI_ERROR_NO_IP_DESC,
+                             Str::Url::DOCS_WIFI_ERROR, Str::Label::HELP,
+                             {Str::Action::SKIP}, {Str::Action::RETRY});
+            };
+
+            auto drawWifiErrorServerQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::WIFI_ERROR_SERVER_TITLE,
+                             Str::Screen::WIFI_ERROR_SERVER_DESC,
+                             Str::Url::DOCS_SERVER_HEALTH_ERROR,
+                             Str::Label::HELP, {Str::Action::SKIP},
+                             {Str::Action::RETRY});
+            };
+
+            auto drawMqttErrorQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::MQTT_ERROR_TITLE,
+                             Str::Screen::MQTT_ERROR_DESC,
+                             Str::Url::DOCS_MQTT_ERROR, Str::Label::HELP,
+                             {Str::Action::SKIP}, {Str::Action::RETRY});
+            };
+
+            auto drawWelcomeQR = [](LKBX &o) {
+                o.drawQRCode(
+                    Str::Screen::WELCOME_TITLE, Str::Screen::WELCOME_DESC,
+                    Str::Url::DOCS_QUICK_START, Str::Label::DOCS,
+                    {Str::Action::NEXT}, {Str::Action::DONT_SHOW_AGAIN});
+            };
+
+            auto setOnboardingComplete = []() {
+                if (xSemaphoreTake(preferencesMutex,
+                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
+                    preferences.begin(Keys::base, false);
+                    preferences.putBool(Keys::Base::hasBeenOnboarded, true);
+                    preferences.end();
+                    xSemaphoreGive(preferencesMutex);
+                }
+                ESP_LOGD(ONBOARDING_TAG, "Set hasBeenOnboarded = true");
+            };
+
+            auto saveWifiSync = [](LKBX &o, const WiFiSync &e) {
+                o.pendingWifiSsid = e.ssid;
+                o.pendingWifiPassword = e.password;
+                ESP_LOGD(BLE_TAG, "Stored WiFi credentials for SSID: %s",
+                         e.ssid.c_str());
+            };
+
+            auto drawSleepQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::SLEEP_TITLE, Str::Screen::SLEEP_DESC,
+                             Str::Url::DOCS_SLEEP_MODE, Str::Label::INFO,
+                             {Str::Action::SLEEP});
+            };
+
+            auto drawErrorLockQR = [](LKBX &o) {
+                o.drawQRCode(Str::Error::LOCK_TITLE, Str::Error::LOCK_DESC,
+                             Str::Url::DOCS_ERROR_LOCK, Str::Label::INFO,
+                             {Str::Action::RETRY}, {Str::Action::CALIBRATE});
+            };
+
+            auto drawErrorUnlock = [](LKBX &o) {
+                o.drawQRCode(Str::Error::UNLOCK_TITLE, Str::Error::UNLOCK_DESC,
+                             Str::Url::DOCS_ERROR_UNLOCK, Str::Label::INFO,
+                             {Str::Action::RETRY}, {Str::Action::CALIBRATE});
+            };
+
+            auto drawErrorNoBackplateQR = [](LKBX &o) {
+                o.drawQRCode(Str::Error::BACKPLATE_TITLE,
+                             Str::Error::BACKPLATE_DESC,
+                             Str::Url::DOCS_ERROR_BACKPLATE, Str::Label::INFO,
+                             {Str::Action::RESTART}, {Str::Action::CALIBRATE});
+            };
+
+            auto drawBreakQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::BREAK_QR_TITLE,
+                             Str::Screen::BREAK_QR_DESC,
+                             Str::Url::DOCS_TAKE_A_BREAK, Str::Label::INFO,
+                             {Str::Action::BREAK});
+            };
+
+            auto drawBreakNotEnabledQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::BREAK_NOT_ENABLED_TITLE,
+                             Str::Screen::BREAK_NOT_ENABLED_DESC,
+                             Str::Url::DOCS_TAKE_A_BREAK);
+            };
+
+            auto drawBreakKeyholderOnlyQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::BREAK_KEYHOLDER_ONLY_TITLE,
+                             Str::Screen::BREAK_KEYHOLDER_ONLY_DESC,
+                             Str::Url::DOCS_TAKE_A_BREAK);
+            };
+
+            auto drawBreakTooSoonQR = [](LKBX &o) {
+                o.drawBreakCooldown(true);
+            };
+
+            auto drawAcceptLockQR = [](LKBX &o) {
+                String name;
+                String requestedBy;
+                if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+                    preferences.begin(Keys::session);
+                    name = preferences.getString(Keys::Session::lockName, "");
+                    requestedBy = preferences.getString(Keys::Session::requestedBy, "");
+                    preferences.end();
+                    xSemaphoreGive(preferencesMutex);
+                }
+                if (name.isEmpty()) name = "Lock session";
+                if (requestedBy.isEmpty()) requestedBy = "Your keyholder";
+                const String description = requestedBy +
+                    " wants to start lock session \"" + name +
+                    "\". No response in 5 min cancels.";
+                o.drawQRCode(Str::Screen::ACCEPT_LOCK_TITLE,
+                             description,
+                             Str::Url::DOCS_QUICK_START, Str::Label::INFO,
+                             {Str::Action::ACCEPT}, {Str::Action::DECLINE});
+            };
+            auto declineLockAction = [](LKBX &o) {
+                const String id = declineOfferedLockSession();
+                if (!id.isEmpty()) o.sendMessage(Str::Protocol::ABANDONED, id);
+            };
+
+            auto drawPermalockQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::PERMALOCK_TITLE,
+                             Str::Screen::PERMALOCK_DESC,
+                             Str::Url::DOCS_PERMALOCK, Str::Label::INFO,
+                             {Str::Action::LOCK});
+            };
+
+            auto drawEUnlockQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::EUNLOCK_TITLE,
+                             Str::Screen::EUNLOCK_DESC,
+                             Str::Url::DOCS_EMERGENCY_UNLOCK, Str::Label::INFO,
+                             {Str::Action::UNLOCK});
+            };
+
+            auto drawEBlockedQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::EBLOCKED_TITLE,
+                             Str::Screen::EBLOCKED_DESC,
+                             Str::Url::DOCS_EBLOCK_ERROR, Str::Label::INFO,
+                             {Str::Action::WIFI_SETUP});
+            };
+
+            auto drawCouldNotConnectQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::COULD_NOT_CONNECT_TITLE,
+                             Str::Screen::COULD_NOT_CONNECT_DESC,
+                             Str::Url::DOCS_WIFI_ERROR, Str::Label::INFO);
+            };
+
+            auto drawCalibrationQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::CALIBRATION_TITLE,
+                             Str::Screen::CALIBRATION_DESC,
+                             Str::Url::DOCS_CALIBRATION, Str::Label::INFO,
+                             {Str::Action::CALIBRATE},
+                             Action{.visible = false});
+            };
+
+            auto drawNoUpdateQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::NO_UPDATE_TITLE,
+                             Str::Screen::NO_UPDATE_DESC,
+                             Str::Url::DOCS_UPDATES);
+            };
+
+            auto drawPairingQR = [](LKBX &o) {
+                String pairingCode = getPairingCode();
+                o.drawQRCode(
+                    String(Str::Screen::PAIRING_PREFIX) + pairingCode,
+                    Str::Screen::PAIRING_DESC,
+                    String(Str::Url::DASHBOARD_PAIR_BASE) + pairingCode,
+                    Str::Label::SCAN);
+            };
+
+            // Onboarding pairing QR — differs from the settings drawPairingQR
+            // by offering a "Skip" button and different copy.
+            auto drawInitPairingQR = [](LKBX &o) {
+                String pairingCode = getPairingCode();
+                o.drawQRCode(
+                    Str::Screen::INIT_PAIRING_TITLE,
+                    String(Str::Screen::INIT_PAIRING_DESC_PREFIX) + pairingCode,
+                    String(Str::Url::DASHBOARD_PAIR_BASE) + pairingCode,
+                    Str::Label::PAIR, {Str::Action::SKIP});
+            };
+
+            auto drawEnrolInAlphaQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::ENROL_ALPHA_TITLE,
+                             Str::Screen::ENROL_ALPHA_DESC,
+                             Str::Url::DOCS_ENROL_ALPHA, Str::Label::INFO,
+                             {Str::Action::ENROL});
+            };
+
+            auto lockAction = [](LKBX &o) {
+                o.motor.lock();
+                switchToLock();
+            };
+            auto lockTimerAction = [](LKBX &o) {
+                o.motor.lock();
+                switchToTimer();
+            };
+            auto unlockAction = [](LKBX &o) { o.motor.unlock(); };
+            auto movePaddleToLock = [](LKBX &o) { o.motor.lock(false); };
+            auto movePaddleToUnlock = [](LKBX &o) { o.motor.unlock(false); };
+            auto emergencyUnlockAction = [](LKBX &o) {
+                clearLocalPlay();
+                o.motor.unlock();
+
+                if (xSemaphoreTake(preferencesMutex,
+                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
+                    struct timeval tv{};
+                    lockboxGetTimeOfDay(&tv, nullptr);
+                    uint64_t currentDatetimeMs = ((uint64_t)tv.tv_sec) * 1000 +
+                                                 ((uint64_t)tv.tv_usec) / 1000;
+
+#ifdef SHORT_E_BLOCK
+                    // if short timeouts are enabled, then the emergency unlock
+                    // will brick the device for 1 minute
+                    uint64_t emergencyEndDatetimeMs = currentDatetimeMs + 60000;
+#else
+                    // else, 24 hours.
+                    uint64_t emergencyEndDatetimeMs =
+                        currentDatetimeMs + 86400000;
+#endif
+
+                    preferences.begin(Keys::base, false);
+                    preferences.putBool(Keys::Base::isEBlocked, true);
+                    preferences.putULong64(Keys::Base::emergencyEnd,
+                                           emergencyEndDatetimeMs);
+                    preferences.end();
+                    xSemaphoreGive(preferencesMutex);
+
+                    ESP_LOGD(EMERGENCY_TAG, "emergencyEndDatetimeMs: %llu",
+                             emergencyEndDatetimeMs);
+                }
+            };
+            auto calibrateButton = [](LKBX &o) { o.calibrate(); };
+
+            auto toggleAlpha = [](LKBX &o) {
+                if (xSemaphoreTake(preferencesMutex,
+                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
+                    preferences.begin(Keys::base, false);
+                    bool isAlpha =
+                        preferences.getBool(Keys::Base::isAlpha, false);
+                    preferences.putBool(Keys::Base::isAlpha, !isAlpha);
+                    preferences.end();
+                    xSemaphoreGive(preferencesMutex);
+
+                    ESP_LOGD(TOGGLE_ALPHA_TAG, "isAlpha: %d", isAlpha);
+                }
+
+                // restart the device
+                esp_restart();
+            };
+
+            auto restart = [](LKBX &o) {
+                // since ESP_RESTART does not reset peripherals, we need to do
+                // it ourselves.
+
+                ledcWrite(0, 0);
+
+                // Enter deep sleep.
+                Motor::clear();
+                o.motor.ina->powerSave(
+                    true);  // Put INA219 into power-down mode
+                o.display.writeCommand(ST77XX_SLPIN);
+
+                pinMode(Pins::Display::TFT_RESET, OUTPUT);
+                digitalWrite(Pins::Display::TFT_RESET, LOW);
+
+                esp_restart();
+            };
+
+            auto checkWifi = [](LKBX &o) {
+                ESP_LOGD(TASKDEBUG_TAG, "Creating check wifi task");
+                xTaskCreatePinnedToCore(
+                    o.checkWifiTask, Tasks::checkWifi.name,
+                    Tasks::checkWifi.stackSize, &o, Tasks::checkWifi.priority,
+                    &TaskHandles::checkWifi, Tasks::checkWifi.core);
+            };
+
+            // Async update check for onboarding flow.
+            // Skips if offline, otherwise checks for major/minor version bumps.
+            auto checkForUpdates = [](LKBX &o) {
+                ESP_LOGD(TASKDEBUG_TAG, "Creating check for updates task");
+                xTaskCreatePinnedToCore(
+                    o.checkForUpdatesTask, Tasks::checkUpdates.name,
+                    Tasks::checkUpdates.stackSize, &o,
+                    Tasks::checkUpdates.priority, &TaskHandles::checkUpdates,
+                    Tasks::checkUpdates.core);
+            };
+
+            // One-shot pairing check. Reuses MQTT auth status when available.
+            auto startPairingCheck = [](LKBX &o) {
+                ESP_LOGD(TASKDEBUG_TAG, "Creating pairing check task");
+                xTaskCreatePinnedToCore(
+                    o.startPairingCheckTask, Tasks::pairingCheck.name,
+                    Tasks::pairingCheck.stackSize, &o,
+                    Tasks::pairingCheck.priority, &TaskHandles::pairingCheck,
+                    Tasks::pairingCheck.core);
+            };
+
+            // Pull current lock state during onboarding and route to
+            // locking/home based on server response.
+            auto syncLockStateOnBoot = [](LKBX &o) {
+                ESP_LOGD(TASKDEBUG_TAG,
+                         "Creating sync lock state on boot task");
+                xTaskCreatePinnedToCore(
+                    o.syncLockStateOnBootTask, Tasks::syncLockState.name,
+                    Tasks::syncLockState.stackSize, &o,
+                    Tasks::syncLockState.priority, &TaskHandles::syncLockState,
+                    Tasks::syncLockState.core);
+            };
+
+            // Synchronously sync the clock during boot when it's unset and
+            // we're online, so downstream lock-timer comparisons use a valid
+            // clock.
+            auto syncClockOnBoot = [](LKBX &o) {
+                ESP_LOGD(TASKDEBUG_TAG, "Creating sync clock on boot task");
+                xTaskCreatePinnedToCore(
+                    o.syncClockOnBootTask, Tasks::syncClock.name,
+                    Tasks::syncClock.stackSize, &o, Tasks::syncClock.priority,
+                    &TaskHandles::syncClock, Tasks::syncClock.core);
+            };
+
+            auto timerNearExpiry = []() { return savedTimerSleepDelayMs() == 1; };
+            auto deepSleep = [](LKBX &o) {
+                enterSleep(savedTimerSleepDelayMs(), [&o]() {
+                    o.sendMessage(Str::Protocol::DISCONNECTED);
+                });
+            };
+
+            // Preflight loading animation helpers.
+            auto setLoadingText = [](const char *text) {
+                return [text](LKBX &o) { o.setLoadingText(text); };
+            };
+            auto pauseLoadingAnimation = [](LKBX &o) {
+                o.pauseLoadingAnimation();
+            };
+            auto stopLoadingAnimation = [](LKBX &o) {
+                o.stopLoadingAnimation();
+            };
+            auto startLoadingAnimation = [](LKBX &o) {
+                o.drawLoadingAnimation();
+                o.setLoadingText(Str::Screen::LOADING_STARTING);
+                o.startPreflightScreen();
+            };
+
+            // Phase-2 pairing poll: only runs while the pairing QR is shown.
+            auto startPairingPoll = [](LKBX &o) {
+                ESP_LOGD(TASKDEBUG_TAG, "Creating pairing poll task");
+                xTaskCreatePinnedToCore(
+                    o.pollPairingTask, Tasks::pairingCheck.name,
+                    Tasks::pairingCheck.stackSize, &o,
+                    Tasks::pairingCheck.priority, &TaskHandles::pairingCheck,
+                    Tasks::pairingCheck.core);
+            };
+
+            auto needsPairing = [](LKBX &o) { return o.initNeedsPairing; };
+
+            return make_transition_table(
+                // clang-format off
+                *"init"_s + on_entry<_> / (drawHello),
+                "init"_s + done[isCalibrated] = "init.preflight"_s,
+                "init"_s + done = "calibrate"_s,
+
+                "calibrate"_s + on_entry<_> / (drawCalibrationQR, calibrateButton),
+                "calibrate"_s + event<ButtonCalibrated> = "calibrate.motor"_s,
+                "calibrate.motor"_s + on_entry<_> / drawLoadingScreen(Str::Screen::CALIBRATING_MOTOR_TITLE, Str::Screen::CALIBRATING_MOTOR_DESC),
+
+
+                // Start the looping loading animation; it persists across every
+                // init.preflight.* step. QR states pause it; exits stop it.
+                "init.preflight"_s + on_entry<_> / (startLoadingAnimation),
+                "init.preflight"_s + done[!hasFinishedOnboarding] = "init.preflight.welcome"_s,
+                "init.preflight"_s + done = "init.preflight.wifiCheck"_s,
+
+                // Welcome screen (first boot only) — QR, so pause the animation
+                "init.preflight.welcome"_s + on_entry<_> / (pauseLoadingAnimation, drawWelcomeQR),
+                "init.preflight.welcome"_s + buttonPress = "init.preflight.wifiCheck"_s,
+                "init.preflight.welcome"_s + backPress / (setOnboardingComplete) = "init.preflight.wifiCheck"_s,
+                // BLE provisioning: skip the portal and connect directly
+                "init.preflight.welcome"_s + wifi / (setOnboardingComplete, saveWifiSync) = "init.preflight.wifiConnecting"_s,
+
+                // Check WiFi and route accordingly
+                "init.preflight.wifiCheck"_s + on_entry<_> / (setLoadingText(Str::Screen::LOADING_WIFI), checkWifi),
+                "init.preflight.wifiCheck"_s + done[hasSavedWifiCredentials] = "init.preflight.wifiConnecting"_s,
+                "init.preflight.wifiCheck"_s + done = "init.preflight.wifiSetup"_s,
+
+                "init.preflight.wifiConnecting"_s + on_entry<_> / (setLoadingText(Str::Screen::LOADING_WIFI), startWifiConnection),
+                "init.preflight.wifiConnecting"_s + done = "init.preflight.updateCheck"_s,
+                // Returning devices must resume their saved timer and local
+                // controls even when the network cannot be reached on wake.
+                "init.preflight.wifiConnecting"_s + error[hasFinishedOnboarding] / startDeferredServices = "init.preflight.datetimeSync"_s,
+                "init.preflight.wifiConnecting"_s + error[isError(ErrorT::WIFI_NETWORK_UNREACHABLE)] = "init.preflight.wifiErrorNetwork"_s,
+                "init.preflight.wifiConnecting"_s + error[isError(ErrorT::WIFI_AUTH_FAILED)] = "init.preflight.wifiErrorAuth"_s,
+                "init.preflight.wifiConnecting"_s + error[isError(ErrorT::WIFI_NO_IP)] = "init.preflight.wifiErrorNoIp"_s,
+                "init.preflight.wifiConnecting"_s + error[isError(ErrorT::SERVER_UNREACHABLE)] = "init.preflight.wifiErrorServer"_s,
+
+                "init.preflight.wifiSetup"_s + on_entry<_> / (pauseLoadingAnimation, drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "init.preflight.wifiSetup"_s + wifiConnected = "init.preflight.wifiConnecting"_s,
+                "init.preflight.wifiSetup"_s + buttonPress = "init.preflight.updateCheck"_s,
+
+                "init.preflight.wifiErrorNetwork"_s + on_entry<_> / (pauseLoadingAnimation, drawWifiErrorNetworkQR),
+                "init.preflight.wifiErrorNetwork"_s + buttonPress = "init.preflight.wifiSetup"_s,
+                "init.preflight.wifiErrorNetwork"_s + backPress = "init.preflight.wifiCheck"_s,
+
+                "init.preflight.wifiErrorAuth"_s + on_entry<_> / (pauseLoadingAnimation, drawWifiErrorAuthQR),
+                "init.preflight.wifiErrorAuth"_s + buttonPress = "init.preflight.wifiSetup"_s,
+                "init.preflight.wifiErrorAuth"_s + backPress = "init.preflight.wifiCheck"_s,
+
+                "init.preflight.wifiErrorNoIp"_s + on_entry<_> / (pauseLoadingAnimation, drawWifiErrorNoIpQR),
+                "init.preflight.wifiErrorNoIp"_s + buttonPress = "init.preflight.wifiSetup"_s,
+                "init.preflight.wifiErrorNoIp"_s + backPress = "init.preflight.wifiCheck"_s,
+
+                "init.preflight.wifiErrorServer"_s + on_entry<_> / (pauseLoadingAnimation, drawWifiErrorServerQR),
+                "init.preflight.wifiErrorServer"_s + buttonPress = "init.preflight.wifiSetup"_s,
+                "init.preflight.wifiErrorServer"_s + backPress = "init.preflight.wifiCheck"_s,
+
+                "init.preflight.updateCheck"_s + on_entry<_> / (setLoadingText(Str::Screen::LOADING_UPDATES), checkForUpdates),
+                "init.preflight.updateCheck"_s + done / startDeferredServices = "init.preflight.datetimeSync"_s,
+                "init.preflight.updateCheck"_s + forceUpdate / stopLoadingAnimation = "update"_s,
+
+                "init.preflight.datetimeSync"_s + on_entry<_> / (setLoadingText(Str::Screen::LOADING_DATE), syncClockOnBoot),
+                "init.preflight.datetimeSync"_s + done = "init.preflight.mqttConnecting"_s,
+
+                "init.preflight.mqttConnecting"_s + on_entry<_> / (setLoadingText(Str::Screen::LOADING_SESSION), startMqttConnection),
+                "init.preflight.mqttConnecting"_s + done = "init.preflight.pairingCheck"_s,
+                "init.preflight.mqttConnecting"_s + error[hasFinishedOnboarding && isMqttConnectionError] = "init.preflight.pairingCheck"_s,
+                "init.preflight.mqttConnecting"_s + error[isMqttConnectionError] = "init.preflight.mqttError"_s,
+
+                "init.preflight.mqttError"_s + on_entry<_> / (pauseLoadingAnimation, drawMqttErrorQR),
+                "init.preflight.mqttError"_s + buttonPress = "init.preflight.mqttConnecting"_s,
+                "init.preflight.mqttError"_s + backPress = "init.preflight.wifiCheck"_s,
+
+                // Pairing check (phase 1): decide whether the code is needed,
+                // without showing it. Keeps the loading animation running.
+                "init.preflight.pairingCheck"_s + on_entry<_> / (setLoadingText(Str::Screen::LOADING_PAIRING), startPairingCheck),
+                "init.preflight.pairingCheck"_s + done[needsPairing] = "init.preflight.pairingPrompt"_s,
+                "init.preflight.pairingCheck"_s + done = "init.preflight.syncLockState"_s,
+                "init.preflight.pairingCheck"_s + error[hasFinishedOnboarding] = "init.preflight.syncLockState"_s,
+                "init.preflight.pairingCheck"_s + error = "init.preflight.wifiErrorServer"_s,
+
+                // Pairing prompt (phase 2): only shown when not yet paired
+                "init.preflight.pairingPrompt"_s + on_entry<_> / (pauseLoadingAnimation, drawInitPairingQR, startPairingPoll),
+                "init.preflight.pairingPrompt"_s + event<PairingConfirmed> = "init.preflight.pairingSuccess"_s,
+                "init.preflight.pairingPrompt"_s + buttonPress = "init.preflight.syncLockState"_s,
+
+                // Brief success screen after pairing
+                "init.preflight.pairingSuccess"_s + on_entry<_> / (pauseLoadingAnimation, drawPage(&initPairingSuccessPage), startDelay),
+                "init.preflight.pairingSuccess"_s + done = "init.preflight.syncLockState"_s,
+
+                "init.preflight.syncLockState"_s + on_entry<_> / (setLoadingText(Str::Screen::LOADING_SYNC), syncLockStateOnBoot),
+                "init.preflight.syncLockState"_s + lock [isOnActiveBreak] / stopLoadingAnimation = "locked.break"_s,
+                "init.preflight.syncLockState"_s + lock / (stopLoadingAnimation, lockAction) = "locking"_s,
+                "init.preflight.syncLockState"_s + locktimer [isOnActiveBreak] / stopLoadingAnimation = "locked.break"_s,
+                "init.preflight.syncLockState"_s + locktimer / (stopLoadingAnimation, lockTimerAction) = "locking"_s,
+                "init.preflight.syncLockState"_s + lockOffered / (stopLoadingAnimation, movePaddleToUnlock) = "acceptLock"_s,
+                "init.preflight.syncLockState"_s + breakE / stopLoadingAnimation = "locked.break"_s,
+                "init.preflight.syncLockState"_s + done / stopLoadingAnimation = "home"_s,
+
+
+                "home"_s + on_entry<_> / [](LKBX &) { bootHttpDone = true; },
+                "home"_s [isLockOffered] / movePaddleToUnlock = "acceptLock"_s,
+                "home"_s [isEmergencyBlocked] / (clearLocalPlay, unlockAction) = "emergency.blocked"_s,
+                "home"_s [isOnActiveBreak] = "locked.break"_s,
+                "home"_s [isLockedTimer] / lockTimerAction = "locking"_s,
+                "home"_s [isLocked] / lockAction = "locking"_s,
+                "home"_s [always] = "home.idle"_s,
+
+                "home.idle"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "home.idle"_s + on_entry<_> / (drawMenu, clearLocalPlay),
+                "home.idle"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
+                "home.idle"_s + locktimer / (clearLocalPlay, lockTimerAction) = "locking"_s,
+                "home.idle"_s + buttonPress [(isOption(MenuItemE::LOCK))] = "permalock.confirm"_s,
+                "home.idle"_s + buttonPress [(isOption(MenuItemE::LOCK_TIMER))] = "timer"_s,
+                "home.idle"_s + buttonPress [(isOption(MenuItemE::SETTINGS))] = "home.settings"_s,
+                "home.idle"_s + buttonPress [(isOption(MenuItemE::SLEEP))] = "home.sleep"_s,
+                "home.idle"_s + forceUpdate = "update"_s,
+                "home.idle"_s + recalibrate / clearCalibration = "calibrate"_s,
+
+                "home.settings"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "home.settings"_s + on_entry<_> / (drawSettingsMenu),
+                "home.settings"_s + backPress = "home"_s,
+                "home.settings"_s + buttonPress [(isOption(MenuItemE::WIFI_SETTINGS))] = "wmConfig"_s,
+                "home.settings"_s + buttonPress [(isOption(MenuItemE::UPDATE) && isOnline)] = "update"_s,
+                "home.settings"_s + buttonPress [(isOption(MenuItemE::UPDATE) && isOffline)] = "update.wifi"_s,
+                "home.settings"_s + buttonPress [(isOption(MenuItemE::PAIRING)) && isOnline] = "pairing"_s,
+                "home.settings"_s + buttonPress [(isOption(MenuItemE::PAIRING)) && isOffline] = "pairing.wifi"_s,
+                "home.settings"_s + buttonPress [(isOption(MenuItemE::ENROL_IN_ALPHA))] = "enrolInAlpha"_s,
+                "home.settings"_s + buttonPress [(isOption(MenuItemE::BACK))] = "home"_s,
+                "home.settings"_s + buttonPress [(isOption(MenuItemE::RESTART))] = "restart"_s,
+                "home.settings"_s + forceUpdate = "update"_s,
+                "home.settings"_s + recalibrate / clearCalibration = "calibrate"_s,
+                "home.settings"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
+                "home.settings"_s + locktimer / (clearLocalPlay, lockTimerAction) = "locking"_s,
+                "home.settings"_s + unlock / (clearLocalPlay, unlockAction) = "home.settings"_s,
+
+                "enrolInAlpha"_s + on_entry<_> / (drawEnrolInAlphaQR),
+                "enrolInAlpha"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "enrolInAlpha"_s + backPress = "home.settings"_s,
+                "enrolInAlpha"_s + buttonPress / (toggleAlpha) = X,
+
+                "pairing"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "pairing"_s + on_entry<_> / (drawPairingQR),
+                "pairing"_s + backPress = "home.settings"_s,
+                "pairing"_s + buttonPress = "home"_s,
+                "pairing"_s + forceUpdate = "update"_s,
+
+                "pairing.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "pairing.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "pairing.wifi"_s + buttonPress = "home.settings"_s,
+                "pairing.wifi"_s + backPress = "home.settings"_s,
+                "pairing.wifi"_s + buttonPress[isOnline] = "pairing"_s,
+                "pairing.wifi"_s + buttonPress[isOffline] = "wmConfig.error"_s,
+                "pairing.wifi"_s + wifiConnected = "pairing"_s,
+                
+                "home.sleep"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "home.sleep"_s + on_entry<_> / (drawSleepQR),
+                "home.sleep"_s + buttonPress / deepSleep = "home"_s,
+                "home.sleep"_s + backPress = "home"_s,
+                "home.sleep"_s + forceUpdate = "update"_s,
+
+                // timer state to let the user set the lock duration.
+                "timer"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "timer"_s + on_entry<_> / (drawTimerConfig),
+                "timer"_s + backPress = "home.idle"_s,
+                "timer"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
+                "timer"_s + locktimer / (clearLocalPlay, lockTimerAction) = "locking"_s,
+                "timer"_s + buttonPress / (saveDuration, lockTimerAction) = "locking"_s,
+                "timer"_s + forceUpdate = "update"_s,
+
+                "locking"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locking"_s + on_entry<_> / (drawLockAnimation, startDelay),
+                // A replacement session can arrive before the previous motor
+                // transition finishes. Apply the newest target before preflight.
+                "locking"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
+                "locking"_s + locktimer / (clearLocalPlay, lockTimerAction) = "locking"_s,
+                "locking"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
+                "locking"_s + breakE = "locked.break"_s,
+                "locking"_s + done = "locking.preflight"_s,
+                "locking"_s + forceUpdate = "update"_s,
+
+                "locking.preflight"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locking.preflight"_s + on_entry<_> / (startPreflight),
+#include "FrozenTransitions.inc"
+#include "TimerExpiryTransitions.inc"
+                "locking.preflight"_s + done[isReadyToUnlock] / sendMessage(Str::Protocol::LOCKED) = "locked.ready"_s,
+                "locking.preflight"_s + done[isLockedTimer] / sendMessage(Str::Protocol::LOCKED) = "locked.timer"_s,
+                "locking.preflight"_s + done[isLocked] / sendMessage(Str::Protocol::LOCKED) = "locked"_s,
+                "locking.preflight"_s + done / sendMessage(Str::Protocol::UNLOCKED) = "home"_s,
+                "locking.preflight"_s + error[isError(ErrorT::CANNOT_LOCK)] / (movePaddleToUnlock) = "locking.errorLock"_s,
+                "locking.preflight"_s + error[isError(ErrorT::CANNOT_UNLOCK)] / (movePaddleToLock) = "locking.errorUnlock"_s,
+                "locking.preflight"_s + error[isError(ErrorT::NO_BACKPLATE)] / (movePaddleToUnlock) = "locking.errorBackplate"_s,
+                "locking.preflight"_s + forceUpdate = "update"_s,
+
+                "locking.errorLock"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locking.errorLock"_s + on_entry<_> / (drawErrorLockQR),
+                "locking.errorLock"_s + buttonPress[isLockedTimer] / (lockTimerAction) = "locking"_s,
+                "locking.errorLock"_s + buttonPress[isLocked] / (lockAction) = "locking"_s,
+                "locking.errorLock"_s + backPress / clearCalibration = "calibrate"_s,
+                "locking.errorLock"_s + forceUpdate = "update"_s,
+
+                "locking.errorUnlock"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locking.errorUnlock"_s + on_entry<_> / (drawErrorUnlock),
+                "locking.errorUnlock"_s + buttonPress = "restart"_s,
+                "locking.errorUnlock"_s + backPress / clearCalibration = "calibrate"_s,
+                "locking.errorUnlock"_s + forceUpdate = "update"_s,
+
+                "locking.errorBackplate"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locking.errorBackplate"_s + on_entry<_> / (movePaddleToUnlock, drawErrorNoBackplateQR),
+                "locking.errorBackplate"_s + buttonPress = "restart"_s,
+                "locking.errorBackplate"_s + backPress / clearCalibration = "calibrate"_s,
+                "locking.errorBackplate"_s + forceUpdate = "update"_s,
+
+                "permalock.confirm"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "acceptLock"_s + on_entry<_> / drawAcceptLockQR,
+                "acceptLock"_s + buttonPress[acceptOfferedLockSession] / (clearEBlock, lockTimerAction) = "locking"_s,
+                "acceptLock"_s + backPress / declineLockAction = "home"_s,
+                "acceptLock"_s + decline / declineLockAction = "home"_s,
+                "acceptLock"_s + lockOffered / drawAcceptLockQR,
+                "acceptLock"_s + unlock / unlockAction = "home"_s,
+                "acceptLock"_s + forceUpdate = "update"_s,
+
+                "permalock.confirm"_s + on_entry<_> / (drawPermalockQR),
+                "permalock.confirm"_s + buttonPress / (setLocalPlay, lockAction) = "locking"_s,
+                "permalock.confirm"_s + backPress = "home"_s,
+                "permalock.confirm"_s + forceUpdate = "update"_s,
+
+                "locked"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked"_s + on_entry<_> / (drawLockedActions),
+                "locked"_s + buttonPress  = "lockMenu"_s,
+                // Messages from Dashboard
+                "locked"_s + locktimer / (switchToTimer)= "locking"_s,
+                "locked"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
+                "locked"_s + breakE = "locked.break"_s,
+                "locked"_s + forceUpdate = "update"_s,
+
+                "locked.timer"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked.timer"_s + on_entry<_> / (drawLockedActions, startUnlockTimer),
+                "locked.timer"_s + buttonPress = "lockMenu"_s,
+                // Messages from Dashboard
+                "locked.timer"_s + lock / (switchToLock) = "locking"_s,
+                "locked.timer"_s + locktimer / (switchToTimer) = "locking"_s,
+                "locked.timer"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
+                "locked.timer"_s + breakE = "locked.break"_s,
+                "locked.timer"_s + forceUpdate = "update"_s,
+
+                "locked.ready"_s + on_entry<_> / (drawReadyToUnlock, startUnlockTimer),
+                "locked.ready"_s + buttonPress[acceptNaturalUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
+                "locked.ready"_s + backPress = "locked.ready.addTime"_s,
+                "locked.ready"_s + locktimer[!isReadyToUnlock] / switchToTimer = "locked.timer"_s,
+                "locked.ready"_s + lock / switchToLock = "locked"_s,
+                "locked.ready"_s + unlock / (clearActiveBreak, clearLocalPlay, unlockAction) = "locking"_s,
+                "locked.ready"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked.ready"_s + forceUpdate = "update"_s,
+
+                "locked.ready.addTime"_s + on_entry<_> / drawAddTimeQR,
+                "locked.ready.addTime"_s + backPress = "locked.ready"_s,
+                "locked.ready.addTime"_s + locktimer[!isReadyToUnlock] / switchToTimer = "locked.timer"_s,
+                "locked.ready.addTime"_s + lock / switchToLock = "locked"_s,
+                "locked.ready.addTime"_s + unlock / (clearActiveBreak, clearLocalPlay, unlockAction) = "locking"_s,
+                "locked.ready.addTime"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked.ready.addTime"_s + forceUpdate = "update"_s,
+
+                "lockMenu"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "lockMenu"_s + on_entry<_> / (drawEmergencyMenu),
+                "lockMenu"_s + buttonPress[(isOption(MenuItemE::SLEEP))] = "lockMenu.sleep"_s,
+                "lockMenu"_s + buttonPress[(isOption(MenuItemE::WIFI_SETTINGS))] = "wmConfig"_s,
+                "lockMenu"_s + buttonPress[(isOption(MenuItemE::RESTART))] = "restart"_s,
+                "lockMenu"_s + buttonPress[(isOption(MenuItemE::BREAK))] = "locked.breaking"_s,
+                "lockMenu"_s + buttonPress[(isOption(MenuItemE::EMERGENCY))] = "emergency.unlock"_s,
+                "lockMenu"_s + lock / (switchToLock) = "locking"_s,
+                "lockMenu"_s + locktimer / (switchToTimer) = "locking"_s,
+                "lockMenu"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
+                "lockMenu"_s + breakE = "locked.break"_s,
+                "lockMenu"_s + forceUpdate = "update"_s,
+
+                "locked.breaking"_s + on_entry<_> / (drawBreakQR),
+                "locked.breaking"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked.breaking"_s + buttonPress = "locked.breakPreflight"_s,
+                "locked.breaking"_s + backPress = "lockMenu"_s,
+
+                // TODO implement the BREAKING.
+                "locked.breakPreflight"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked.breakPreflight"_s + on_entry<_> / (startBreakPreflight),
+                "locked.breakPreflight"_s + error[isError(ErrorT::BREAK_NOT_ENABLED)] / (drawBreakNotEnabledQR) = "locked.breakError"_s,
+                "locked.breakPreflight"_s + error[isError(ErrorT::BREAK_KEYHOLDER_ONLY)] / (drawBreakKeyholderOnlyQR) = "locked.breakError"_s,
+                "locked.breakPreflight"_s + error[isError(ErrorT::TOO_SOON_FOR_BREAK)] = "locked.breakCooldown"_s,
+                "locked.breakPreflight"_s + breakE / sendMessage(Str::Protocol::BREAK) = "locked.break"_s,
+                "locked.breakPreflight"_s + backPress = "locking"_s,
+
+                "locked.breakError"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked.breakError"_s + buttonPress = "lockMenu"_s,
+                "locked.breakError"_s + backPress = "lockMenu"_s,
+
+                "locked.breakCooldown"_s + on_entry<_> / drawBreakTooSoonQR,
+                "locked.breakCooldown"_s + error[isError(ErrorT::TOO_SOON_FOR_BREAK)] / [](LKBX &o) { o.drawBreakCooldown(false); },
+                "locked.breakCooldown"_s + done = "locked.breaking"_s,
+                "locked.breakCooldown"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked.breakCooldown"_s + buttonPress = "lockMenu"_s,
+                "locked.breakCooldown"_s + backPress = "lockMenu"_s,
+
+                "locked.break"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "locked.break"_s + on_entry<_> / (movePaddleToUnlock, startBreakTimer, clearLockedReport),
+                "locked.break"_s + done[!isBreakEndRequested] / (clearActiveBreak, movePaddleToLock) = "locking"_s,
+                "locked.break"_s + buttonPress[acceptBreakEnd] / movePaddleToLock = "locking"_s,
+                "locked.break"_s + unlock / (clearActiveBreak, clearLocalPlay, unlockAction) = "locking"_s,
+
+                "lockMenu.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "lockMenu.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "lockMenu.wifi"_s + buttonPress = "lockMenu"_s,
+                "lockMenu.wifi"_s + backPress = "lockMenu"_s,
+                "lockMenu.wifi"_s + buttonPress[isOnline] = "lockMenu"_s,
+                "lockMenu.wifi"_s + buttonPress[isOffline] = "lockMenu"_s,
+                "lockMenu.wifi"_s + wifiConnected = "lockMenu"_s,
+                "lockMenu.wifi"_s + forceUpdate = "update"_s,
+
+                "lockMenu.sleep"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "lockMenu.sleep"_s + on_entry<_> / (drawSleepQR),
+                // Keep the timer alive instead of spending its last seconds
+                // rebooting through preflight after a short sleep.
+                "lockMenu.sleep"_s + buttonPress[!isFrozen && timerNearExpiry] = "locked.timer"_s,
+                "lockMenu.sleep"_s + buttonPress / deepSleep = "lockMenu"_s,
+                "lockMenu.sleep"_s + backPress = "lockMenu"_s,
+                "lockMenu.sleep"_s + lock / (switchToLock) = "locking"_s,
+                "lockMenu.sleep"_s + locktimer / (switchToTimer)= "locking"_s,
+                "lockMenu.sleep"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
+                "lockMenu.sleep"_s + breakE = "locked.break"_s,
+                "lockMenu.sleep"_s + forceUpdate = "update"_s,
+
+                "emergency.unlock"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "emergency.unlock"_s + on_entry<_> / (drawEUnlockQR),
+                "emergency.unlock"_s + backPress = "lockMenu"_s,
+                "emergency.unlock"_s + buttonPress / (emergencyUnlockAction, sendMessage(Str::Protocol::EMERGENCY)) = "locking"_s,
+                "emergency.unlock"_s + lock / (switchToLock)= "locking"_s,
+                "emergency.unlock"_s + locktimer / (switchToTimer)= "locking"_s,
+                "emergency.unlock"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
+                "emergency.unlock"_s + breakE = "locked.break"_s,
+                "emergency.unlock"_s + forceUpdate = "update"_s,
+
+                "emergency.blocked"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "emergency.blocked"_s + on_entry<_> / (drawEBlockedQR, startUnlockTimer),
+                "emergency.blocked"_s + unlock / (clearEBlock, clearLocalPlay, unlockAction) = "home"_s,
+                "emergency.blocked"_s + lock / (clearEBlock, clearLocalPlay, lockAction) = "locking"_s,
+                "emergency.blocked"_s + locktimer / (clearEBlock, clearLocalPlay, lockTimerAction) = "locking"_s,
+                "emergency.blocked"_s + buttonPress = "emergency.wifi"_s,
+                "emergency.blocked"_s + forceUpdate = "update"_s,
+
+                "emergency.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "emergency.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "emergency.wifi"_s + buttonPress = "emergency.blocked"_s,
+                "emergency.wifi"_s + backPress = "emergency.blocked"_s,
+                "emergency.wifi"_s + buttonPress[isOnline] = "emergency.blocked"_s,
+                "emergency.wifi"_s + buttonPress[isOffline] = "emergency.blocked"_s,
+                "emergency.wifi"_s + wifiConnected = "emergency.blocked"_s,
+                "emergency.wifi"_s + unlock / (clearEBlock, clearLocalPlay, unlockAction) = "home"_s,
+                "emergency.wifi"_s + lock / (clearEBlock, clearLocalPlay, lockAction) = "locking"_s,
+                "emergency.wifi"_s + locktimer / (clearEBlock, clearLocalPlay, lockTimerAction) = "locking"_s,
+                "emergency.wifi"_s + forceUpdate = "update"_s,
+
+                "wmConfig"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "wmConfig"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "wmConfig"_s + buttonPress = "home"_s,
+                "wmConfig"_s + backPress = "home"_s,
+                "wmConfig"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
+                "wmConfig"_s + locktimer / (clearLocalPlay, lockTimerAction) = "locking"_s,
+                "wmConfig"_s + wifiConnected = "home"_s,
+                "wmConfig"_s + forceUpdate = "update"_s,
+
+                "wmConfig.error"_s + on_entry<_> / (drawCouldNotConnectQR),
+                "wmConfig.error"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "wmConfig.error"_s + buttonPress = "home"_s,
+                "wmConfig.error"_s + backPress = "home"_s,
+                "wmConfig.error"_s + forceUpdate = "update"_s,
+
+                "update.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "update.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "update.wifi"_s + backPress = "home"_s,
+                "update.wifi"_s + buttonPress[isOnline] = "update"_s,
+                "update.wifi"_s + buttonPress[isOffline] = "wmConfig.error"_s,
+                "update.wifi"_s + wifiConnected = "update"_s,
+                "update.wifi"_s + forceUpdate = "update"_s,
+                
+
+                "update"_s + on_entry<_> / (drawLoadingScreen(Str::Screen::UPDATING_TITLE, Str::Screen::UPDATING_DESC), startUpdate),
+                "update"_s + done[isOnline] = "update.idle"_s,
+                "update"_s + done[isOffline] = "wmConfig.error"_s,
+                "update"_s + error[isError(ErrorT::WIFI_ERROR)] = "wmConfig.error"_s,
+                "update"_s + error[isError(ErrorT::NO_UPDATE_AVAILABLE)] = "update.none"_s,
+                "update"_s + error[isError(ErrorT::OTA_FAILED)] = "update.failed"_s,
+
+                "update.failed"_s + on_entry<_> / (drawPage(&otaFailedPage), [](LKBX &) { delayTimeout = 5000; }),
+                "update.failed"_s + done / restart = X,
+
+                "update.none"_s + on_entry<_> / ([](LKBX &) { bootHttpDone = true; }, drawNoUpdateQR),
+                "update.none"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "update.none"_s + buttonPress = "home"_s,
+                "update.none"_s + backPress = "home"_s,
+
+                // Wait for restart.
+                "update.idle"_s  = X,
+
+                "restart"_s / restart = X
+
+                // clang-format on
+            );
+        }
+    };
+
+    /**
+     * ///////////////////////////////////////////
+     * ////
+     * ////  Private Objects and Services
+     * ////
+     * ///////////////////////////////////////////
+     */
+    StateLogger logger;
+
+    /**
+     * ///////////////////////////////////////////
+     * ////
+     * ////  Private Functions
+     * ////
+     * ///////////////////////////////////////////
+     */
+    void drawHello();
+    void drawTimerConfig();
+    void drawLockAnimation();
+    void drawLockedActions();
+    void drawReadyToUnlock();
+    void drawMenu();
+    void drawEmergencyMenu();
+
+    /**
+     * ///////////////////////////////////////////
+     * ////
+     * ////  Static Functions and Tasks
+     * ////
+     * ///////////////////////////////////////////
+     */
+    static void drawHelloTask(void *pvParameters);
+    static void startUnlockTimerTask(void *pvParameters);
+    static void startWifiConnectionTask(void *pvParameters);
+    static void checkWifiTask(void *pvParameters);
+    static void checkForUpdatesTask(void *pvParameters);
+    static void startPairingCheckTask(void *pvParameters);
+    static void pollPairingTask(void *pvParameters);
+    static void syncLockStateOnBootTask(void *pvParameters);
+    static void syncClockOnBootTask(void *pvParameters);
+
+  public:
+    LKBX(Adafruit_ST7789 &display, AiEsp32RotaryEncoder &encoder, Motor &motor,
+         esp_mqtt_client_handle_t &client);
+
+    void initDelayTask();
+
+    Adafruit_ST7789 &display;
+    AiEsp32RotaryEncoder &encoder;
+    Motor &motor;
+    esp_mqtt_client_handle_t &client;
+
+    std::unique_ptr<
+        sml::sm<InnerStateMachine, sml::thread_safe<ESP32RecursiveMutex>,
+                sml::logger<StateLogger>>>
+        sm = nullptr;  // The state machine
+
+    String errorMessage = "";
+    uint64_t duration = 0;
+    // Set by the phase-1 pairing check; routes preflight to the pairing prompt.
+    bool initNeedsPairing = false;
+    bool initPairingStatusKnown = false;
+    // Credentials provisioned via BLE — used by startWifiConnectionTask
+    String pendingWifiSsid = "";
+    String pendingWifiPassword = "";
+    const MenuItem *activeMenu{};
+    int menuSize = 0;
+    void drawQRCode(const String &title, const String &description,
+                    const String &url, const String &label = Str::Label::INFO,
+                    const Action &right = continueAction,
+                    const Action &left = backAction,
+                    bool descriptionOnly = false);
+    void drawBreakEndRequest(const String &requestedBy);
+
+    void sendMessage(const String &message, const String &sessionId = "") {
+        // Only LOCKED is tracked until the broker acknowledges it. Any other
+        // state message means the device has moved on, except DISCONNECTED:
+        // it is sent on the way to sleep, and sleep can still be cancelled.
+        const bool isLockedReport = message == Str::Protocol::LOCKED;
+        if (!isLockedReport && message != Str::Protocol::DISCONNECTED) {
+            lockedReport::tracker.clear();
+        }
+        if (!client || !isTimeSynced) {
+            ESP_LOGW(MQTT_TAG, "%s, skipping state message: %s",
+                     client ? "Time not synced yet" : "No MQTT client yet",
+                     message.c_str());
+            // Keep the report pending; the retry sends it once ready.
+            if (isLockedReport) lockedReport::tracker.onReport(-1, millis(), {});
+            return;
+        }
+
+        String msg = createStateMessage(message, true, sessionId);
+
+
+
+        String topic = getMacAddresss();
+
+        int result = esp_mqtt_client_enqueue(client, topic.c_str(), msg.c_str(),
+                                             0, 2, false, true);
+        if (isLockedReport) {
+            lockedReport::tracker.onReport(result, millis(), msg.c_str());
+        }
+
+        ESP_LOGD(MQTT_TAG, "Message enqueue result: %d", result);
+    }
+
+    void sendActivityLog(const String &message) {
+        if (!client) return;
+        if (!isTimeSynced) {
+            ESP_LOGW(MQTT_TAG, "Time not synced yet, skipping activity log: %s",
+                     message.c_str());
+            return;
+        }
+
+        String currentState = "";
+        if (sm) {
+            sm->visit_current_states(
+                [&](auto state) { currentState = state.c_str(); });
+        }
+        String msg = createActivityLogMessage(message, currentState);
+
+
+
+        char topic[24];
+        snprintf(topic, sizeof(topic), "%s%s", getMacAddresss().c_str(),
+                 Str::Protocol::LOG_TOPIC_SUFFIX);
+
+        int result = esp_mqtt_client_enqueue(client, topic, msg.c_str(), 0, 2,
+                                             false, true);
+
+        ESP_LOGD(MQTT_TAG, "Message enqueue result: %d", result);
+    }
+
+    void checkPendingStateChange() {
+        checkOfferedLock();
+        checkBreakCooldown();
+        if (logger.stateChangeMessagePending) {
+            logger.stateChangeMessagePending = false;
+            sendActivityLog(Str::Protocol::STATE_CHANGE);
+        }
+        // Cheap checks first: isLocked() reads NVS under the preferences
+        // mutex. Attempts are only spent while connected, so the first retry
+        // after a reconnect goes out right away.
+        if (lockedReport::tracker.dueForResend(millis()) && mqttConnected) {
+            if (isLocked()) resendLockedReport();
+            else lockedReport::tracker.clear();  // no longer locked: moot
+        }
+    }
+
+    // Retry path for an unconfirmed LOCKED report. Re-enqueues the bytes the
+    // state machine sent, so the server sees one event and rejects the
+    // duplicates as already tracked. Builds the message only if the first
+    // attempt never produced one (no client or clock at the time).
+    void resendLockedReport() {
+        if (!client || !isTimeSynced) {
+            lockedReport::tracker.onRetry(-1, millis(), {});
+            return;
+        }
+        std::string payload = lockedReport::tracker.payload();
+        if (payload.empty()) {
+            payload = createStateMessage(Str::Protocol::LOCKED, true, "").c_str();
+        }
+        String topic = getMacAddresss();
+        int result = esp_mqtt_client_enqueue(client, topic.c_str(),
+                                             payload.c_str(), 0, 2, false, true);
+        lockedReport::tracker.onRetry(result, millis(), payload);
+        ESP_LOGW(MQTT_TAG, "LOCKED report unconfirmed, resent (%u/%u), id %d",
+                 static_cast<unsigned>(lockedReport::tracker.attemptCount()),
+                 static_cast<unsigned>(lockedReport::kMaxAttempts), result);
+    }
+};
+
+#endif  // LOCKBOX_LKBX_H

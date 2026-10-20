@@ -1,0 +1,27 @@
+{
+    "layout": {
+        "hspace": "5mm",
+        "cols": "4"
+    },
+    "tabs": {
+        "fillet": "1mm"
+    },
+    "cuts": {
+        "type": "mousebites"
+    },
+    "framing": {
+        "type": "frame",
+        "mintotalheight": "70mm",
+        "mintotalwidth": "70mm"
+    },
+    "tooling": {
+        "type": "3hole",
+        "hoffset": "2.5mm",
+        "voffset": "2.5mm"
+    },
+    "fiducials": {
+        "type": "3fid",
+        "hoffset": "5mm",
+        "voffset": "2.5mm"
+    }
+}

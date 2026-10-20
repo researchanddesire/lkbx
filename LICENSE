@@ -1,0 +1,17 @@
+# Research and Desire — Chastity Lockbox License and Copyright Notices
+
+Lockbox firmware and hardware designs are (c) Research and Desire.
+
+This notice must be included in any distributions of this project or derivative works.
+
+Because this project consists of many types of source, individual parts are made available under different licenses.
+
+1. Hardware designs at `./hardware/cad` and `./hardware/pcb` are available under **CERN-OHL-S v2**. Full text: [`LICENSES/CERN-OHL-S-2.0.txt`](LICENSES/CERN-OHL-S-2.0.txt).
+
+2. Firmware and software at `./src`, `./test`, `./scripts`, `./include`, `./developer-docs`, and root build configs are available under **Mozilla Public License 2.0**. Full text: [`LICENSES/MPL-2.0.txt`](LICENSES/MPL-2.0.txt).
+
+3. CI workflows at `./.github/workflows` are available under **Mozilla Public License 2.0**.
+
+4. Research and Desire / Lockbox / Chastity Lockbox branding and media are Copyright (c) Research and Desire. All rights reserved. Derivative works should remove RAD product branding unless separately licensed.
+
+5. The names **Research and Desire**, **Lockbox**, and **Chastity Lockbox** are trademarks of Research and Desire. Derivative works should not imply endorsement.

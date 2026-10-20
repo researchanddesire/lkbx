@@ -1,0 +1,56 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/fixture/start-mosquitto.sh"]
+    ports:
+      - "${LKBX_DEV_BIND_IP:-127.0.0.1}:8883:8883"
+    volumes:
+      - ./.dev/local/broker-passwords:/local/broker-passwords:ro
+      - ./.dev/local/broker.acl:/local/broker.acl:ro
+      - ./.dev/local/server.key:/local/server.key:ro
+      - ./.dev/local/server.pem:/local/server.pem:ro
+      - ./.dev/local/ca.pem:/local/ca.pem:ro
+      - ./dev:/fixture:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks: [fixtures]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/mosquitto.pid && kill -0 $$(cat /tmp/mosquitto.pid)"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+  api:
+    image: python:3.13.7-alpine3.22@sha256:9ba6d8cbebf0fb6546ae71f2a1c14f6ffd2fdab83af7fa5669734ef30ad48844
+    command: ["python", "-B", "/fixture/http_fixture.py", "--bind", "0.0.0.0", "--config", "/local/settings.json", "--cert", "/local/server.pem", "--key", "/local/server.key", "--ca", "/local/ca.pem", "--broker", "mosquitto"]
+    ports:
+      - "${LKBX_DEV_BIND_IP:-127.0.0.1}:8443:8443"
+    volumes:
+      - ./.dev/local/settings.json:/local/settings.json:ro
+      - ./.dev/local/server.key:/local/server.key:ro
+      - ./.dev/local/server.pem:/local/server.pem:ro
+      - ./.dev/local/ca.pem:/local/ca.pem:ro
+      - ./dev:/fixture:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks: [fixtures]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-B", "/fixture/http_fixture.py", "--healthcheck", "--config", "/local/settings.json", "--ca", "/local/ca.pem"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+networks:
+  fixtures:
+    # Keep published local ports usable without giving fixture traffic an
+    # outbound masquerade route. The fixture client only addresses Mosquitto.
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"

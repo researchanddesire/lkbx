@@ -1,0 +1,262 @@
+#ifndef LOCKBOX_INITMQTT_H
+#define LOCKBOX_INITMQTT_H
+
+#include "utils/trustedClock.h"
+#include <WiFi.h>
+#include <esp_log.h>
+#include <mqtt_client.h>
+
+#include "FirmwareProvenance.h"
+#include "MqttFrame.h"
+
+#include "constants/LogTags.h"
+#include "constants/strings.h"
+#include "services/getId.h"
+#include "services/hardwareHealth.h"
+#include "services/machine.h"
+#include "state/LKBX.h"
+#include "structs/Version.h"
+#include "utils/dashboard.hpp"
+#include "utils/lockedReport.h"
+
+// TLS CA certificates for MQTT broker verification
+#ifdef VERSIONDEV
+const char* root_ca = LKBX_DEV_CA_PEM;
+#else
+const char* root_ca =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh\n"
+    "MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3\n"
+    "d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH\n"
+    "MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT\n"
+    "MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j\n"
+    "b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG\n"
+    "9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI\n"
+    "2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx\n"
+    "1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQ\n"
+    "q2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5Wz\n"
+    "tCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQ\n"
+    "vIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAP\n"
+    "BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV\n"
+    "5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY\n"
+    "1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4\n"
+    "NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NG\n"
+    "Fdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ91\n"
+    "8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe\n"
+    "pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl\n"
+    "MrY=\n"
+    "-----END CERTIFICATE-----";
+#endif
+
+static char mqttTopic[18] = "";
+static lockbox::security::MqttFrame<> mqttFrame;
+
+void mqtt_event_handler(void* handler_args, esp_event_base_t base,
+                        int32_t event_id, void* event_data) {
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+
+    String mqtt_data_string;
+    JsonDocument doc;
+    ParsedMessage message;
+
+    switch (event->event_id) {
+        case MQTT_EVENT_CONNECTED:
+            hardwareHealthMqttConnected(mqtt_server);
+            Serial.println(Str::Protocol::MQTT_CONNECTED);
+            strncpy(mqttTopic, getMacAddresss().c_str(), sizeof(mqttTopic) - 1);
+            esp_mqtt_client_subscribe(mqttClient, mqttTopic, 2);
+            mqttConnected = true;
+            // An unconfirmed LOCKED report gets a fresh retry budget.
+            lockedReport::tracker.onConnected();
+            {
+                const auto token = firmware::provenance::currentToken();
+                JsonDocument provenance;
+                provenance["provenanceCapability"] = 1;
+                provenance["provenance"] = token;
+                provenance["provenanceId"] =
+                    firmware::provenance::currentTokenId();
+                provenance["imageSha256"] =
+                    firmware::provenance::runningImageSha256();
+                provenance["track"] = FIRMWARE_TRACK;
+                provenance["version"] = VERSION;
+                provenance["buildSha"] = FIRMWARE_BUILD_SHA;
+                String payload;
+                serializeJson(provenance, payload);
+                const String topic = String(mqttTopic) + "/firmware";
+                esp_mqtt_client_publish(mqttClient, topic.c_str(),
+                                        payload.c_str(), payload.length(), 1,
+                                        true);
+            }
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            mqttFrame.reset();
+            Serial.println(Str::Protocol::MQTT_DISCONNECTED);
+            mqttConnected = false;
+            break;
+        case MQTT_EVENT_PUBLISHED:
+            // QoS 2 completes the full handshake before this fires, so the
+            // broker really has the message.
+            lockedReport::tracker.onPublished(event->msg_id);
+            break;
+        case MQTT_EVENT_SUBSCRIBED:
+            Serial.println(Str::Protocol::MQTT_SUBSCRIBED);
+            break;
+        case MQTT_EVENT_DATA:
+            if (mqttFrame.append(mqttTopic, event->topic, event->topic_len,
+                                 event->data, event->data_len,
+                                 event->total_data_len, event->current_data_offset) !=
+                lockbox::security::FrameResult::complete) break;
+            mqtt_data_string = String(mqttFrame.data(), mqttFrame.size());
+            mqttFrame.reset();
+            message = parseJsonMessage(mqtt_data_string, doc);
+
+            if (!message.valid) {
+                ESP_LOGE(MQTT_TAG, "Invalid JSON message");
+                break;
+            }
+
+            setNotIdle(Str::Input::MQTT_DATA);
+
+            if (message.type == MessageType::SYNC) {
+                auto isLocalPlay = false;
+                String savedSessionId;
+
+                if (xSemaphoreTake(preferencesMutex,
+                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
+                    preferences.begin(Keys::base);
+                    isLocalPlay =
+                        preferences.getBool(Keys::Base::isLocalPlay, false);
+                    preferences.end();
+                    preferences.begin(Keys::session);
+                    savedSessionId = preferences.getString(Keys::Session::sessionId, "");
+                    preferences.end();
+                    xSemaphoreGive(preferencesMutex);
+                }
+
+                const String incomingSessionId = doc[Str::Json::SESSION_ID].as<String>();
+                if (isLocalPlay && (incomingSessionId.isEmpty() || incomingSessionId == savedSessionId)) {
+                    ESP_LOGD(MQTT_TAG, "Local play is enabled. Skipping sync");
+                    return;
+                }
+
+                if (doc[Str::Json::CLEAR].as<bool>()) {
+                    clearState();
+                    lkbx->sm->process_event(Unlock{});
+                    return;
+                }
+
+                // MQTT duration is seconds; HTTP pull duration is already ms.
+                // A pending session is an offer, never an automatic lock.
+                SyncMessage session = {
+                    .isBreak = doc[Str::Json::IS_BREAK].as<bool>(),
+                    .lockEnd = doc[Str::Json::LOCK_END].as<uint64_t>(),
+                    .breakMax = doc[Str::Json::BREAK_MAX].as<uint64_t>(),
+                    .breakReg = doc[Str::Json::BREAK_REG].as<uint64_t>(),
+                    .breakLast = doc[Str::Json::BREAK_LAST].as<uint64_t>(),
+                    .duration = doc[Str::Json::DURATION].as<uint64_t>() * 1000ULL,
+                    .isEUnlock = doc[Str::Json::IS_E_UNLOCK].as<bool>(),
+                    .lockStart = doc[Str::Json::LOCK_START].as<uint64_t>(),
+                    .lockState = doc[Str::Json::LOCK_STATE].as<String>(),
+                    .sessionId = doc[Str::Json::SESSION_ID].as<String>(),
+                    .lockName = doc[Str::Json::LOCK_NAME] | "",
+                    .requestedBy = doc[Str::Json::REQUESTED_BY] | "",
+                    .isTestLock = doc[Str::Json::IS_TEST_LOCK].as<bool>(),
+                    .isTimeDisp = doc[Str::Json::IS_TIME_DISP].as<bool>(),
+                    .displayElapsedTime = doc[Str::Json::DISPLAY_ELAPSED_TIME].as<bool>(),
+                };
+                applyFreezeSync(doc, session);
+                session.breakKeyholderOnly =
+                    doc[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
+
+                SyncOutcome outcome;
+                saveState(session, &outcome);
+                if (outcome.freezeChanged) bumpFreezeDisplayVersion();
+
+                // Metadata changes reconcile the main display only. Identical
+                // syncs emit no event and no acknowledgement echo.
+                if (outcome.effect == SyncEffect::TIMER_META) {
+                    lkbx->sm->process_event(FreezeChange{});
+                } else if (outcome.effect == SyncEffect::OFFER) {
+                    lkbx->sm->process_event(LockOffered{});
+                } else if (outcome.effect == SyncEffect::BREAK) {
+                    // Ignore a server-pushed break that lands right after the
+                    // device ended one (the stale-"break" echo).
+                    if (serverBreakOnCooldown()) {
+                        ESP_LOGW(MQTT_TAG,
+                                 "Ignoring server break -- within post-break "
+                                 "cooldown");
+                    } else {
+                        lkbx->sm->process_event(Break{});
+                    }
+                } else if (outcome.effect == SyncEffect::MOTOR_UNLOCK) {
+                    lkbx->sm->process_event(Unlock{});
+                } else if (outcome.effect == SyncEffect::MOTOR_LOCK) {
+                    // A timed lock routes through the countdown, a permanent
+                    // lock through the locked page; both re-run preflight.
+                    if (session.lockEnd != 0) {
+                        lkbx->sm->process_event(LockTimer{});
+                    } else {
+                        lkbx->sm->process_event(Lock{});
+                    }
+                }
+
+                return;
+            }
+
+            if (message.type == MessageType::REBOOT) {
+                ESP_LOGI(MQTT_TAG,
+                         "Reboot requested — clearing isPaired and restarting");
+                if (xSemaphoreTake(preferencesMutex,
+                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
+                    preferences.begin(Keys::base, false);
+                    preferences.putBool(Keys::Base::isPaired, false);
+                    preferences.end();
+                    xSemaphoreGive(preferencesMutex);
+                }
+                esp_restart();
+                break;
+            }
+
+            if (message.type != MessageType::PROCESS) {
+                ESP_LOGE(MQTT_TAG, "Invalid message type");
+                break;
+            }
+
+            if (message.message == Str::Protocol::PROCESS_UNLOCK) {
+                ESP_LOGD(MQTT_TAG, "Processing unlock event");
+                lkbx->sm->process_event(Unlock{});
+            } else if (message.message == Str::Protocol::PROCESS_LOCK) {
+                ESP_LOGD(MQTT_TAG, "Processing lock event");
+                lkbx->sm->process_event(Lock{});
+            } else if (message.message == Str::Protocol::PROCESS_LOCK_TIMER) {
+                // 1722941895389
+                // 1722941925389
+
+                if (xSemaphoreTake(preferencesMutex,
+                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
+                    preferences.begin(Keys::session, false);
+                    preferences.putULong64(Keys::Session::lockEnd,
+                                           message.lockEnd);
+                    preferences.end();
+                    xSemaphoreGive(preferencesMutex);
+                }
+
+                // get system time
+                time_t now = 0;
+                lockboxTime(&now);
+
+                ESP_LOGD(MQTT_TAG,
+                         "Processing lock timer. Now: %ld, lockEnd: %llu", now,
+                         message.lockEnd);
+                lkbx->sm->process_event(LockTimer{
+                    .lockEnd = message.lockEnd,
+                });
+            }
+
+            break;
+        default:
+            break;
+    }
+}
+
+#endif  // LOCKBOX_INITMQTT_H

@@ -1,0 +1,24 @@
+site_name: Lockbox Developer Docs
+site_url: https://dev.researchanddesire.com/lockbox/
+repo_url: https://github.com/researchanddesire/Lockbox
+repo_name: Lockbox
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: teal
+      accent: cyan
+
+nav:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - Testing: testing.md
+  - Hardware:
+      - Sensor System: hardware/sensor-system.md
+      - Power Management: hardware/power-management.md
+      - State and Sync: hardware/state-and-sync.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences

@@ -1,0 +1,98 @@
+name: Firmware CI
+
+on:
+  pull_request:
+    branches: [main, staging]
+  push:
+    branches: [main, staging, 'AJ/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          lfs: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Install build tools
+        run: python -m pip install platformio==6.1.19
+      - name: Test native firmware
+        run: |
+          pio test -e test
+          pio test -e test_native
+      - name: Test build tools and local services
+        run: python -m unittest discover -s scripts -p 'test_*.py'
+      - name: Test asynchronous HTTP and TLS with sanitizers
+        run: python scripts/test_http_worker_security.py
+      - name: Test OTA stream integrity with sanitizers
+        run: python scripts/test_firmware_runtime.py
+      - name: Install verified secret scanner
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz' | sha256sum --check
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+      - name: Scan software and retained history
+        run: python scripts/check_software.py --history
+
+  local-service-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          lfs: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Test isolated HTTPS fixture
+        run: python dev/test_http_fixture.py -v
+      - name: Start synthetic local services
+        run: python scripts/dev_services.py up --lan-ip 127.0.0.1 --device-id AA:BB:CC:DD:EE:FF --device-id AA:BB:CC:DD:EE:FE
+      - name: Verify HTTPS authentication and MQTT topic isolation
+        run: python dev/test_compose_integration.py -v
+      - name: Stop local services
+        if: always()
+        run: python scripts/dev_services.py down
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [development-r2, development-r8, production-r2, production-r8]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          lfs: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Install build tools
+        run: python -m pip install platformio==6.1.19
+      - name: Compile firmware
+        env:
+          PROFILE: ${{ matrix.profile }}
+          CI: 'true'
+        run: pio run -e "$PROFILE"
+      - name: Verify pinned SDK DHCP backport
+        run: python scripts/test_sdk_security.py --regression
+      # Development binaries contain per-run fixture credentials. Build outputs
+      # stay on this disposable runner. Private release tooling builds exact,
+      # reviewed Production commits and handles signing/publication separately.

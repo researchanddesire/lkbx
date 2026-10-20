@@ -1,0 +1,5 @@
+title: Hardware
+nav:
+  - sensor-system.md
+  - power-management.md
+  - state-and-sync.md

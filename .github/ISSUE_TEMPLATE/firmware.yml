@@ -1,0 +1,27 @@
+name: Firmware bug or feature
+description: Report a firmware issue or request a behavior change
+title: "[Firmware] "
+labels: ["firmware"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For daily development, target **`main`** on the canonical Lockbox repo.
+        OSS structural issues may use **`opensource-prep`** / Lockbox-OSS.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened or what should change?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version
+      placeholder: e.g. 1.21.12
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include device state, Wi-Fi/MQTT status if relevant

@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""Configure and operate isolated local lockbox fixtures; no cloud fallback."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+DEFAULT_DEVICE = "AA:BB:CC:DD:EE:FF"
+SCHEMA = 1
+PRIVATE_NETWORKS = tuple(ipaddress.ip_network(x) for x in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"))
+
+
+def local_address(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise ValueError("Use an explicit private LAN IPv4 address or 127.0.0.1") from error
+    if address.version != 4 or not any(address in block for block in PRIVATE_NETWORKS):
+        raise ValueError("Only private LAN or loopback IPv4 addresses are allowed")
+    if str(address).endswith(".255") or address.is_unspecified or address.is_multicast:
+        raise ValueError("A unicast local IPv4 address is required")
+    return str(address)
+
+
+def device_id(value: str) -> str:
+    value = value.upper()
+    if not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", value):
+        raise ValueError("Device ID must be a colon-separated MAC address")
+    return value
+
+
+def write_private(path: Path, contents: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.read_text() == contents:
+        path.chmod(0o600)
+        return
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False, encoding="utf-8") as stream:
+        temporary = Path(stream.name)
+        os.chmod(temporary, 0o600)
+        stream.write(contents)
+    temporary.replace(path)
+
+
+def openssl(*args: str) -> None:
+    executable = shutil.which("openssl")
+    if not executable:
+        raise RuntimeError("OpenSSL is required to generate the local TLS certificates")
+    result = subprocess.run([executable, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode:
+        raise RuntimeError("Local TLS certificate generation failed; verify the OpenSSL installation")
+
+
+def certificate_files(directory: Path, address: str) -> None:
+    # The CA stays private to this checkout. Nothing is installed in a system trust store.
+    if not (directory / "ca.key").exists() or not (directory / "ca.pem").exists():
+        openssl("req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-days", "3650",
+                "-subj", "/CN=Lockbox Local Development CA", "-keyout", str(directory / "ca.key"),
+                "-out", str(directory / "ca.pem"), "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+    extensions = directory / "server.ext"
+    write_private(extensions, "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n"
+                  f"subjectAltName=IP:{address},IP:127.0.0.1,DNS:localhost,DNS:mosquitto\n")
+    openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=Lockbox Local Fixtures",
+            "-keyout", str(directory / "server.key"), "-out", str(directory / "server.csr"))
+    openssl("x509", "-req", "-in", str(directory / "server.csr"), "-CA", str(directory / "ca.pem"),
+            "-CAkey", str(directory / "ca.key"), "-set_serial", str(secrets.randbits(128)),
+            "-out", str(directory / "server.pem"), "-days", "365", "-sha256", "-extfile", str(extensions))
+    for name in ("ca.key", "ca.pem", "server.key", "server.pem", "server.csr", "server.ext"):
+        (directory / name).chmod(0o600)
+
+
+@contextlib.contextmanager
+def configuration_lock(directory: Path):
+    path = directory / "configure.lock"
+    deadline = time.monotonic() + 20
+    while True:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(descriptor)
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Local configuration is locked; wait for the other build, or remove a stale .dev/local/configure.lock after confirming no build is running")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        path.unlink()
+
+
+def configure(root: Path, lan_ip: str | None = None, device_ids: list[str] | None = None) -> dict:
+    directory = Path(root).resolve() / ".dev/local"
+    directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    with configuration_lock(directory):
+        return _configure_locked(root, lan_ip, device_ids)
+
+
+def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | None) -> dict:
+    root = Path(root).resolve()
+    directory = root / ".dev/local"
+    directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    settings_path = directory / "settings.json"
+    existed = settings_path.exists()
+    settings = json.loads(settings_path.read_text()) if existed else {}
+    if settings and settings.get("schema") != SCHEMA:
+        raise ValueError("Unsupported local configuration version; preserve it and configure a new checkout")
+    address = local_address(lan_ip or settings.get("lan_ip", "127.0.0.1"))
+    selected = [device_id(value) for value in (device_ids or list(settings.get("devices", {})) or [DEFAULT_DEVICE])]
+    selected = list(dict.fromkeys(selected))
+    old_address = settings.get("lan_ip")
+    settings.setdefault("schema", SCHEMA)
+    settings.setdefault("controller_api_token", secrets.token_urlsafe(32))
+    settings.setdefault("controller_mqtt", {"username": "local-controller", "password": secrets.token_urlsafe(32)})
+    devices = settings.setdefault("devices", {})
+    # Existing identities are retained so a reconfiguration does not silently revoke another fixture.
+    for identity in selected:
+        devices.setdefault(identity, {"api_token": secrets.token_urlsafe(32), "username": "device-" + identity.replace(":", "").lower(),
+                                      "password": secrets.token_urlsafe(32), "pairing_code": secrets.token_hex(3).upper()})
+    settings["primary_device"] = selected[0]
+    settings["lan_ip"] = address
+    if old_address != address or any(not (directory / name).exists() for name in ("ca.key", "ca.pem", "server.key", "server.pem")):
+        certificate_files(directory, address)
+    write_private(settings_path, json.dumps(settings, indent=2) + "\n")
+    passwords = []
+    acl = []
+    for identity, credentials in devices.items():
+        passwords.append(credentials["username"] + ":" + credentials["password"])
+        acl.extend(["user " + credentials["username"], f"topic readwrite {identity}", f"topic write {identity}/log", f"topic write {identity}/firmware", ""])
+    controller = settings["controller_mqtt"]
+    passwords.append(controller["username"] + ":" + controller["password"])
+    acl.append("user " + controller["username"])
+    for identity in devices:
+        acl.extend([f"topic readwrite {identity}", f"topic read {identity}/log", f"topic read {identity}/firmware"])
+    write_private(directory / "broker-passwords", "\n".join(passwords) + "\n")
+    write_private(directory / "broker.acl", "\n".join(acl) + "\n")
+    write_private(directory / "compose.env", f"LKBX_DEV_BIND_IP={address}\n")
+    primary = devices[settings["primary_device"]]
+    macros = {"LKBX_DEV_CA_PEM": (directory / "ca.pem").read_text(), "LKBX_DEV_API_TOKEN": primary["api_token"],
+              "LKBX_DEV_API_BASE_URL": f"https://{address}:8443", "LKBX_DEV_MQTT_URI": f"mqtts://{address}",
+              "LKBX_DEV_DEVICE_ID": settings["primary_device"]}
+    header = "#pragma once\n#ifndef VERSIONDEV\n#error Local development configuration cannot be used in production\n#endif\n"
+    header += "#if defined(RAD_SERVER) || defined(MQTT_SERVER) || defined(MQTT_PORT)\n#error Development endpoints must come from local fixture configuration\n#endif\n"
+    header += "\n".join(f"#define {key} {json.dumps(value)}" for key, value in macros.items()) + "\n"
+    header += "#define LKBX_DEV_MQTT_PORT 8883\n#define RAD_SERVER LKBX_DEV_API_BASE_URL\n#define RAD_SERVER_SHORT LKBX_DEV_API_BASE_URL\n#define MQTT_SERVER LKBX_DEV_MQTT_URI\n#define MQTT_PORT LKBX_DEV_MQTT_PORT\n"
+    write_private(directory / "include/lkbx_dev_config.h", header)
+    return settings
+
+
+def should_start_services(profile: str, targets: set[str], ci: bool = False) -> bool:
+    return not ci and profile in {"development-r2", "development-r8"} and bool(targets & {"upload", "test", "__test"})
+
+
+def docker_environment(root: Path, executable: str) -> dict[str, str]:
+    # These fixtures use public images only. Do not inherit account credentials or
+    # invoke desktop credential helpers when operating the project-local stack.
+    environment = os.environ.copy()
+    endpoint = environment.get("DOCKER_HOST")
+    if not endpoint:
+        result = subprocess.run([executable, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10, check=False)
+        if result.returncode:
+            raise RuntimeError("Could not resolve the local Docker daemon; cloud fallback is disabled")
+        endpoint = result.stdout.strip()
+    if not endpoint.startswith(("unix://", "npipe://")):
+        raise RuntimeError("Local fixture operations require a local Docker socket; remote Docker endpoints are refused")
+    original_config = Path(environment.get("DOCKER_CONFIG", str(Path.home() / ".docker")))
+    directory = root / ".dev/docker-client"
+    directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    plugin_dir = original_config / "cli-plugins"
+    configuration = {"auths": {}}
+    if plugin_dir.is_dir():
+        configuration["cliPluginsExtraDirs"] = [str(plugin_dir)]
+    write_private(directory / "config.json", json.dumps(configuration) + "\n")
+    environment["DOCKER_CONFIG"] = str(directory)
+    environment["DOCKER_HOST"] = endpoint
+    environment.pop("DOCKER_CONTEXT", None)
+    return environment
+
+
+def compose(root: Path, action: str) -> None:
+    root = Path(root).resolve()
+    config = root / ".dev/local/compose.env"
+    if not config.exists():
+        raise RuntimeError("Local fixtures are not configured; run configure first")
+    executable = shutil.which("docker")
+    if not executable:
+        raise RuntimeError("Docker with Compose is required to run local fixtures")
+    command = [executable, "compose", "--project-name", "lkbx-local-" + __import__("hashlib").sha256(str(root).encode()).hexdigest()[:10],
+               "--env-file", str(config), "-f", str(root / "compose.yaml")]
+    command += {"up": ["up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45"], "down": ["down"], "status": ["ps"]}[action]
+    result = subprocess.run(command, cwd=root, env=docker_environment(root, executable), check=False)
+    if result.returncode:
+        raise RuntimeError("Local Docker fixtures failed; start the Docker daemon and retry. Cloud fallback is disabled.")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, epilog="Configure --lan-ip with the private address reachable by your device before uploading. Configuration and TLS keys stay in ignored .dev/local; nothing is installed globally. Native/compile-only builds do not start Docker.")
+    parser.add_argument("action", choices=("configure", "up", "down", "status"))
+    parser.add_argument("--lan-ip", help="Private LAN IPv4 address; defaults to existing configuration or loopback")
+    parser.add_argument("--device-id", action="append", dest="device_ids", help="Synthetic device MAC (repeat for independent devices); first identity is used by the development firmware")
+    parser.add_argument("--project-dir", type=Path, default=Path(__file__).resolve().parents[1], help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    try:
+        if args.action in {"configure", "up"}:
+            settings = configure(args.project_dir, args.lan_ip, args.device_ids)
+            print(f"Local HTTPS: https://{settings['lan_ip']}:8443; MQTTS: {settings['lan_ip']}:8883; device: {settings['primary_device']}")
+        if args.action != "configure":
+            compose(args.project_dir, args.action)
+        return 0
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
