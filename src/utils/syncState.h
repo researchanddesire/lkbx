@@ -20,6 +20,7 @@
 #include "utils/breakTiming.h"
 #include "utils/freezeState.h"
 #include "utils/generateId.h"
+#include "utils/lockReportReconcile.h"
 #include "utils/offeredLock.h"
 #include "utils/syncEffect.h"
 #include "utils/getEfuseMac.h"
@@ -61,6 +62,13 @@ static String createStateMessage(const String& state,
         doc[Str::Json::SESSION_ID] = preferences.getString(Keys::Session::sessionId, "");
         doc[Str::Json::BREAK_LAST] = preferences.getULong64(Keys::Session::breakLast, 0);
         doc["breakEndAccepted"] = preferences.getBool(Keys::Session::breakEndAccepted, false);
+        // The box witnessed the accept: carry its own dates in every report
+        // so the server can date the session from any of them, not only from
+        // the one accept report that may be lost.
+        const uint64_t lockStart = preferences.getULong64(Keys::Session::lockStart, 0);
+        const uint64_t lockEnd = preferences.getULong64(Keys::Session::lockEnd, 0);
+        if (lockStart != 0) doc[Str::Json::LOCK_START] = lockStart;
+        if (lockEnd != 0) doc[Str::Json::LOCK_END] = lockEnd;
         preferences.end();
         xSemaphoreGive(preferencesMutex);
     }
@@ -183,6 +191,10 @@ struct SyncMessage {
 struct SyncOutcome {
     bool freezeChanged = false;
     bool timingUnchanged = false;
+    // The server never recorded the lock this box holds (still an offer there,
+    // or locked with no end time): the accept report was lost. The caller
+    // repeats the LOCKED report, which now carries the box's own dates.
+    bool serverMissedLock = false;
     // What the caller must route: nothing, a timer repaint, a freeze change, or
     // the motor sequence. See classifySyncEffect.
     SyncEffect effect = SyncEffect::NONE;
@@ -258,6 +270,27 @@ static SyncResult saveState(SyncMessage lockSession,
     const String savedId = preferences.getString(Keys::Session::sessionId, "");
     const String savedState = preferences.getString(Keys::Session::lockState, "");
     const bool sameSession = !savedId.isEmpty() && savedId == lockSession.sessionId;
+
+    // The box's own deadline for the session it holds. The server learns the
+    // dates only from the box's reports; when the accept report was lost it
+    // has none, and must neither erase the box's deadline nor stay unaware.
+    const uint64_t savedLockEnd = preferences.getULong64(Keys::Session::lockEnd, 0);
+    const uint64_t savedLockStart = preferences.getULong64(Keys::Session::lockStart, 0);
+    if (outcome) {
+        outcome->serverMissedLock = serverMissedLock(
+            sameSession, savedState.c_str(),
+            preferences.getBool(Keys::Session::isActiveBreak, false), savedLockEnd,
+            lockSession.lockState.c_str(), lockSession.lockEnd);
+    }
+    if (keepLocalDeadline(sameSession, lockSession.lockState.c_str(),
+                          lockSession.lockEnd, savedLockEnd)) {
+        ESP_LOGW(SYNC_STATE_TAG,
+                 "Server has no end time for the held session, keeping local "
+                 "deadline %llu",
+                 savedLockEnd);
+        lockSession.lockEnd = savedLockEnd;
+        lockSession.lockStart = savedLockStart;
+    }
 
     // Freeze state is applied on every path, including the ones that ignore the
     // rest of the sync: a keyholder freeze must land even while a stale pending
