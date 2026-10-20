@@ -31,6 +31,8 @@
 - `assembly-docs/**` on `main` is authoritative for the LKBX assembly site. The rad-app hub imports this spoke's current `main` head (product `lockbox`, path `assembly-docs`); it keeps no spoke SHAs or baselines. `trigger-assembly-docs.yml` notifies the hub on `main` pushes only.
 - Documentation changes land on `main` only and reach `staging` through the main → staging back-merge; `main` wins docs conflicts. Never sync or reconcile docs on `staging`.
 - Every `assembly-docs` change on `main`, including a deletion, reaches the live site within minutes without review. Ask AJ before any change that could remove written documentation.
+- Keep `assembly-docs/_bom/source.json` at `{"repo": "Open-Source-Chastity-Lockbox_LKBX", "commit": "main"}`. Whenever `_bom/bom.csv` changes, regenerate `_bom/bom.json` (same repo/commit, columns and rows parsed from the CSV) in the same commit, or the hub import fails.
+- Never rewrite `main` history, and keep `trigger-assembly-docs.yml` on `main`.
 - `developer-docs/**` feeds dev.researchanddesire.com through `trigger-dev-docs.yml`.
 - Keep assembly docs as English Fumadocs MDX with `meta.json`; keep `_bom/` CSV, provenance and generated JSON together. Hardware sources live in `hardware/cad/`, `hardware/pcb/` and `hardware/cables/`. Do not commit generated assembly-site output, rendered BOM HTML, `.DS_Store`, `cable-export/` or cable render outputs.
 - Product BOMs list cable harnesses as top-level assemblies; link Wireviz `.bom.tsv` output instead of copying child cable rows into `hardware/bom.csv`.
