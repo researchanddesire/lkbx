@@ -2,7 +2,7 @@
 
 ## Daily development
 
-Normal firmware work merges to **`main`**. OSS structural prep happens on **`opensource-prep`** (or `Lockbox-OSS` when the org fork is available).
+Branch feature work from **`staging`** and open the pull request back into `staging`. `staging` is promoted to `main` by a same-repository pull request. Only urgent production fixes target `main` directly; their pull request title starts with the word `hotfix`.
 
 ## Developer documentation
 
@@ -15,12 +15,11 @@ User-facing guides: [`simple-docs`](https://github.com/researchanddesire/simple-
 ## Build setup
 
 ```bash
-cp platformio_private.ini.example platformio_private.ini
-# Set RAD_SERVER, MQTT_SERVER for your environment
-pio run -e development
+python scripts/dev_services.py configure --lan-ip <private-IP>   # local fixture services
+pio run -e development-r8                                        # or development-r2
 ```
 
-Never commit `platformio_private.ini`.
+Development profiles talk only to the local fixture services; their generated credentials stay in the ignored `.dev/` directory.
 
 > **Note (for AJ):** As of 2026-06, only `sdkconfig.defaults` is tracked. The
 > per-environment `sdkconfig.development` / `.staging` / `.production` files are
