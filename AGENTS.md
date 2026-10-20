@@ -8,23 +8,28 @@
 
 ## Branch and Release Policy
 
-- Persistent branches are `staging` and `main`. Fetch first, branch feature work from `origin/staging` with an `AJ/` prefix, and open the pull request back into `staging`.
-- Promote with a same-repository `staging` → `main` pull request. Only urgent production fixes target `main` directly: branch from `origin/main` and start the PR title with the standalone word `hotfix` (`PR target policy` enforces this). Merge each hotfix back into `staging` directly, without a PR.
-- Squash feature and hotfix PRs. Merge `staging` → `main` promotions with a merge commit, and merge any PR that introduces a reviewed `hardware-run.yml` wrapper with a merge commit so its pinned SHA stays reachable.
+- Persistent branches are lowercase `staging` and `main`. Fetch before branching.
+- The firmware directory is the firmware project at the repository root (`src/`, `include/`, `lib/`, `boards/`, `test/`, `platformio.ini`, `partition.csv`, `sdkconfig*`, `CMakeLists.txt` and the build scripts). `FIRMWARE_PATHS` in `pr-firmware.yml` and `pr-target-policy.yml` and the `publish_firmware.yml` push paths define it; keep them in sync.
+- Firmware changes enter `staging` first: branch from `origin/staging` and open the PR into `staging`. Promote with a same-repository `staging` → `main` PR.
+- A production fix may take firmware to `main` directly from a `fix/<issue>` branch (an owner prefix such as `AJ/fix/<issue>` also works) started from `origin/main`.
+- Changes outside the firmware directory (documentation, hardware, BOMs, workflows) may open their PR straight into `main`; they need no build or hardware checks. `PR target policy` enforces these rules.
+- On every push to `main` and once a day, `hotfix-sync.yml` merges `main` back into `staging` directly as `rad-version-control[bot]` (main wins documentation and the firmware version). It opens a non-draft `main` → `staging` PR only when staging changed the same code.
+- Firmware versions are allocated only for merges into `main`: `publish_firmware.yml` runs `.github/scripts/allocate_version.sh` (identical in every firmware repository), commits `AUTO: Version bump main <version>` to `Version.h` and `version.json` as `rad-version-control[bot]`, then builds, signs and publishes the candidate. Staging merges allocate nothing. Never hand-edit the version.
+- `rad-version-control[bot]` bypasses every branch ruleset so version bumps and syncs push directly. Never open draft PRs.
+- Squash feature and fix PRs into one focused commit with a concise, imperative title. Merge `staging` → `main` promotions and `main` → `staging` sync PRs with a merge commit; never squash or rebase them.
 - Staging firmware reports the `staging` track and uses `https://staging.researchanddesire.com`; main firmware reports `main` and uses `https://dashboard.researchanddesire.com`.
 
 ## Firmware Releases
 
 - Releases go only to the R+D firmware control plane (`/api/internal/firmware/v1`) and Supabase Storage bucket `lkbx-firmware`. Devices and the RAD app update only through `/api/firmware/v1/check` and the web-flasher catalog. Never publish firmware through GitHub Pages, `docs/`, or committed binaries.
-- `publish_firmware.yml` runs on firmware-input pushes to `staging`/`main`: it allocates the next version, commits `AUTO: Version bump <track> <version>` as `rad-version-control[bot]`, builds R2 and R8, and publishes immutable *validating* candidates with signed provenance. Do not hand-edit `src/constants/Version.h` to release.
+- `publish_firmware.yml` runs on firmware-input pushes to `main`: it allocates the next version, commits `AUTO: Version bump main <version>` as `rad-version-control[bot]`, builds R2 and R8, and publishes immutable *validating* candidates with signed provenance. Do not hand-edit `src/constants/Version.h` to release.
 - `finalize_release.yml` (manual, production) tags a main release only after the control plane reports both variants ready with build, unit, integration, artifact and hardware validations passed. Rollout stays a control-plane action.
 - Environments: `firmware-staging` (branch `staging`) and `firmware-production` (branch `main`), each holding `FIRMWARE_PUBLISH_TOKEN` and `FIRMWARE_PROVENANCE_SIGNING_KEY_PEM`. The `rad-version-control` app credentials are organization-level. Never print, log or commit secret values.
 
-## Authorized Supabase Projects
+## Supabase
 
-- Production/main project ref: `acjajruwevyyatztbkdf`.
-- Staging project ref: `meuaxbjzqrszxdvmacug`.
-- Every remote Supabase-affecting firmware operation must explicitly target the project ref matching its track. Never infer a project from a URL, environment variable, cached CLI link, neighboring repository or prior conversation.
+- The only Supabase project agents and workflows address is `acjajruwevyyatztbkdf`, through the organization secret `SUPABASE_ACCESS_TOKEN`. Name it explicitly in every remote operation; never infer a project from a URL, environment variable, cached CLI link, neighboring repository or prior conversation.
+- Firmware releases reach it only through the dashboard firmware API. PR hardware evidence videos go to its private `hil-evidence` bucket.
 
 ## Documentation (rad-app hub spoke)
 
@@ -290,9 +295,10 @@ When editing any `hardware/<product>/bom.csv`, follow the RAD BOM standard (fixe
 
 ## PR hardware validation
 
-- Every PR into staging or main builds all hardware variants, including docs-only changes.
-- Install the exact staging bundle for the PR merge SHA; production still builds.
-- Require Build validation and Hardware validation in addition to existing checks.
+- PRs into `staging` or `main` that change the firmware directory, or the validation tooling (`scripts/hil/`, `pr-firmware.yml`, `hardware-run.yml`, `.github/scripts/hil_evidence.py`), build every hardware variant and run the exact staging bundle for the PR merge SHA on the shared Test Rig. Other PRs skip both; `Build validation` and `Hardware validation` then pass without work.
+- `PR target policy`, `Build validation` and `Hardware validation` are required on `staging` and `main`.
+- The rig records the product's camera for the whole run; `Hardware evidence` comments on the PR with each device's video and result, pass or fail. Video never decides a result.
+- Merging a firmware change into `main` allocates the next version and publishes a signed candidate through `publish_firmware.yml`; staging merges do not.
 - Firmware bundles and hardware evidence are Actions artifacts, never tracked files.
 - The reviewed harness and fixture inventory live outside the runner work directory.
 - Never infer product identity or flash capacity from a COM port or advertising name.
