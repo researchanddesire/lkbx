@@ -352,10 +352,6 @@ namespace Str {
         constexpr char LOCKBOX_STATE[] PROGMEM = "/api/lockbox/state/";
         constexpr char LOCKBOX_IS_PAIRED[] PROGMEM = "/api/lockbox/is-paired";
         constexpr char HEALTH_CHECK[] PROGMEM = "/api/health-check";
-        constexpr char OTA_BASE_URL[] PROGMEM =
-            "https://researchanddesire.github.io/Lockbox/";
-        constexpr char ALPHA_PATH[] PROGMEM = "alpha/";
-        constexpr char PRODUCTION_PATH[] PROGMEM = "production/";
         constexpr char VERSION_JSON[] PROGMEM = "version.json";
         constexpr char FIRMWARE_BIN[] PROGMEM = "firmware.bin";
         constexpr char DEVICE_NAME[] PROGMEM = "LOCKBOX-v0";

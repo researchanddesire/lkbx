@@ -6,8 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        For daily development, target **`main`** on the canonical Lockbox repo.
-        OSS structural issues may use **`opensource-prep`** / Lockbox-OSS.
+        Include the firmware version and hardware variant (R2 or R8) when known.
   - type: textarea
     id: description
     attributes:
