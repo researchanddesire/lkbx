@@ -1,0 +1,107 @@
+name: Finalize validated production release
+
+on:
+  workflow_dispatch:
+    inputs:
+      r2_release_id:
+        description: Validated R2 control-plane release UUID
+        required: true
+        type: string
+      r8_release_id:
+        description: Validated R8 control-plane release UUID
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    environment: firmware-production
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FIRMWARE_PUBLISH_TOKEN: ${{ secrets.FIRMWARE_PUBLISH_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Verify persisted release gates
+        id: release
+        env:
+          R2_RELEASE_ID: ${{ inputs.r2_release_id }}
+          R8_RELEASE_ID: ${{ inputs.r8_release_id }}
+        run: |
+          for variant in r2 r8; do
+            if [[ "$variant" == "r2" ]]; then
+              release_id="$R2_RELEASE_ID"
+            else
+              release_id="$R8_RELEASE_ID"
+            fi
+            curl --fail --silent --show-error \
+              --header "Authorization: Bearer $FIRMWARE_PUBLISH_TOKEN" \
+              "https://dashboard.researchanddesire.com/api/internal/firmware/v1/releases/$release_id?track=main" \
+              --output "release-$variant.json"
+            jq -e --arg device "lkbx" --arg variant "$variant" '
+              . as $release |
+              $release.buildSha as $sha |
+              $release.track == "main" and
+              $release.deviceType == $device and
+              $release.hardwareVariant == $variant and
+              $release.buildSha == $sha and
+              $release.lifecycle == "ready" and
+              $release.paused == true and
+              $release.rolloutPercentage == 0 and
+              (["build", "unit", "integration", "artifact", "hardware"] | all(. as $layer |
+                any($release.validations[]; .layer == $layer and .status == "success" and .repository_sha == $sha)
+              ))
+            ' "release-$variant.json"
+          done
+          test "$(jq -r .version release-r2.json)" = "$(jq -r .version release-r8.json)"
+          test "$(jq -r .buildSha release-r2.json)" = "$(jq -r .buildSha release-r8.json)"
+          {
+            echo "version=$(jq -r .version release-r2.json)"
+            echo "r2_manifest_url=$(jq -r .manifestUrl release-r2.json)"
+            echo "r8_manifest_url=$(jq -r .manifestUrl release-r8.json)"
+            echo "build_sha=$(jq -r .buildSha release-r2.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact release candidate
+        env:
+          RELEASE_BUILD_SHA: ${{ steps.release.outputs.build_sha }}
+        run: |
+          git checkout --detach "$RELEASE_BUILD_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_BUILD_SHA"
+
+      - name: Create idempotent numeric tag
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CANDIDATE_SHA: ${{ steps.release.outputs.build_sha }}
+        run: |
+          git fetch --tags --force
+          EXISTING_SHA=""
+          if git rev-parse --verify "refs/tags/$VERSION" >/dev/null 2>&1; then
+            EXISTING_SHA="$(git rev-list -n 1 "$VERSION")"
+          fi
+          ACTION="$(python .github/scripts/release_workflow.py tag-action \
+            --existing-sha "$EXISTING_SHA" \
+            --candidate-sha "$CANDIDATE_SHA")"
+          if [[ "$ACTION" == "create" ]]; then
+            git config user.name "AJ"
+            git config user.email "ajay.koenig@gmail.com"
+            git tag "$VERSION" "$CANDIDATE_SHA"
+            git push origin "$VERSION"
+          fi
+
+      - name: Create metadata-only GitHub release
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          R2_MANIFEST_URL: ${{ steps.release.outputs.r2_manifest_url }}
+          R8_MANIFEST_URL: ${{ steps.release.outputs.r8_manifest_url }}
+        run: |
+          gh release view "$VERSION" >/dev/null 2>&1 || \
+            gh release create "$VERSION" --title "$VERSION" --notes "R2 firmware manifest: $R2_MANIFEST_URL
+          R8 firmware manifest: $R8_MANIFEST_URL"

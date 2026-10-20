@@ -1,0 +1,217 @@
+name: Publish immutable firmware candidate
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      # Release-control tooling is exercised in PR CI. Only artifact-producing
+      # inputs should allocate a version and publish candidates on merge.
+      - "CMakeLists.txt"
+      - "boards/**"
+      - "include/**"
+      - "lib/**"
+      - "src/**"
+      - "platformio.ini"
+      - "partition.csv"
+      - "sdkconfig*"
+      - "pre_build_script.py"
+      - "firmware_build_metadata.py"
+      - "serial_identity_build.py"
+      - "scripts/patch_sdk_security.py"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: firmware-publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  detect_auto_version:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.detect.outputs.skip }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Detect current-track auto-version commit
+        id: detect
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if python scripts/release_version.py is-auto-commit --message "$COMMIT_MESSAGE" --track "$GITHUB_REF_NAME"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    needs: detect_auto_version
+    if: ${{ needs.detect_auto_version.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name == 'main' && 'firmware-production' || 'firmware-staging' }}
+    env:
+      FIRMWARE_PUBLISH_TOKEN: ${{ secrets.FIRMWARE_PUBLISH_TOKEN }}
+      FIRMWARE_PROVENANCE_SIGNING_KEY_PEM: ${{ secrets.FIRMWARE_PROVENANCE_SIGNING_KEY_PEM }}
+    steps:
+      - name: Generate version-control token
+        id: version_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.RAD_VERSION_CONTROL_APP_ID }}
+          private-key: ${{ secrets.RAD_VERSION_CONTROL_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          token: ${{ steps.version_token.outputs.token }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Resolve merged PR title
+        id: pull_request
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          github-token: ${{ steps.version_token.outputs.token }}
+          script: |
+            const { data: pulls } =
+              await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha,
+              });
+            const title = pulls.find(
+              (pull) =>
+                pull.merged_at !== null &&
+                pull.base.ref === process.env.GITHUB_REF_NAME,
+            )?.title ?? "";
+            core.setOutput("title", title);
+
+      - name: Allocate and commit next version
+        id: version
+        env:
+          PR_TITLE: ${{ steps.pull_request.outputs.title }}
+        run: |
+          set -euo pipefail
+          SOURCE_VERSION="$(python scripts/release_version.py read --header src/constants/Version.h)"
+          BUMP_TYPE="$(python scripts/release_version.py bump-type --title "$PR_TITLE")"
+          RESPONSE="$(curl --fail --silent --show-error \
+            --retry 5 \
+            --retry-delay 2 \
+            --retry-max-time 60 \
+            --header "Authorization: Bearer $FIRMWARE_PUBLISH_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg track "$GITHUB_REF_NAME" \
+              --arg deviceType "lkbx" \
+              --arg bump "$BUMP_TYPE" \
+              --arg sourceVersion "$SOURCE_VERSION" \
+              '{track: $track, deviceType: $deviceType, bump: $bump, sourceVersion: $sourceVersion}')" \
+            "https://dashboard.researchanddesire.com/api/internal/firmware/v1/versions/next")"
+          NEXT_VERSION="$(jq -er '.nextVersion' <<< "$RESPONSE")"
+          python scripts/release_version.py write \
+            --header src/constants/Version.h \
+            --version "$NEXT_VERSION"
+          test "$(python scripts/release_version.py read --header src/constants/Version.h)" = "$NEXT_VERSION"
+          UNEXPECTED="$(git diff --name-only | grep -Ev '^src/constants/Version\.h$' || true)"
+          if [[ -n "$UNEXPECTED" ]]; then
+            echo "Unexpected versioning changes:"
+            echo "$UNEXPECTED"
+            exit 1
+          fi
+          git add src/constants/Version.h
+          if git diff --cached --quiet; then
+            echo "Version allocation did not change the canonical files"
+            exit 1
+          fi
+          git config user.name "rad-version-control[bot]"
+          git config user.email "rad-version-control[bot]@users.noreply.github.com"
+          git commit -m "AUTO: Version bump $GITHUB_REF_NAME $NEXT_VERSION"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+          RELEASE_BUILD_SHA="$(git rev-parse HEAD)"
+          echo "RELEASE_BUILD_SHA=$RELEASE_BUILD_SHA" >> "$GITHUB_ENV"
+          {
+            echo "release_build_sha=$RELEASE_BUILD_SHA"
+            echo "version=$NEXT_VERSION"
+            echo "bump=$BUMP_TYPE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install PlatformIO
+        run: python -m pip install platformio==6.2.0
+
+      - name: Test publisher
+        run: |
+          python -m unittest discover -s .github/scripts -p 'test_*.py'
+          python scripts/test_production_autodetect.py
+
+      - name: Run release helper tests
+        run: python scripts/test_release_version.py
+
+      - name: Run native unit tests
+        run: pio test -e test
+
+      - name: Select track build
+        run: python .github/scripts/release_workflow.py configure --branch "$GITHUB_REF_NAME"
+
+      - name: Build R2 and R8 applications
+        run: |
+          pio run -e "$PIO_ENV_R2"
+          pio run -e "$PIO_ENV_R8"
+
+      - name: Build R2 and R8 web installers
+        run: |
+          python .github/scripts/build_web_installer.py \
+            --profile esp32s3-16mb \
+            --hardware-variant r2 \
+            --build-dir ".pio/build/$PIO_ENV_R2" \
+            --output ".pio/build/$PIO_ENV_R2/web-installer.bin"
+          python .github/scripts/build_web_installer.py \
+            --profile esp32s3-16mb \
+            --hardware-variant r8 \
+            --build-dir ".pio/build/$PIO_ENV_R8" \
+            --output ".pio/build/$PIO_ENV_R8/web-installer.bin"
+
+      - name: Publish validating R2 release
+        id: publish_r2
+        run: |
+          python .github/scripts/publish_immutable_firmware.py \
+            --device-type lkbx \
+            --hardware-variant r2 \
+            --track "$TRACK" \
+            --build-sha "$RELEASE_BUILD_SHA" \
+            --version-file src/constants/Version.h \
+            --artifact "application:.pio/build/$PIO_ENV_R2/firmware.bin:1:true" \
+            --artifact "bootloader:.pio/build/$PIO_ENV_R2/bootloader.bin:2:false" \
+            --artifact "partitions:.pio/build/$PIO_ENV_R2/partitions.bin:3:false" \
+            --artifact "web-installer:.pio/build/$PIO_ENV_R2/web-installer.bin:4:false"
+
+      - name: Publish validating R8 release
+        id: publish_r8
+        run: |
+          python .github/scripts/publish_immutable_firmware.py \
+            --device-type lkbx \
+            --hardware-variant r8 \
+            --track "$TRACK" \
+            --build-sha "$RELEASE_BUILD_SHA" \
+            --version-file src/constants/Version.h \
+            --artifact "application:.pio/build/$PIO_ENV_R8/firmware.bin:1:true" \
+            --artifact "bootloader:.pio/build/$PIO_ENV_R8/bootloader.bin:2:false" \
+            --artifact "partitions:.pio/build/$PIO_ENV_R8/partitions.bin:3:false" \
+            --artifact "web-installer:.pio/build/$PIO_ENV_R8/web-installer.bin:4:false"
+
+      - name: Candidate summary
+        run: |
+          {
+            echo "R2 release ${{ steps.publish_r2.outputs.release_id }} is waiting for R2 hardware validation"
+            echo "R8 release ${{ steps.publish_r8.outputs.release_id }} is waiting for R8 hardware validation"
+            echo "Version: ${{ steps.version.outputs.version }}"
+            echo "Build: ${{ steps.version.outputs.release_build_sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"

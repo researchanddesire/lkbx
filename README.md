@@ -8,20 +8,21 @@ Open-source ESP32-S3 smart lock firmware (MPL 2.0) and hardware designs (CERN-OH
 | Developer docs | [dev.researchanddesire.com/lockbox](https://dev.researchanddesire.com/lockbox/) |
 | Assembly docs | [assembly-docs/](assembly-docs/) |
 | PCB hardware | [hardware/pcb/](hardware/pcb/) |
-| OTA firmware | GitHub Pages (`ota/`) |
+| Firmware releases | R+D firmware control plane (Supabase Storage); no GitHub Pages |
 
 ## Build
 
 ```bash
-cp platformio_private.ini.example platformio_private.ini
-pio run -e development
+pio run -e development-r8                  # or development-r2 for the R2 board
+pio run -e production-r2 -e production-r8  # release profiles
+pio test -e test                           # native unit tests
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [developer-docs/](developer-docs/).
 
-## OSS staging
+## Branches and releases
 
-Daily development targets canonical **`main`**. OSS structural prep lives on **`opensource-prep`** / [`Lockbox-OSS`](https://github.com/researchanddesire/Lockbox-OSS) until cutover — see [developer-docs/oss-migration/STAGING.md](developer-docs/oss-migration/STAGING.md).
+Feature work branches from `staging` and returns to `staging` by pull request; `staging` is promoted to `main`. Each firmware change merged to `staging` or `main` publishes an immutable, validating release candidate to the R+D firmware control plane. Devices update only through that control plane. This repository replaces the retired `__legacy_Lockbox` repository.
 
 ## License
 
