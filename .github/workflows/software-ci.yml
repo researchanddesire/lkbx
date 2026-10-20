@@ -35,6 +35,8 @@ jobs:
           pio test -e test_native
       - name: Test build tools and local services
         run: python -m unittest discover -s scripts -p 'test_*.py'
+      - name: Test firmware release publisher
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
       - name: Test asynchronous HTTP and TLS with sanitizers
         run: python scripts/test_http_worker_security.py
       - name: Test OTA stream integrity with sanitizers
