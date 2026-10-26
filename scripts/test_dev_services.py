@@ -106,6 +106,30 @@ class ConfigurationTests(unittest.TestCase):
             header = (root / ".dev/local/include/lkbx_dev_config.h").read_text()
             self.assertIn('#define LKBX_DEV_DEVICE_ID "' + selected + '"', header)
 
+    def test_certificate_supports_both_modern_ip_and_pinned_legacy_hostname_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            local.configure(root, "192.168.1.17")
+            folder = root / ".dev/local"
+            # OpenSSL's explicit hostname mode exercises the dNSName lookup
+            # used by the pinned mbedTLS; IP mode checks the proper IP SAN.
+            for name, kind in (("192.168.1.17", "hostname"), ("192.168.1.17", "ip"), ("127.0.0.1", "hostname"), ("127.0.0.1", "ip")):
+                local.openssl("verify", "-CAfile", str(folder / "ca.pem"), "-verify_" + kind, name, str(folder / "server.pem"))
+            ca_before = (folder / "ca.pem").read_bytes()
+            key_before = (folder / "server.key").read_bytes()
+            dates_before = ssl._ssl._test_decode_cert(str(folder / "server.pem"))
+            settings = json.loads((folder / "settings.json").read_text())
+            settings.pop("certificate_profile")
+            (folder / "settings.json").write_text(json.dumps(settings))
+            migrated = local.configure(root)
+            self.assertEqual(migrated["certificate_profile"], local.CERTIFICATE_PROFILE)
+            self.assertEqual((folder / "ca.pem").read_bytes(), ca_before)
+            self.assertEqual((folder / "server.key").read_bytes(), key_before)
+            dates_after = ssl._ssl._test_decode_cert(str(folder / "server.pem"))
+            self.assertEqual(dates_after["notBefore"], dates_before["notBefore"])
+            self.assertEqual(dates_after["notAfter"], dates_before["notAfter"])
+            self.assertEqual(migrated["devices"], settings["devices"])
+
     def test_service_start_requires_development_device_target(self):
         for profile in ("development-r2", "development-r8"):
             self.assertFalse(local.should_start_services(profile, set()))

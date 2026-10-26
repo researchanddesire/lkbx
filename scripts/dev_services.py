@@ -21,6 +21,7 @@ import time
 
 DEFAULT_DEVICE = "AA:BB:CC:DD:EE:FF"
 SCHEMA = 1
+CERTIFICATE_PROFILE = 2
 PRIVATE_NETWORKS = tuple(ipaddress.ip_network(x) for x in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"))
 
 
@@ -95,7 +96,7 @@ def openssl(*args: str) -> None:
         raise RuntimeError("Local TLS certificate generation failed; verify the OpenSSL installation")
 
 
-def certificate_files(directory: Path, address: str) -> None:
+def certificate_files(directory: Path, address: str, preserve_leaf: bool = False) -> None:
     # The CA stays private to this checkout. Nothing is installed in a system trust store.
     if not (directory / "ca.key").exists() or not (directory / "ca.pem").exists():
         openssl("req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-days", "3650",
@@ -104,7 +105,21 @@ def certificate_files(directory: Path, address: str) -> None:
                 "-addext", "keyUsage=critical,keyCertSign,cRLSign")
     extensions = directory / "server.ext"
     write_private(extensions, "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n"
-                  f"subjectAltName=IP:{address},IP:127.0.0.1,DNS:localhost,DNS:mosquitto\n")
+                  # The pinned ESP-IDF 4.4 mbedTLS verifier checks dNSName
+                  # entries only, even for a literal-IP endpoint. Retain proper
+                  # IP SANs for modern clients and add exact local names for
+                  # that verifier; CA and hostname validation stay enabled.
+                  f"subjectAltName=IP:{address},IP:127.0.0.1,DNS:{address},DNS:127.0.0.1,DNS:localhost,DNS:mosquitto\n")
+    if preserve_leaf:
+        # Repair existing names without moving notBefore ahead of a device's
+        # cached clock. This keeps the existing key, CA and validity interval.
+        replacement = directory / "server.replacement.pem"
+        openssl("x509", "-in", str(directory / "server.pem"), "-CA", str(directory / "ca.pem"),
+                "-CAkey", str(directory / "ca.key"), "-set_serial", str(secrets.randbits(128)),
+                "-out", str(replacement), "-preserve_dates", "-sha256", "-extfile", str(extensions))
+        replacement.chmod(0o600)
+        replacement.replace(directory / "server.pem")
+        return
     openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=Lockbox Local Fixtures",
             "-keyout", str(directory / "server.key"), "-out", str(directory / "server.csr"))
     openssl("x509", "-req", "-in", str(directory / "server.csr"), "-CA", str(directory / "ca.pem"),
@@ -172,8 +187,10 @@ def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | No
     settings["lan_ip"] = address
     settings["api_port"] = local_port(api_port if api_port is not None else settings.get("api_port", 8443))
     settings["mqtt_port"] = local_port(mqtt_port if mqtt_port is not None else settings.get("mqtt_port", 8883))
-    if old_address != address or any(not (directory / name).exists() for name in ("ca.key", "ca.pem", "server.key", "server.pem")):
-        certificate_files(directory, address)
+    complete_certificates = all((directory / name).exists() for name in ("ca.key", "ca.pem", "server.key", "server.pem"))
+    if old_address != address or settings.get("certificate_profile") != CERTIFICATE_PROFILE or not complete_certificates:
+        certificate_files(directory, address, preserve_leaf=old_address == address and complete_certificates)
+    settings["certificate_profile"] = CERTIFICATE_PROFILE
     write_private(settings_path, json.dumps(settings, indent=2) + "\n")
     passwords = []
     acl = []
