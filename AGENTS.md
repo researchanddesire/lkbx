@@ -275,6 +275,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 - Motor pins are extern and may be swapped by calibration — don't hardcode assumptions
 - Display and preferences access must use their respective mutexes
 - State machine is the single source of truth for device behavior — all logic flows through `LKBX.h`
+- Report a break from the common `locked.break` entry after its start timestamp is persisted; dashboard requests bypass the local break-preflight page. Native dispatch tests use the exact shared transition fragment.
 - Emergency unlock triggers a 24-hour lockout period
 - TMR sensor consensus: 2 of 3 sensors must agree for "paddle locked" status
 - Current assembly docs use the newer build guide as source of truth: 4x 4mm magnets and T7 Torx driver.
