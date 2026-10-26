@@ -393,7 +393,7 @@ bool stopHttpWorker() {
 
 bool getAuthenticatedServerTimeMs(uint64_t *out) {
     if (!out) return false;
-    return enqueue(String(RAD_SERVER "/api/health"), String(), false, nullptr,
+    return enqueue(String(RAD_SERVER "/api/health-check"), String(), false, nullptr,
                    5000, 0, out) == 200 && *out != 0;
 }
 

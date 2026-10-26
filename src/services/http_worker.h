@@ -10,7 +10,7 @@ void initHttpWorker();
 // trickle, so shutdown waits at most 3 seconds and never forcibly deletes a task.
 bool stopHttpWorker();
 
-// Uses only RAD_SERVER/api/health over verified HTTPS, HTTP 200, and exactly one
+// Uses only RAD_SERVER/api/health-check over verified HTTPS, HTTP 200, and exactly one
 // valid GMT Date header (2024..2099). No JSON, NTP or redirect fallback.
 bool getAuthenticatedServerTimeMs(uint64_t *out);
 

@@ -400,7 +400,7 @@ void testAuthenticatedTime() {
     Scenario valid; valid.headers = {{"dAtE", validDate}}; schedule(valid);
     assert(getAuthenticatedServerTimeMs(&time));
     assert(time >= 1735689600000ULL && time < 1735689601000ULL);
-    assert(snapshots().back().url == BASE + "/api/health");
+    assert(snapshots().back().url == BASE + "/api/health-check");
     for (const char *invalid : {"Wed, 01 Jan 2025 00:00:00 UTC", "Wed, 01 Jan 2025 00:00:00 GMT extra",
                                "Tue, 01 Jan 2025 00:00:00 GMT", "Thu, 29 Feb 2025 00:00:00 GMT",
                                "Wed, 00 Jan 2025 00:00:00 GMT", "Wed, 32 Jan 2025 00:00:00 GMT",
