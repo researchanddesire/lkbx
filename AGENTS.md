@@ -237,6 +237,8 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 ### Build Scripts
 
 - `pre_build_script.py` applies `scripts/patch_sdk_security.py` to every device profile and, for development profiles only, force-includes the generated `.dev/local/include/lkbx_dev_config.h` from `scripts/dev_services.py`. Development builds never contact cloud services.
+- Local fixtures support `configure --api-port <port> --mqtt-port <port>` to coexist with other bench services. Reconfiguration preserves the selected primary device and ports; Windows configuration directories use explicit user/SYSTEM ACLs because `chmod` does not restrict Windows access.
+- ESP-IDF builds on Windows require project and PlatformIO core paths without spaces, such as an isolated checkout under `C:\rad-hil\projects` and `PLATFORMIO_CORE_DIR=C:\rad-hil\platformio`.
 - `firmware_build_metadata.py` (with `serial_identity_build.py`) stamps firmware provenance and serial identity.
 
 ### Flash Partitions

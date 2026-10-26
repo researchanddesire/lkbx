@@ -38,9 +38,15 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(first_cert, (folder / "server.pem").read_bytes())
             self.assertEqual(header_time, (folder / "include/lkbx_dev_config.h").stat().st_mtime_ns)
             self.assertNotEqual(first["devices"][local.DEFAULT_DEVICE]["api_token"], first["devices"]["AA:BB:CC:DD:EE:FE"]["api_token"])
-            self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
-            self.assertEqual(stat.S_IMODE((folder / "ca.key").stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE((folder / "settings.json").stat().st_mode), 0o600)
+            if os.name == "nt":
+                permissions = local.subprocess.check_output(["icacls", str(folder)], text=True)
+                self.assertNotIn("(I)", permissions)
+                for identity in ("Everyone", "BUILTIN\\Users", "Authenticated Users"):
+                    self.assertNotIn(identity, permissions)
+            else:
+                self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE((folder / "ca.key").stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE((folder / "settings.json").stat().st_mode), 0o600)
             acl = (folder / "broker.acl").read_text()
             self.assertNotIn("#", acl)
             self.assertNotIn("+", acl)
@@ -71,6 +77,34 @@ class ConfigurationTests(unittest.TestCase):
             settings = json.loads((Path(directory) / ".dev/local/settings.json").read_text())
             for secret in (settings["controller_api_token"], settings["devices"][local.DEFAULT_DEVICE]["api_token"], settings["devices"][local.DEFAULT_DEVICE]["password"]):
                 self.assertNotIn(secret, capture.getvalue())
+
+    def test_custom_ports_survive_the_build_hook_reconfiguration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = local.configure(root, "192.168.1.17", api_port=18443, mqtt_port=18883)
+            second = local.configure(root)
+            self.assertEqual(first, second)
+            header = (root / ".dev/local/include/lkbx_dev_config.h").read_text()
+            self.assertIn('"https://192.168.1.17:18443"', header)
+            self.assertIn("#define LKBX_DEV_MQTT_PORT 18883", header)
+            environment = (root / ".dev/local/compose.env").read_text()
+            self.assertIn("LKBX_DEV_API_PORT=18443", environment)
+            self.assertIn("LKBX_DEV_MQTT_PORT=18883", environment)
+        for port in (0, 65536, -1, True, "8883"):
+            with self.subTest(port=port), self.assertRaises(ValueError):
+                local.local_port(port)
+
+    def test_selected_primary_survives_reconfiguration_with_retained_devices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            local.configure(root)
+            selected = "AA:BB:CC:DD:EE:FE"
+            local.configure(root, device_ids=[selected])
+            settings = local.configure(root)
+            self.assertEqual(settings["primary_device"], selected)
+            self.assertIn(local.DEFAULT_DEVICE, settings["devices"])
+            header = (root / ".dev/local/include/lkbx_dev_config.h").read_text()
+            self.assertIn('#define LKBX_DEV_DEVICE_ID "' + selected + '"', header)
 
     def test_service_start_requires_development_device_target(self):
         for profile in ("development-r2", "development-r8"):

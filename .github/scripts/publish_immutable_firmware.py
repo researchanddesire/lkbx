@@ -84,14 +84,18 @@ class ControlPlaneHttpError(RuntimeError):
 
 def parse_artifact(value: str) -> Artifact:
     try:
-        role, path, order, installable = value.split(":", 3)
+        role, remainder = value.split(":", 1)
+        # Split metadata from the right so Windows drive letters (and colons
+        # in otherwise valid filenames) remain part of the artifact path.
+        path, order, installable = remainder.rsplit(":", 2)
+        install_order = int(order)
     except ValueError as error:
         raise argparse.ArgumentTypeError(
             "artifact must be ROLE:PATH:ORDER:INSTALLABLE"
         ) from error
     if role not in VALID_ROLES:
         raise argparse.ArgumentTypeError(f"unsupported artifact role: {role}")
-    artifact = Artifact(role, Path(path), int(order), installable.lower() == "true")
+    artifact = Artifact(role, Path(path), install_order, installable.lower() == "true")
     if not artifact.path.is_file() or artifact.size_bytes == 0:
         raise argparse.ArgumentTypeError(f"artifact is missing or empty: {artifact.path}")
     return artifact

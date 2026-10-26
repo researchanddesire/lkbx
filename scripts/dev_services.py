@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
+from functools import lru_cache
 import ipaddress
 import json
 import os
@@ -39,6 +41,37 @@ def device_id(value: str) -> str:
     if not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", value):
         raise ValueError("Device ID must be a colon-separated MAC address")
     return value
+
+
+def local_port(value: int) -> int:
+    if type(value) is not int or not 1 <= value <= 65535:
+        raise ValueError("Local service ports must be integers from 1 to 65535")
+    return value
+
+
+@lru_cache(maxsize=1)
+def windows_user_sid() -> str:
+    result = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, check=True)
+    rows = list(csv.reader(result.stdout.splitlines()))
+    sid = rows[0][1] if len(rows) == 1 and len(rows[0]) == 2 else ""
+    if not re.fullmatch(r"S-1-5-\d+(?:-\d+)+", sid):
+        raise RuntimeError("Could not establish the current Windows identity for private configuration")
+    return sid
+
+
+def private_directory(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        # chmod on Windows changes only the read-only flag. Explicitly remove
+        # inherited access before writing private tokens or TLS keys.
+        result = subprocess.run(["icacls", str(directory), "/inheritance:r", "/grant:r",
+                                 "*" + windows_user_sid() + ":(OI)(CI)F", "*S-1-5-18:(OI)(CI)F"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if result.returncode:
+            raise RuntimeError("Could not restrict access to private local configuration")
+    else:
+        directory.chmod(0o700)
 
 
 def write_private(path: Path, contents: str) -> None:
@@ -100,15 +133,16 @@ def configuration_lock(directory: Path):
         path.unlink()
 
 
-def configure(root: Path, lan_ip: str | None = None, device_ids: list[str] | None = None) -> dict:
+def configure(root: Path, lan_ip: str | None = None, device_ids: list[str] | None = None,
+              api_port: int | None = None, mqtt_port: int | None = None) -> dict:
     directory = Path(root).resolve() / ".dev/local"
-    directory.mkdir(parents=True, exist_ok=True)
-    directory.chmod(0o700)
+    private_directory(directory)
     with configuration_lock(directory):
-        return _configure_locked(root, lan_ip, device_ids)
+        return _configure_locked(root, lan_ip, device_ids, api_port, mqtt_port)
 
 
-def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | None) -> dict:
+def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | None,
+                      api_port: int | None, mqtt_port: int | None) -> dict:
     root = Path(root).resolve()
     directory = root / ".dev/local"
     directory.mkdir(parents=True, exist_ok=True)
@@ -119,7 +153,11 @@ def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | No
     if settings and settings.get("schema") != SCHEMA:
         raise ValueError("Unsupported local configuration version; preserve it and configure a new checkout")
     address = local_address(lan_ip or settings.get("lan_ip", "127.0.0.1"))
-    selected = [device_id(value) for value in (device_ids or list(settings.get("devices", {})) or [DEFAULT_DEVICE])]
+    existing = list(settings.get("devices", {}))
+    primary = settings.get("primary_device")
+    if primary in existing:
+        existing = [primary] + [identity for identity in existing if identity != primary]
+    selected = [device_id(value) for value in (device_ids or existing or [DEFAULT_DEVICE])]
     selected = list(dict.fromkeys(selected))
     old_address = settings.get("lan_ip")
     settings.setdefault("schema", SCHEMA)
@@ -132,6 +170,8 @@ def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | No
                                       "password": secrets.token_urlsafe(32), "pairing_code": secrets.token_hex(3).upper()})
     settings["primary_device"] = selected[0]
     settings["lan_ip"] = address
+    settings["api_port"] = local_port(api_port if api_port is not None else settings.get("api_port", 8443))
+    settings["mqtt_port"] = local_port(mqtt_port if mqtt_port is not None else settings.get("mqtt_port", 8883))
     if old_address != address or any(not (directory / name).exists() for name in ("ca.key", "ca.pem", "server.key", "server.pem")):
         certificate_files(directory, address)
     write_private(settings_path, json.dumps(settings, indent=2) + "\n")
@@ -147,15 +187,15 @@ def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | No
         acl.extend([f"topic readwrite {identity}", f"topic read {identity}/log", f"topic read {identity}/firmware"])
     write_private(directory / "broker-passwords", "\n".join(passwords) + "\n")
     write_private(directory / "broker.acl", "\n".join(acl) + "\n")
-    write_private(directory / "compose.env", f"LKBX_DEV_BIND_IP={address}\n")
+    write_private(directory / "compose.env", f"LKBX_DEV_BIND_IP={address}\nLKBX_DEV_API_PORT={settings['api_port']}\nLKBX_DEV_MQTT_PORT={settings['mqtt_port']}\n")
     primary = devices[settings["primary_device"]]
     macros = {"LKBX_DEV_CA_PEM": (directory / "ca.pem").read_text(), "LKBX_DEV_API_TOKEN": primary["api_token"],
-              "LKBX_DEV_API_BASE_URL": f"https://{address}:8443", "LKBX_DEV_MQTT_URI": f"mqtts://{address}",
+              "LKBX_DEV_API_BASE_URL": f"https://{address}:{settings['api_port']}", "LKBX_DEV_MQTT_URI": f"mqtts://{address}",
               "LKBX_DEV_DEVICE_ID": settings["primary_device"]}
     header = "#pragma once\n#ifndef VERSIONDEV\n#error Local development configuration cannot be used in production\n#endif\n"
     header += "#if defined(RAD_SERVER) || defined(MQTT_SERVER) || defined(MQTT_PORT)\n#error Development endpoints must come from local fixture configuration\n#endif\n"
     header += "\n".join(f"#define {key} {json.dumps(value)}" for key, value in macros.items()) + "\n"
-    header += "#define LKBX_DEV_MQTT_PORT 8883\n#define RAD_SERVER LKBX_DEV_API_BASE_URL\n#define RAD_SERVER_SHORT LKBX_DEV_API_BASE_URL\n#define MQTT_SERVER LKBX_DEV_MQTT_URI\n#define MQTT_PORT LKBX_DEV_MQTT_PORT\n"
+    header += f"#define LKBX_DEV_MQTT_PORT {settings['mqtt_port']}\n#define RAD_SERVER LKBX_DEV_API_BASE_URL\n#define RAD_SERVER_SHORT LKBX_DEV_API_BASE_URL\n#define MQTT_SERVER LKBX_DEV_MQTT_URI\n#define MQTT_PORT LKBX_DEV_MQTT_PORT\n"
     write_private(directory / "include/lkbx_dev_config.h", header)
     return settings
 
@@ -179,8 +219,7 @@ def docker_environment(root: Path, executable: str) -> dict[str, str]:
         raise RuntimeError("Local fixture operations require a local Docker socket; remote Docker endpoints are refused")
     original_config = Path(environment.get("DOCKER_CONFIG", str(Path.home() / ".docker")))
     directory = root / ".dev/docker-client"
-    directory.mkdir(parents=True, exist_ok=True)
-    directory.chmod(0o700)
+    private_directory(directory)
     plugin_dir = original_config / "cli-plugins"
     configuration = {"auths": {}}
     if plugin_dir.is_dir():
@@ -213,12 +252,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("action", choices=("configure", "up", "down", "status"))
     parser.add_argument("--lan-ip", help="Private LAN IPv4 address; defaults to existing configuration or loopback")
     parser.add_argument("--device-id", action="append", dest="device_ids", help="Synthetic device MAC (repeat for independent devices); first identity is used by the development firmware")
+    parser.add_argument("--api-port", type=int, help="Published local HTTPS port (default 8443)")
+    parser.add_argument("--mqtt-port", type=int, help="Published local MQTTS port (default 8883)")
     parser.add_argument("--project-dir", type=Path, default=Path(__file__).resolve().parents[1], help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         if args.action in {"configure", "up"}:
-            settings = configure(args.project_dir, args.lan_ip, args.device_ids)
-            print(f"Local HTTPS: https://{settings['lan_ip']}:8443; MQTTS: {settings['lan_ip']}:8883; device: {settings['primary_device']}")
+            settings = configure(args.project_dir, args.lan_ip, args.device_ids, args.api_port, args.mqtt_port)
+            print(f"Local HTTPS: https://{settings['lan_ip']}:{settings['api_port']}; MQTTS: {settings['lan_ip']}:{settings['mqtt_port']}; device: {settings['primary_device']}")
         if args.action != "configure":
             compose(args.project_dir, args.action)
         return 0

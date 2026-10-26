@@ -1,6 +1,9 @@
 #include "unity.h"
 #include "../../src/utils/format.h"
 
+void setUp() {}
+void tearDown() {}
+
 void test_ZeroSeconds(void) {
     TEST_ASSERT_EQUAL_STRING("0s", formatTime(0).c_str());
 }
