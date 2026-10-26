@@ -24,7 +24,8 @@ def main():
                 command += ["-include", str(tests / "mocks/development_config.h")]
             else:
                 command += ['-DRAD_SERVER="https://dashboard.example.test"']
-            command += [str(root / "src/services/http_worker.cpp"), str(tests / "test_main.cpp"),
+            command += [str(root / "src/services/http_worker.cpp"),
+                        str(root / "src/services/serverOnline.cpp"), str(tests / "test_main.cpp"),
                         "-o", executable]
             subprocess.run(command, check=True)
             environment = os.environ.copy()

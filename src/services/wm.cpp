@@ -9,6 +9,7 @@
 
 #include "constants/strings.h"
 #include "machine.h"
+#include "services/serverOnline.h"
 
 WiFiManager wm;
 
@@ -104,6 +105,9 @@ String portalWifiInstructions() {
 
 void initWM() {
     wm.setDebugOutput(false);
+    WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t) {
+        clearServerOnline();
+    }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
     // Leave WiFi.persistent at its default (true) so WiFiManager's
     // post-portal WiFi.begin(ssid, pass) writes credentials to NVS and

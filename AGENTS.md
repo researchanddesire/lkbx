@@ -276,6 +276,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 - Display and preferences access must use their respective mutexes
 - State machine is the single source of truth for device behavior — all logic flows through `LKBX.h`
 - Report a break from the common `locked.break` entry after its start timestamp is persisted; dashboard requests bypass the local break-preflight page. Native dispatch tests use the exact shared transition fragment.
+- BLE `connectivity.server` describes the last completed configured-RAD HTTPS operation (2xx, plus a valid Date for clock probes). It has no inferred expiry; Wi-Fi disconnect invalidates it and stale in-flight results cannot restore it. It is telemetry and never authorizes device behavior.
 - Emergency unlock triggers a 24-hour lockout period
 - TMR sensor consensus: 2 of 3 sensors must agree for "paddle locked" status
 - Current assembly docs use the newer build guide as source of truth: 4x 4mm magnets and T7 Torx driver.

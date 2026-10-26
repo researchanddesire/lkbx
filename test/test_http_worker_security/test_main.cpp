@@ -1,4 +1,5 @@
 #include "services/http_worker.h"
+#include "services/serverOnline.h"
 #include <esp_http_client.h>
 #include <esp_timer.h>
 #include <freertos/queue.h>
@@ -228,6 +229,7 @@ void reset() {
     std::lock_guard<std::mutex> lock(httpMutex);
     scenarios.clear();
     records.clear();
+    clearServerOnline();
     initHttpWorker();
 }
 std::future<int> asyncGet(int timeout = 1000) {
@@ -426,12 +428,104 @@ void testAuthenticatedTime() {
     assert(!getAuthenticatedServerTimeMs(&time) && time == 0);
 }
 
+void testServerConnectivityFollowsCompletedHttp() {
+    reset();
+    assert(!isServerOnline(true));
+    assert(get(url()) == 200);
+    assert(isServerOnline(true));
+    for (int status : {302, 401, 403, 404, 503}) {
+        Scenario failure; failure.status = status; schedule(failure);
+        assert(get(url()) == status);
+        assert(!isServerOnline(true));
+        assert(post(url(), String("{}")) == 200);
+        assert(isServerOnline(true));
+    }
+    Scenario badTls; badTls.chainValid = false; schedule(badTls);
+    assert(get(url()) == -1);
+    assert(!isServerOnline(true));
+    assert(get(url()) == 200 && isServerOnline(true));
+    Scenario truncated; truncated.truncated = true; schedule(truncated);
+    assert(get(url()) == -1 && !isServerOnline(true));
+    assert(get(url()) == 200 && isServerOnline(true));
+    // Validation rejects a request before any authenticated operation exists.
+    assert(get(String("http://invalid.test")) == -1);
+    assert(isServerOnline(true));
+#ifndef VERSIONDEV
+    Scenario unrelatedFailure; unrelatedFailure.status = 503; schedule(unrelatedFailure);
+    assert(get(String("https://different.example.test/api")) == 503);
+    assert(isServerOnline(true));
+    clearServerOnline();
+    assert(get(String("https://different.example.test/api")) == 200);
+    assert(!isServerOnline(true));
+#endif
+}
+
+void testClockProbeUpdatesServerConnectivity() {
+    reset();
+    uint64_t time = 0;
+    Scenario valid; valid.headers = {{"Date", "Wed, 01 Jan 2025 00:00:00 GMT"}};
+    schedule(valid);
+    assert(getAuthenticatedServerTimeMs(&time) && isServerOnline(true));
+    // A reachable 200 without authenticated clock data is a failed probe.
+    assert(!getAuthenticatedServerTimeMs(&time) && !isServerOnline(true));
+    schedule(valid);
+    assert(getAuthenticatedServerTimeMs(&time) && isServerOnline(true));
+    Scenario badDate = valid; badDate.headers = {{"Date", "not a date"}}; schedule(badDate);
+    assert(!getAuthenticatedServerTimeMs(&time) && !isServerOnline(true));
+    schedule(valid);
+    assert(getAuthenticatedServerTimeMs(&time) && isServerOnline(true));
+    Scenario badTls = valid; badTls.hostnameValid = false; schedule(badTls);
+    assert(!getAuthenticatedServerTimeMs(&time) && !isServerOnline(true));
+    schedule(valid);
+    assert(getAuthenticatedServerTimeMs(&time) && isServerOnline(true));
+    Scenario badStatus = valid; badStatus.status = 503; schedule(badStatus);
+    assert(!getAuthenticatedServerTimeMs(&time) && !isServerOnline(true));
+}
+
+void testWifiDisconnectInvalidatesInFlightResult() {
+    reset();
+    assert(get(url()) == 200 && isServerOnline(true));
+    assert(!isServerOnline(false));
+    assert(!isServerOnline(true)); // reconnect alone is not a verified success
+    assert(get(url()) == 200 && isServerOnline(true));
+    auto gate = std::make_shared<Gate>();
+    Scenario inFlight; inFlight.openGate = gate; schedule(inFlight);
+    auto caller = asyncGet(1000);
+    gate->awaitEntry();
+    clearServerOnline(); // exact function called by the Wi-Fi event callback
+    assert(!isServerOnline(true));
+    gate->release();
+    assert(caller.get() == 200);
+    assert(!isServerOnline(true)); // late old-connection success stays invalid
+    assert(get(url()) == 200 && isServerOnline(true));
+}
+
+void testCallerTimeoutCannotLeaveOrRestoreOnline() {
+    reset();
+    assert(get(url()) == 200 && isServerOnline(true));
+    auto gate = std::make_shared<Gate>();
+    Scenario inFlight; inFlight.openGate = gate; schedule(inFlight);
+    auto caller = asyncGet(25);
+    gate->awaitEntry();
+    assert(caller.get() == -1);
+    assert(!isServerOnline(true));
+    gate->release();
+    assert(stopHttpWorker());
+    assert(!isServerOnline(true));
+    reset();
+    assert(get(url()) == 200 && isServerOnline(true));
+}
+
 int main() {
     testTlsAndUrls();
     testBoundsAndRetry();
     testCallerTimeoutAndLateCompletion();
     testStopAndQueueSaturation();
     testAuthenticatedTime();
+    testServerConnectivityFollowsCompletedHttp();
+    testClockProbeUpdatesServerConnectivity();
+    testWifiDisconnectInvalidatesInFlightResult();
+    testCallerTimeoutCannotLeaveOrRestoreOnline();
     assert(stopHttpWorker());
     for (auto &thread : workerThreads) thread.join();
     assert(liveClients == 0 && liveSemaphores == 0);
