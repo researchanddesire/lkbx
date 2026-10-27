@@ -34,3 +34,5 @@ hardware-bundle/
 # Local development display captures
 captures/
 hardware/cad/top-housing-snap-fit.step
+hardware/cad/screen-keeper.step
+hardware/cad/screen-keeper-print.step
