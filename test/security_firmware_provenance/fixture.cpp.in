@@ -1,0 +1,162 @@
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
+#include <ArduinoJson.h>
+#include <RadBleProtocol.generated.h>
+static bool allocationFails = false;
+// ACTUAL_NATIVE_STRING_PORT
+struct { template <typename... Args> void printf(const char*, Args...) {} } Serial;
+namespace radble {
+struct Result {
+    bool ok;
+    String code, message, resultJson;
+    static Result success(const String& resultJson = "{}");
+    static Result failure(const char* code, const char* message);
+};
+// ACTUAL_RESULT
+struct Server {
+    String sent;
+    void sendStage(uint16_t, uint32_t, const char*, bool, const char*, const char*, const String&, const String&, const String&);
+    void sendSerialized(uint16_t, const String& value, bool) { sent = value; }
+};
+// ACTUAL_REPLY
+}
+#define ARDUINO_ARCH_ESP32 1
+#include <FirmwareProvenance.h>
+#include <FirmwareProvenanceResponse.h>
+// ACTUAL_CRYPTO_PORT
+// SIGNED_VECTOR
+// LKBX_STATE_NAMES
+
+static size_t replies = 0, maximum = 0;
+static void checkReply(const firmware::provenance::Response& result) {
+    radble::Server server;
+    for (const auto before : states) for (const auto after : states) {
+        server.sendStage(1, UINT32_MAX, result.ok ? "completed" : "failed", result.ok,
+                         result.code, result.message, result.json, before, after);
+        JsonDocument parsed;
+        assert(!deserializeJson(parsed, server.sent));
+        assert(parsed["code"] != "response_too_large");
+        assert(parsed["ok"] == result.ok);
+        assert(server.sent.size() <= radble::MAX_MESSAGE_BYTES);
+        maximum = std::max(maximum, server.sent.size());
+        ++replies;
+    }
+}
+
+static std::string readProof(const firmware::provenance::Snapshot& snapshot) {
+    JsonDocument args;
+    const auto summary = firmware::provenance::response(snapshot, args.as<JsonObjectConst>());
+    assert(summary.ok); checkReply(summary);
+    JsonDocument metadata; assert(!deserializeJson(metadata, summary.json));
+    assert(metadata["v"] == 2 && metadata["compactJws"] == "");
+    assert(metadata["proofBytes"].as<size_t>() == snapshot.token.size());
+    assert(metadata["proofPageBytes"] == 64);
+    size_t offset = 0;
+    std::string token;
+    do {
+        args["view"] = "proof"; args["provenanceId"] = snapshot.provenanceId; args["offset"] = offset;
+        const auto page = firmware::provenance::response(snapshot, args.as<JsonObjectConst>());
+        assert(page.ok); checkReply(page);
+        JsonDocument decoded; assert(!deserializeJson(decoded, page.json));
+        assert(decoded["provenanceId"] == snapshot.provenanceId);
+        assert(decoded["offset"].as<size_t>() == offset);
+        assert(decoded["totalBytes"].as<size_t>() == snapshot.token.size());
+        assert(decoded["encoding"] == "base64url");
+        std::vector<unsigned char> bytes;
+        const auto chunk = decoded["chunk"].as<std::string>();
+        if (!chunk.empty()) assert(firmware::provenance::decodeBase64Url(chunk, bytes));
+        assert(bytes.size() <= 64);
+        token.append(bytes.begin(), bytes.end());
+        const auto next = decoded["nextOffset"].as<size_t>();
+        assert(next == offset + bytes.size()); offset = next;
+    } while (offset < snapshot.token.size());
+    assert(token == snapshot.token);
+    return token;
+}
+
+int main() {
+    using namespace firmware::provenance;
+    firmware::DeviceReport report;
+    report.reportedTrack = "staging"; report.deviceType = "ossm"; report.currentVersion = "9.8.7";
+    report.currentBuild = "0123456789abcdef0123456789abcdef01234567";
+    report.firmwareHash = std::string(64, '3');
+    fixturePreferences["current"] = signedToken;
+    auto matching = snapshot(report);
+    assert(matching.origin == "official");
+    assert(matching.keyId == STAGING_KEY_ID);
+    assert(matching.token.size() > 509);
+    Claims claims;
+    assert(verifyToken(readProof(matching), report, claims));
+    report.currentBuild = std::string(40, 'f');
+    const auto stale = snapshot(report);
+    assert(stale.origin == "invalid" && stale.token == signedToken);
+    assert(readProof(stale) == signedToken);
+    assert(!verifyToken(readProof(stale), report, claims));
+    report.currentBuild = "0123456789abcdef0123456789abcdef01234567";
+    report.firmwareHash = std::string(64, '4');
+    assert(!verifyToken(signedToken, report, claims));
+    report.firmwareHash = std::string(64, '3'); report.deviceType = "dtt";
+    assert(!verifyToken(signedToken, report, claims));
+    report.deviceType = "lkbx";
+    assert(!verifyToken(signedToken, report, claims));
+    report.deviceType = "ossm";
+    auto altered = signedToken; altered.back() = altered.back() == 'A' ? 'B' : 'A';
+    assert(!verifyToken(altered, report, claims));
+
+    auto maximumMetadata = matching;
+    maximumMetadata.keyId = std::string(32, 'k');
+    maximumMetadata.token = std::string(4096, 'A');
+    maximumMetadata.provenanceId = tokenId(maximumMetadata.token);
+    JsonDocument defaultArgs;
+    const auto largestSummary = response(maximumMetadata, defaultArgs.as<JsonObjectConst>());
+    assert(largestSummary.ok && largestSummary.json.size() == 301);
+    assert(readProof(maximumMetadata) == maximumMetadata.token);
+    auto arbitrary = stale;
+    arbitrary.token = std::string("a\0\xff\n\"", 5) + std::string(200, '\x80');
+    arbitrary.provenanceId = tokenId(arbitrary.token);
+    assert(readProof(arbitrary) == arbitrary.token);
+    fixturePreferences.clear();
+    auto community = snapshot(report);
+    assert(community.origin == "community"); readProof(community);
+
+    JsonDocument args; args["view"] = "proof"; args["offset"] = 0;
+    args["provenanceId"] = matching.provenanceId;
+    auto changed = matching; changed.token += "A"; changed.provenanceId = tokenId(changed.token);
+    auto rejected = response(changed, args.as<JsonObjectConst>());
+    assert(!rejected.ok && std::string(rejected.code) == "stale_provenance"); checkReply(rejected);
+    for (const auto offset : {-1, 999999}) {
+        args["offset"] = offset; rejected = response(matching, args.as<JsonObjectConst>());
+        assert(!rejected.ok); checkReply(rejected);
+    }
+    args["offset"] = 0.5; assert(!response(matching, args.as<JsonObjectConst>()).ok);
+    args["offset"] = matching.token.size();
+    const auto eof = response(matching, args.as<JsonObjectConst>()); assert(eof.ok); checkReply(eof);
+    JsonDocument eofJson; assert(!deserializeJson(eofJson, eof.json));
+    assert(eofJson["chunk"] == "" && eofJson["nextOffset"].as<size_t>() == matching.token.size());
+    args["offset"] = 0; args["limit"] = 128;
+    assert(!response(matching, args.as<JsonObjectConst>()).ok); args.remove("limit");
+    args["view"] = "full";
+    assert(!response(matching, args.as<JsonObjectConst>()).ok); // full rejects ignored offset
+    args.remove("offset"); rejected = response(matching, args.as<JsonObjectConst>());
+    assert(!rejected.ok && std::string(rejected.code) == "proof_requires_paging"); checkReply(rejected);
+    auto small = stale; small.token = "invalid.public.fixture"; small.provenanceId = tokenId(small.token);
+    args["provenanceId"] = small.provenanceId;
+    const auto full = response(small, args.as<JsonObjectConst>());
+    assert(full.ok); checkReply(full);
+    JsonDocument fullJson; assert(!deserializeJson(fullJson, full.json)); assert(fullJson["compactJws"] == small.token);
+    auto oversized = matching; oversized.token.assign(4097, 'A');
+    oversized.provenanceId = tokenId(oversized.token); args.clear();
+    rejected = response(oversized, args.as<JsonObjectConst>());
+    assert(!rejected.ok && std::string(rejected.code) == "proof_too_large"); checkReply(rejected);
+    args["view"] = std::string("proof\0extra", 11);
+    assert(!response(matching, args.as<JsonObjectConst>()).ok);
+    assert(fixturePreferences.empty()); // response helpers never mutate NVS
+    std::cout << "provenance real sender: " << replies << " replies, max=" << maximum
+              << "/" << radble::MAX_MESSAGE_BYTES << "; signed proof bytes=" << signedToken.size() << "\n";
+}

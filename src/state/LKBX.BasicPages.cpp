@@ -15,6 +15,8 @@
 #include "ui/loadingSpinner.h"
 #include "utils/clearDisplay.h"
 #include "utils/psram.h"
+#include "utils/getPairingCode.h"
+#include "utils/pairingDashboard.h"
 
 #include <esp_heap_caps.h>
 
@@ -141,6 +143,25 @@ static void drawButtons(Adafruit_GFX& gfx, const Action right,
         gfx.print(right.name);
     }
 }
+void LKBX::drawPairingCode(bool onboarding) {
+    const String code = getPairingCode();
+    if (code.isEmpty()) {
+        // Clear any old QR, preserving the supported Skip/back controls.
+        const TextPage page{.header = Str::Screen::INIT_PAIRING_TITLE,
+                            .content = "Refreshing pairing code. Check Wi-Fi if this continues."};
+        drawPage(&page);
+        if (xSemaphoreTake(displayMutex, 100) == pdTRUE) {
+            drawButtons(display, onboarding ? Action{Str::Action::SKIP} : continueAction, backAction);
+            xSemaphoreGive(displayMutex);
+        }
+        return;
+    }
+    drawQRCode(onboarding ? String(Str::Screen::INIT_PAIRING_TITLE) : String(Str::Screen::PAIRING_PREFIX) + code,
+               onboarding ? String(Str::Screen::INIT_PAIRING_DESC_PREFIX) + code : String(Str::Screen::PAIRING_DESC),
+               pairingDashboardUrl(code), onboarding ? String(Str::Label::PAIR) : String(Str::Label::SCAN),
+               onboarding ? Action{Str::Action::SKIP} : continueAction);
+}
+
 void LKBX::drawQRCode(const String& title, const String& description,
                       const String& url, const String& label,
                       const Action& right, const Action& left,

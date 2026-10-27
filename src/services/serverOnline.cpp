@@ -36,4 +36,4 @@ bool isServerOnline(bool wifiConnected) {
     return (connectivity.load(std::memory_order_acquire) & 1U) != 0;
 }
 
-bool isTimeSynced = false;
+std::atomic<bool> isTimeSynced{false};

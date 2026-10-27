@@ -399,8 +399,6 @@ namespace Str {
             "https://docs.researchanddesire.com/updates";
         constexpr char DOCS_ENROL_ALPHA[] PROGMEM =
             "https://docs.researchanddesire.com/enrol-in-alpha";
-        constexpr char DASHBOARD_PAIR_BASE[] PROGMEM =
-            "https://dashboard.researchanddesire.com?lkbx=";
     }  // namespace Url
 
     // ── Error screen text

@@ -20,6 +20,7 @@ struct AuthResponse {
     String password = "";
     String sessionId = "";
     String pairingCode = "";
+    String pairingCodeExpiresAt = "";
     int hueShift = 0;
     bool isPaired = false;
     bool pairingStatusKnown = false;
@@ -106,6 +107,7 @@ static AuthResponse getAuthToken(int timeoutMs = 5000) {
             .password = response[Str::Json::PASSWORD],
             .sessionId = response[Str::Json::SESSION_ID],
             .pairingCode = response[Str::Json::PAIRING_CODE],
+            .pairingCodeExpiresAt = response["pairingCodeExpiresAt"] | "",
             .hueShift = response[Str::Json::HUE_SHIFT],
             .isPaired = response[Str::Json::IS_PAIRED] | false,
             .pairingStatusKnown = response[Str::Json::IS_PAIRED].is<bool>(),

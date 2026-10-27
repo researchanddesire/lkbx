@@ -106,6 +106,18 @@ class ConfigurationTests(unittest.TestCase):
             header = (root / ".dev/local/include/lkbx_dev_config.h").read_text()
             self.assertIn('#define LKBX_DEV_DEVICE_ID "' + selected + '"', header)
 
+    def test_pairing_dashboard_is_local_and_survives_build_hook(self):
+        for value in ("https://dashboard.researchanddesire.com", "http://8.8.8.8:3000", "http://u:p@192.168.1.17:3000", "http://192.168.1.17/path", "http://192.168.1.17?secret=x", "file:///tmp/app", "http://127.0.0.1:0"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                local.local_dashboard_origin(value)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = local.configure(root, "192.168.1.17", api_port=18443, dashboard_origin="http://192.168.1.18:3100/")
+            self.assertEqual(first["dashboard_origin"], "http://192.168.1.18:3100")
+            self.assertEqual(first, local.configure(root))
+            header = (root / ".dev/local/include/lkbx_dev_config.h").read_text()
+            self.assertIn('#define LKBX_DEV_DASHBOARD_ORIGIN "http://192.168.1.18:3100"', header)
+
     def test_certificate_supports_both_modern_ip_and_pinned_legacy_hostname_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

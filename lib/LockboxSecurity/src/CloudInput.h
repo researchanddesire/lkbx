@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include "PairingCodeLease.h"
 
 namespace lockbox::security {
 
@@ -16,6 +17,10 @@ inline bool boundedString(JsonVariantConst value, std::size_t min,
 }
 
 inline bool authResponse(JsonVariantConst value) {
+    uint64_t expiry = 0;
+    if (!value["pairingCodeExpiresAt"].isNull() &&
+        (!boundedString(value["pairingCodeExpiresAt"], 20, 27) ||
+         !pairingExpiryMs(value["pairingCodeExpiresAt"].as<const char*>(), expiry))) return false;
     return value.is<JsonObjectConst>() &&
            boundedString(value["clientId"], 1, 128) &&
            boundedString(value["username"], 1, 128) &&

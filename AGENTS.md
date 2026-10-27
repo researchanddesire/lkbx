@@ -277,6 +277,8 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 - State machine is the single source of truth for device behavior — all logic flows through `LKBX.h`
 - Report a break from the common `locked.break` entry after its start timestamp is persisted; dashboard requests bypass the local break-preflight page. Native dispatch tests use the exact shared transition fragment.
 - BLE `connectivity.server` describes the last completed configured-RAD HTTPS operation (2xx, plus a valid Date for clock probes). It has no inferred expiry; Wi-Fi disconnect invalidates it and stale in-flight results cannot restore it. It is telemetry and never authorizes device behavior.
+- Pairing QR screens use a RAM-only authenticated code lease and `pairingCodeExpiresAt` UTC expiry, clear the QR before expiry, and refresh in a bounded worker. Never substitute a permanent MAC or production URL for an unavailable code. Development QR links use the private `--dashboard-origin`; release links use their explicit RAD origin.
+- BLE provenance defaults to bounded v2 metadata; retrieve the complete signed proof through reference-bound 64-byte base64url pages. Preserve signature/runtime-image verification, NVS and the 509-byte transport cap. A metadata summary alone is not verified proof.
 - Emergency unlock triggers a 24-hour lockout period
 - TMR sensor consensus: 2 of 3 sensors must agree for "paddle locked" status
 - Current assembly docs use the newer build guide as source of truth: 4x 4mm magnets and T7 Torx driver.

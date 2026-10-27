@@ -1,0 +1,36 @@
+class String : public std::string {
+ public:
+    using std::string::string;
+    String(const std::string &value) : std::string(value) {}
+    explicit String(uint32_t value) : std::string(std::to_string(value)) {}
+    bool isEmpty() const { return empty(); }
+    bool startsWith(const String &value) const { return rfind(value, 0) == 0; }
+    bool endsWith(const String &value) const {
+        return size() >= value.size() && compare(size()-value.size(), value.size(), value)==0;
+    }
+    void remove(size_t position) { erase(position); }
+    bool reserve(size_t size) {
+        if (allocationFails) return false;
+        std::string::reserve(size); return true;
+    }
+    bool concat(const char *data, size_t size) {
+        if (allocationFails) return false;
+        append(data, size); return true;
+    }
+    bool equalsIgnoreCase(String other) const {
+        String own = *this;
+        for (auto &c : own) c = tolower(c);
+        for (auto &c : other) c = tolower(c);
+        return own == other;
+    }
+    void replace(const String &from, const String &to) {
+        size_t at = 0;
+        while ((at = find(from, at)) != npos) {
+            std::string::replace(at, from.size(), to); at += to.size();
+        }
+    }
+    size_t write(uint8_t value) { push_back(value); return 1; }
+    size_t write(const uint8_t *data, size_t size) {
+        return concat(reinterpret_cast<const char *>(data), size) ? size : 0;
+    }
+};

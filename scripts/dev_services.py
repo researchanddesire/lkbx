@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 DEFAULT_DEVICE = "AA:BB:CC:DD:EE:FF"
 SCHEMA = 1
@@ -48,6 +49,17 @@ def local_port(value: int) -> int:
     if type(value) is not int or not 1 <= value <= 65535:
         raise ValueError("Local service ports must be integers from 1 to 65535")
     return value
+
+
+def local_dashboard_origin(value: str) -> str:
+    parsed = urlsplit(value)
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or
+            parsed.username is not None or parsed.password is not None or
+            parsed.query or parsed.fragment or parsed.path not in {"", "/"}):
+        raise ValueError("Dashboard origin must be an explicit local HTTP(S) origin")
+    address = local_address(parsed.hostname)
+    port = local_port(parsed.port) if parsed.port is not None else None
+    return f"{parsed.scheme}://{address}" + (f":{port}" if port else "")
 
 
 @lru_cache(maxsize=1)
@@ -149,15 +161,17 @@ def configuration_lock(directory: Path):
 
 
 def configure(root: Path, lan_ip: str | None = None, device_ids: list[str] | None = None,
-              api_port: int | None = None, mqtt_port: int | None = None) -> dict:
+              api_port: int | None = None, mqtt_port: int | None = None,
+              dashboard_origin: str | None = None) -> dict:
     directory = Path(root).resolve() / ".dev/local"
     private_directory(directory)
     with configuration_lock(directory):
-        return _configure_locked(root, lan_ip, device_ids, api_port, mqtt_port)
+        return _configure_locked(root, lan_ip, device_ids, api_port, mqtt_port, dashboard_origin)
 
 
 def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | None,
-                      api_port: int | None, mqtt_port: int | None) -> dict:
+                      api_port: int | None, mqtt_port: int | None,
+                      dashboard_origin: str | None) -> dict:
     root = Path(root).resolve()
     directory = root / ".dev/local"
     directory.mkdir(parents=True, exist_ok=True)
@@ -187,6 +201,10 @@ def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | No
     settings["lan_ip"] = address
     settings["api_port"] = local_port(api_port if api_port is not None else settings.get("api_port", 8443))
     settings["mqtt_port"] = local_port(mqtt_port if mqtt_port is not None else settings.get("mqtt_port", 8883))
+    existing_dashboard = settings.get("dashboard_origin")
+    if existing_dashboard == f"http://{old_address}:3000":
+        existing_dashboard = None
+    settings["dashboard_origin"] = local_dashboard_origin(dashboard_origin or existing_dashboard or f"http://{address}:3000")
     complete_certificates = all((directory / name).exists() for name in ("ca.key", "ca.pem", "server.key", "server.pem"))
     if old_address != address or settings.get("certificate_profile") != CERTIFICATE_PROFILE or not complete_certificates:
         certificate_files(directory, address, preserve_leaf=old_address == address and complete_certificates)
@@ -208,7 +226,8 @@ def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | No
     primary = devices[settings["primary_device"]]
     macros = {"LKBX_DEV_CA_PEM": (directory / "ca.pem").read_text(), "LKBX_DEV_API_TOKEN": primary["api_token"],
               "LKBX_DEV_API_BASE_URL": f"https://{address}:{settings['api_port']}", "LKBX_DEV_MQTT_URI": f"mqtts://{address}",
-              "LKBX_DEV_DEVICE_ID": settings["primary_device"]}
+              "LKBX_DEV_DEVICE_ID": settings["primary_device"],
+              "LKBX_DEV_DASHBOARD_ORIGIN": settings["dashboard_origin"]}
     header = "#pragma once\n#ifndef VERSIONDEV\n#error Local development configuration cannot be used in production\n#endif\n"
     header += "#if defined(RAD_SERVER) || defined(MQTT_SERVER) || defined(MQTT_PORT)\n#error Development endpoints must come from local fixture configuration\n#endif\n"
     header += "\n".join(f"#define {key} {json.dumps(value)}" for key, value in macros.items()) + "\n"
@@ -271,11 +290,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device-id", action="append", dest="device_ids", help="Synthetic device MAC (repeat for independent devices); first identity is used by the development firmware")
     parser.add_argument("--api-port", type=int, help="Published local HTTPS port (default 8443)")
     parser.add_argument("--mqtt-port", type=int, help="Published local MQTTS port (default 8883)")
+    parser.add_argument("--dashboard-origin", help="Local web UI origin for pairing QR (default http://<lan-ip>:3000)")
     parser.add_argument("--project-dir", type=Path, default=Path(__file__).resolve().parents[1], help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         if args.action in {"configure", "up"}:
-            settings = configure(args.project_dir, args.lan_ip, args.device_ids, args.api_port, args.mqtt_port)
+            settings = configure(args.project_dir, args.lan_ip, args.device_ids, args.api_port, args.mqtt_port, args.dashboard_origin)
             print(f"Local HTTPS: https://{settings['lan_ip']}:{settings['api_port']}; MQTTS: {settings['lan_ip']}:{settings['mqtt_port']}; device: {settings['primary_device']}")
         if args.action != "configure":
             compose(args.project_dir, args.action)

@@ -31,6 +31,7 @@ TaskHandle_t checkWifi = nullptr;
 TaskHandle_t calibrate = nullptr;
 TaskHandle_t checkUpdates = nullptr;
 TaskHandle_t pairingCheck = nullptr;
+TaskHandle_t pairingPoll = nullptr;
 TaskHandle_t syncLockState = nullptr;
 TaskHandle_t syncClock = nullptr;
 TaskHandle_t wifiConnect = nullptr;

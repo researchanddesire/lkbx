@@ -68,6 +68,7 @@ static const TaskWatermarkEntry watermarkTasks[] = {
     {"calibrate",      &TaskHandles::calibrate},
     {"checkUpdates",   &TaskHandles::checkUpdates},
     {"pairingCheck",   &TaskHandles::pairingCheck},
+    {"pairingPoll",    &TaskHandles::pairingPoll},
     {"syncLockState",  &TaskHandles::syncLockState},
     {"wifiConnect",    &TaskHandles::wifiConnect},
     {"mqttConnect",    &TaskHandles::mqttConnect},
