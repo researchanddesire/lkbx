@@ -1,10 +1,11 @@
-"""Add screen snap-fit latches to the exported top housing.
+"""Add glue-free screen retention to the exported top housing.
 
 Reads ``hardware/cad/top-housing.step`` (the Onshape export) and writes
-``hardware/cad/top-housing-snap-fit.step``. The screen drops face down into
-its pocket and is held by two flexing latch beams, one on each long edge, so
-it no longer needs hot glue. See README.md in this directory for the design
-rationale, print notes and the dimensions to carry back into Onshape.
+``hardware/cad/top-housing-snap-fit.step``. The screen hooks under three
+fixed lips on its top edge, then its bottom edge presses down over one
+flexing latch tongue, so it no longer needs hot glue. See README.md in this
+directory for the design rationale, print notes and the dimensions to carry
+back into Onshape.
 
 Coordinates are the top-housing STEP frame: Z is depth from the front face
 (the face printed on the bed), Y runs along the housing length and X across
@@ -23,35 +24,36 @@ OUTPUT = CAD_DIR / "top-housing-snap-fit.step"
 
 # Screen module (2.0 in 320x240 TFT) as seated in the housing.
 SCREEN_Y_MIN = 7.85  # long edge nearest the encoder
-SCREEN_Y_MAX = 42.45  # long edge nearest the top of the housing
 SCREEN_BACK_Z = 3.85  # rear face of the glass/backlight stack
 SKIN_Z = 1.80  # inner face of the front skin the screen rests on
 
-# Latch beams.
-EDGE_CLEARANCE = 0.20  # screen edge to beam face
-BEAM_THICKNESS = 0.80  # two 0.4 mm perimeters; flexes in the print plane
-FLOOR_GAP = 0.60  # bridged slot between beam and skin so the beam can flex
-BEAM_TOP_Z = 6.00
-CATCH_OVERLAP = 0.50  # how far the catch reaches over the screen's back
-CATCH_Z_CLEARANCE = 0.10  # catch underside above the screen's back face
-CATCH_LAND = 0.20  # vertical land at the catch tip
-LEAD_IN_RUN = 1.20  # Z run of the 30 degree lead-in ramp
+# Shared retention geometry.
+RETAIN_Z = SCREEN_BACK_Z + 0.20  # underside of every lip and catch
+FEATURE_TOP_Z = 6.00
+EDGE_CLEARANCE = 0.25  # screen edge to the latch face
 
-BEAM_BOTTOM_Z = SKIN_Z + FLOOR_GAP
-CATCH_Z = SCREEN_BACK_Z + CATCH_Z_CLEARANCE
-
-# Top edge: the existing locating rib becomes two anchors and a beam.
+# Top edge: the existing locating rib grows three fixed lips.
 TOP_RIB_X = (-20.0, 20.0)
 TOP_RIB_Y = (42.65, 45.65)
-TOP_RIB_TOP_Z = 4.30
-TOP_ANCHOR_WIDTH = 5.0
-TOP_CATCH_X = (-4.0, 4.0)
+LIP_OVERLAP = 1.00  # how far each lip reaches over the screen's back
+LIP_X_RANGES = ((-17.0, -11.0), (-3.0, 3.0), (11.0, 17.0))
+LIP_CHAMFER = 0.80  # 45 degree lead-in on the lip's inner top edge
 
-# Bottom edge: a new beam spans between the two cover-screw bosses.
-BOSS_CENTERS_X = (-17.0, 13.0)
+# Bottom edge: a cantilever tongue between the two cover-screw bosses,
+# anchored at the left boss, flexing toward the cross wall behind it.
 CROSS_WALL_Y = 5.50  # face of the wall between the screen and encoder
-BOTTOM_ANCHOR_WIDTH = 3.5
-BOTTOM_CATCH_X = (-5.0, 1.0)
+TONGUE_THICKNESS = 1.60  # four 0.4 mm perimeters
+TONGUE_X = (-13.0, 9.0)  # anchor end to free end
+ANCHOR_X = (-16.0, -13.0)
+TONGUE_BOTTOM_Z = 3.00  # 1.2 mm bridged slot above the skin
+CATCH_X = (2.0, 8.0)
+CATCH_OVERLAP = 0.75
+CATCH_LAND = 0.30
+WALL_RELIEF_X = (-2.0, 10.0)  # room behind the tongue so it can flex
+WALL_RELIEF_DEPTH = 0.60
+
+LATCH_FACE_Y = SCREEN_Y_MIN - EDGE_CLEARANCE
+TONGUE_BACK_Y = LATCH_FACE_Y - TONGUE_THICKNESS
 
 
 def box(x, y, z):
@@ -63,15 +65,8 @@ def box(x, y, z):
     )
 
 
-def catch(x, face_y, toward):
-    """Latch catch on a beam face; ``toward`` is +1 or -1 in Y (into the screen)."""
-    tip_y = face_y + toward * (EDGE_CLEARANCE + CATCH_OVERLAP)
-    profile = [
-        (face_y, CATCH_Z),
-        (tip_y, CATCH_Z),
-        (tip_y, CATCH_Z + CATCH_LAND),
-        (face_y, CATCH_Z + CATCH_LAND + LEAD_IN_RUN),
-    ]
+def yz_prism(x, profile):
+    """Prism along X from a closed (y, z) profile."""
     return (
         cq.Workplane("YZ", origin=(x[0], 0, 0))
         .polyline(profile)
@@ -80,30 +75,59 @@ def catch(x, face_y, toward):
     )
 
 
+def lip(x):
+    """Fixed lip hanging over the screen's top edge, chamfered toward the pocket."""
+    inner_y = TOP_RIB_Y[0] - LIP_OVERLAP
+    return yz_prism(
+        x,
+        [
+            (TOP_RIB_Y[0], RETAIN_Z),
+            (inner_y, RETAIN_Z),
+            (inner_y, FEATURE_TOP_Z - LIP_CHAMFER),
+            (inner_y + LIP_CHAMFER, FEATURE_TOP_Z),
+            (TOP_RIB_Y[0], FEATURE_TOP_Z),
+        ],
+    )
+
+
+def catch():
+    """Latch catch on the tongue face with a 45 degree lead-in."""
+    tip_y = LATCH_FACE_Y + EDGE_CLEARANCE + CATCH_OVERLAP
+    ramp_run = tip_y - LATCH_FACE_Y
+    return yz_prism(
+        CATCH_X,
+        [
+            (LATCH_FACE_Y, RETAIN_Z),
+            (tip_y, RETAIN_Z),
+            (tip_y, RETAIN_Z + CATCH_LAND),
+            (LATCH_FACE_Y, RETAIN_Z + CATCH_LAND + ramp_run),
+        ],
+    )
+
+
 def build():
     housing = cq.importers.importStep(str(SOURCE))
 
-    # Top edge.
-    top_face_y = SCREEN_Y_MAX + EDGE_CLEARANCE
-    free_x = (TOP_RIB_X[0] + TOP_ANCHOR_WIDTH, TOP_RIB_X[1] - TOP_ANCHOR_WIDTH)
-    housing = housing.cut(box(free_x, TOP_RIB_Y, (SKIN_Z, TOP_RIB_TOP_Z + 0.01)))
-    for anchor_x in ((TOP_RIB_X[0], free_x[0]), (free_x[1], TOP_RIB_X[1])):
-        housing = housing.union(box(anchor_x, (top_face_y, TOP_RIB_Y[1]), (SKIN_Z, BEAM_TOP_Z)))
-    housing = housing.union(
-        box(free_x, (top_face_y, top_face_y + BEAM_THICKNESS), (BEAM_BOTTOM_Z, BEAM_TOP_Z))
-    )
-    housing = housing.union(catch(TOP_CATCH_X, top_face_y, -1))
+    # Top edge: raise the rib and add the lips.
+    housing = housing.union(box(TOP_RIB_X, TOP_RIB_Y, (SKIN_Z, FEATURE_TOP_Z)))
+    for x in LIP_X_RANGES:
+        housing = housing.union(lip(x))
 
-    # Bottom edge.
-    bottom_face_y = SCREEN_Y_MIN - EDGE_CLEARANCE
-    left, right = BOSS_CENTERS_X
-    free_x = (left + BOTTOM_ANCHOR_WIDTH, right - BOTTOM_ANCHOR_WIDTH)
-    for anchor_x in ((left, free_x[0]), (free_x[1], right)):
-        housing = housing.union(box(anchor_x, (CROSS_WALL_Y, bottom_face_y), (SKIN_Z, BEAM_TOP_Z)))
-    housing = housing.union(
-        box(free_x, (bottom_face_y - BEAM_THICKNESS, bottom_face_y), (BEAM_BOTTOM_Z, BEAM_TOP_Z))
+    # Bottom edge: relieve the wall, then add the anchor, tongue and catch.
+    housing = housing.cut(
+        box(
+            WALL_RELIEF_X,
+            (CROSS_WALL_Y - WALL_RELIEF_DEPTH, CROSS_WALL_Y + 0.01),
+            (TONGUE_BOTTOM_Z, FEATURE_TOP_Z + 0.5),
+        )
     )
-    housing = housing.union(catch(BOTTOM_CATCH_X, bottom_face_y, +1))
+    housing = housing.union(
+        box(ANCHOR_X, (CROSS_WALL_Y - 0.01, LATCH_FACE_Y), (SKIN_Z, FEATURE_TOP_Z))
+    )
+    housing = housing.union(
+        box(TONGUE_X, (TONGUE_BACK_Y, LATCH_FACE_Y), (TONGUE_BOTTOM_Z, FEATURE_TOP_Z))
+    )
+    housing = housing.union(catch())
 
     return housing
 
