@@ -24,3 +24,10 @@ This directory contains STEP exports from the Lockbox Onshape document. Each fil
 - `pcb.step`
 - `screen.step`
 - `top-housing.step`
+
+## Variants
+
+- `screen-snap-fit/` - generates `top-housing-snap-fit.step`, the
+  `top-housing` with screen latch beams so the screen snaps in without glue.
+  The generated STEP is not tracked; see `screen-snap-fit/README.md`. Not yet
+  carried into Onshape.
