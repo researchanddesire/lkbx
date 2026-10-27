@@ -99,13 +99,51 @@ def write_private(path: Path, contents: str) -> None:
     temporary.replace(path)
 
 
-def openssl(*args: str) -> None:
+def openssl(*args: str) -> bytes:
     executable = shutil.which("openssl")
     if not executable:
         raise RuntimeError("OpenSSL is required to generate the local TLS certificates")
     result = subprocess.run([executable, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if result.returncode:
-        raise RuntimeError("Local TLS certificate generation failed; verify the OpenSSL installation")
+        # Never include stderr, command paths or key/certificate contents.
+        raise RuntimeError(f"Local TLS certificate operation failed (openssl {args[0]}, exit {result.returncode})")
+    return result.stdout
+
+
+def migrate_leaf_certificate(directory: Path, address: str, extension_contents: str) -> None:
+    original = directory / "server.pem"
+    ca = directory / "ca.pem"
+    key = directory / "server.key"
+    dates = openssl("x509", "-in", str(original), "-noout", "-dates")
+    public_key = openssl("x509", "-in", str(original), "-noout", "-pubkey")
+    if public_key != openssl("pkey", "-in", str(key), "-pubout"):
+        raise RuntimeError("Local TLS leaf certificate and existing key do not match")
+
+    # Older OpenSSL 3.x micro-CA mode accepts only self-signed input, even
+    # with -preserve_dates. A private, transient signing stage preserves the
+    # original leaf key/dates; it is never served or added to any trust store.
+    # Only the final certificate signed by our existing CA may replace the leaf.
+    with tempfile.TemporaryDirectory(prefix="certificate-migration-", dir=directory) as temporary:
+        staging = Path(temporary) / "self-signed.pem"
+        replacement = Path(temporary) / "server.pem"
+        extensions = Path(temporary) / "server.ext"
+        write_private(extensions, extension_contents)
+        openssl("x509", "-in", str(original), "-signkey", str(key), "-preserve_dates",
+                "-clrext", "-sha256", "-out", str(staging))
+        openssl("x509", "-in", str(staging), "-CA", str(ca), "-CAkey", str(directory / "ca.key"),
+                "-set_serial", str(secrets.randbits(128)), "-preserve_dates", "-sha256",
+                "-extfile", str(extensions), "-out", str(replacement))
+        if (dates != openssl("x509", "-in", str(replacement), "-noout", "-dates") or
+                public_key != openssl("x509", "-in", str(replacement), "-noout", "-pubkey")):
+            raise RuntimeError("Local TLS migration changed the existing leaf key or validity interval")
+        for name, kind in ((address, "ip"), (address, "hostname"),
+                           ("127.0.0.1", "ip"), ("127.0.0.1", "hostname"),
+                           ("localhost", "hostname"), ("mosquitto", "hostname")):
+            openssl("verify", "-CAfile", str(ca), "-purpose", "sslserver",
+                    "-verify_" + kind, name, str(replacement))
+        replacement.chmod(0o600)
+        write_private(directory / "server.ext", extension_contents)
+        replacement.replace(original)
 
 
 def certificate_files(directory: Path, address: str, preserve_leaf: bool = False) -> None:
@@ -116,7 +154,7 @@ def certificate_files(directory: Path, address: str, preserve_leaf: bool = False
                 "-out", str(directory / "ca.pem"), "-addext", "basicConstraints=critical,CA:TRUE",
                 "-addext", "keyUsage=critical,keyCertSign,cRLSign")
     extensions = directory / "server.ext"
-    write_private(extensions, "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n"
+    extension_contents = ("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n"
                   # The pinned ESP-IDF 4.4 mbedTLS verifier checks dNSName
                   # entries only, even for a literal-IP endpoint. Retain proper
                   # IP SANs for modern clients and add exact local names for
@@ -125,13 +163,9 @@ def certificate_files(directory: Path, address: str, preserve_leaf: bool = False
     if preserve_leaf:
         # Repair existing names without moving notBefore ahead of a device's
         # cached clock. This keeps the existing key, CA and validity interval.
-        replacement = directory / "server.replacement.pem"
-        openssl("x509", "-in", str(directory / "server.pem"), "-CA", str(directory / "ca.pem"),
-                "-CAkey", str(directory / "ca.key"), "-set_serial", str(secrets.randbits(128)),
-                "-out", str(replacement), "-preserve_dates", "-sha256", "-extfile", str(extensions))
-        replacement.chmod(0o600)
-        replacement.replace(directory / "server.pem")
+        migrate_leaf_certificate(directory, address, extension_contents)
         return
+    write_private(extensions, extension_contents)
     openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=Lockbox Local Fixtures",
             "-keyout", str(directory / "server.key"), "-out", str(directory / "server.csr"))
     openssl("x509", "-req", "-in", str(directory / "server.csr"), "-CA", str(directory / "ca.pem"),
