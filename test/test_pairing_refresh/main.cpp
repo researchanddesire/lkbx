@@ -40,10 +40,11 @@ struct DisplayMachine {
     }
 };
 
-struct Reply { bool valid = false; };
+struct Reply { bool valid = false; bool isPaired = false; };
 struct Prompt {
     bool present = true, online = true, boot = true, due = true;
     bool leaveDuringAuth = false, leaveDuringStatus = false, authValid = true;
+    bool pairedReply = false;
     int authCalls = 0, statusCalls = 0, confirms = 0, attempts = 0, paints = 0;
     bool active() const { return present; }
     bool connected() const { return online; }
@@ -54,7 +55,7 @@ struct Prompt {
     Reply authenticate(int timeout) {
         assert(timeout == 3000); ++authCalls;
         if (leaveDuringAuth) present = false;
-        return {authValid};
+        return {authValid, pairedReply};
     }
     void accept(Reply) { due = false; }
     PairingStatus pairingStatus(int timeout) {
@@ -62,7 +63,7 @@ struct Prompt {
         if (leaveDuringStatus) present = false;
         return PairingStatus::Paired;
     }
-    void confirm() { ++confirms; }
+    void confirm() { ++confirms; present = false; }
 };
 
 int main() {
@@ -106,6 +107,22 @@ int main() {
     assert(lockbox::security::authResponse(auth.as<JsonVariantConst>()));
     auth["pairingCodeExpiresAt"] = "2026-10-27T00:05:00";
     assert(!lockbox::security::authResponse(auth.as<JsonVariantConst>()));
+    auth["pairingCodeExpiresAt"] = "2026-10-27T00:05:00.000Z";
+    const auto legacyRefresh = lockbox::security::pairingRefreshResponse(auth.as<JsonVariantConst>());
+    assert(legacyRefresh.valid && !legacyRefresh.isPaired && legacyRefresh.pairingCode == "ABCDEF");
+    JsonDocument minimal;
+    deserializeJson(minimal, R"({"isPaired":false,"pairingCode":"ABCDEF","pairingCodeExpiresAt":"2026-10-27T00:05:00.000Z"})");
+    assert(lockbox::security::pairingRefreshResponse(minimal.as<JsonVariantConst>()).valid);
+    minimal["pairingCode"] = "AB/CD1";
+    assert(!lockbox::security::pairingRefreshResponse(minimal.as<JsonVariantConst>()).valid);
+    minimal["pairingCode"] = "ABCDEF";
+    minimal.remove("pairingCodeExpiresAt");
+    assert(!lockbox::security::pairingRefreshResponse(minimal.as<JsonVariantConst>()).valid);
+    deserializeJson(minimal, R"({"isPaired":true,"pairingCode":"","pairingCodeExpiresAt":null})");
+    const auto claimed = lockbox::security::pairingRefreshResponse(minimal.as<JsonVariantConst>());
+    assert(claimed.valid && claimed.isPaired && claimed.pairingCode.empty() && claimed.pairingCodeExpiresAt.empty());
+    minimal["isPaired"] = "true";
+    assert(!lockbox::security::pairingRefreshResponse(minimal.as<JsonVariantConst>()).valid);
     for (int mode = 0; mode < 5; ++mode) {
         Prompt prompt;
         if (mode == 0) prompt.present = false;
@@ -119,6 +136,14 @@ int main() {
         if (mode == 2 || mode == 4) assert(prompt.statusCalls == 0);
     }
     Prompt success; pollPairingPrompt(success); assert(success.confirms == 1);
+    Prompt claimedDuringRefresh;
+    claimedDuringRefresh.pairedReply = true;
+    pollPairingPrompt(claimedDuringRefresh);
+    assert(claimedDuringRefresh.confirms == 1 && claimedDuringRefresh.statusCalls == 0);
+    Prompt claimAfterSkip;
+    claimAfterSkip.pairedReply = true; claimAfterSkip.leaveDuringAuth = true;
+    pollPairingPrompt(claimAfterSkip);
+    assert(claimAfterSkip.confirms == 0);
     StateContext context;
     sm<DisplayMachine, testing> machine{context};
     machine.set_current_states("init.preflight.pairingPrompt"_s);
@@ -148,5 +173,12 @@ int main() {
     assert(pairingCodeRefreshDue());
     markPairingCodeRefreshAttempt();
     assert(!pairingCodeRefreshDue());
+    markPairingCodePaired();
+    assert(pairingCodeIsPaired() && currentPairingCode().empty());
+    assert(!pairingCodeRefreshDue()); // claim does not clear the retry throttle
+    testMonotonicMs += 5000;
+    assert(pairingCodeRefreshDue()); // a later external unpair can be observed
+    acceptPairingCode("ABCDEF", "2026-10-27T00:10:00Z");
+    assert(!pairingCodeIsPaired() && currentPairingCode() == "ABCDEF");
     std::cout << "PASS pairing UTC parsing/lease/rotation/offline/failure/Skip/settings and exact SML display fragment\n";
 }

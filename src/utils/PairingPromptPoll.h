@@ -12,7 +12,10 @@ void pollPairingPrompt(Prompt& prompt) {
     if (prompt.refreshDue()) {
         prompt.markAttempt();
         const auto response = prompt.authenticate(3000);
-        if (response.valid) prompt.accept(response);
+        if (response.valid) {
+            prompt.accept(response);
+            if (response.isPaired && prompt.active() && prompt.onboarding()) prompt.confirm();
+        }
         prompt.repaintIfChanged();
     }
     if (prompt.active() && prompt.onboarding() &&

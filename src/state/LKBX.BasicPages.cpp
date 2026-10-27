@@ -148,7 +148,9 @@ void LKBX::drawPairingCode(bool onboarding) {
     if (code.isEmpty()) {
         // Clear any old QR, preserving the supported Skip/back controls.
         const TextPage page{.header = Str::Screen::INIT_PAIRING_TITLE,
-                            .content = "Refreshing pairing code. Check Wi-Fi if this continues."};
+                            .content = pairingCodeIsPaired()
+                                ? "Your lockbox is already paired. Press Back to return."
+                                : "Refreshing pairing code. Check Wi-Fi if this continues."};
         drawPage(&page);
         if (xSemaphoreTake(displayMutex, 100) == pdTRUE) {
             drawButtons(display, onboarding ? Action{Str::Action::SKIP} : continueAction, backAction);

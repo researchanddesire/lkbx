@@ -7,3 +7,5 @@ void acceptPairingCode(const String& code, const String& expiresAt);
 String currentPairingCode();
 bool pairingCodeRefreshDue();
 void markPairingCodeRefreshAttempt();
+void markPairingCodePaired();
+bool pairingCodeIsPaired();

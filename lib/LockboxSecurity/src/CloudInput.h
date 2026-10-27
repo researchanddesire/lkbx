@@ -33,6 +33,27 @@ inline bool authResponse(JsonVariantConst value) {
            value["isPaired"].is<bool>();
 }
 
+struct PairingRefreshResponse {
+    std::string pairingCode;
+    std::string pairingCodeExpiresAt;
+    bool isPaired = false;
+    bool valid = false;
+};
+
+// This response is deliberately independent of broker credentials and firmware
+// registration. Extra legacy full-auth fields are ignored, never persisted.
+inline PairingRefreshResponse pairingRefreshResponse(JsonVariantConst value) {
+    if (!value.is<JsonObjectConst>() || !value["isPaired"].is<bool>()) return {};
+    if (value["isPaired"].as<bool>()) return {"", "", true, true};
+    uint64_t expiry = 0;
+    if (!boundedString(value["pairingCode"], 6, 6) ||
+        !pairingCodeValue(value["pairingCode"].as<const char*>()) ||
+        !boundedString(value["pairingCodeExpiresAt"], 20, 27) ||
+        !pairingExpiryMs(value["pairingCodeExpiresAt"].as<const char*>(), expiry)) return {};
+    return {value["pairingCode"].as<std::string>(),
+            value["pairingCodeExpiresAt"].as<std::string>(), false, true};
+}
+
 // PostgreSQL timestamps can arrive as integral decimal JSON numbers. Accept
 // those without permitting fractions, strings, or values outside the exact
 // integer range shared by the server's JSON number representation.

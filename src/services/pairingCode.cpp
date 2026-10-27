@@ -7,10 +7,12 @@
 namespace {
 std::mutex mutex;
 lockbox::security::PairingCodeLease lease;
+bool paired = false;
 }
 
 void acceptPairingCode(const String& code, const String& expiresAt) {
     std::lock_guard<std::mutex> guard(mutex);
+    paired = false;
     lease.accept(code.c_str(), expiresAt.c_str(), currentWallClockMs(), currentMonotonicMs(), isTimeSynced);
 }
 String currentPairingCode() {
@@ -24,4 +26,13 @@ bool pairingCodeRefreshDue() {
 void markPairingCodeRefreshAttempt() {
     std::lock_guard<std::mutex> guard(mutex);
     lease.attempted(currentMonotonicMs());
+}
+void markPairingCodePaired() {
+    std::lock_guard<std::mutex> guard(mutex);
+    paired = true;
+    lease.clear();
+}
+bool pairingCodeIsPaired() {
+    std::lock_guard<std::mutex> guard(mutex);
+    return paired;
 }

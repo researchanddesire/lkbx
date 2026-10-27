@@ -17,7 +17,8 @@ namespace {
         if (!response.valid) {
             return;
         }
-        acceptPairingCode(response.pairingCode, response.pairingCodeExpiresAt);
+        if (response.isPaired) markPairingCodePaired();
+        else acceptPairingCode(response.pairingCode, response.pairingCodeExpiresAt);
         if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) !=
             pdTRUE) {
             return;
@@ -242,16 +243,20 @@ void LKBX::pollPairingTask(void *pvParameters) {
         bool connected() const { return WiFi.status() == WL_CONNECTED; }
         bool refreshDue() const { return pairingCodeRefreshDue(); }
         void markAttempt() { markPairingCodeRefreshAttempt(); }
-        AuthResponse authenticate(int timeout) { return getAuthToken(timeout); }
-        void accept(const AuthResponse& response) {
+        lockbox::security::PairingRefreshResponse authenticate(int timeout) {
+            return getPairingCodeRefresh(timeout);
+        }
+        void accept(const lockbox::security::PairingRefreshResponse& response) {
             // Never reconfigure the MQTT client or restart when refreshing QR.
-            acceptPairingCode(response.pairingCode, response.pairingCodeExpiresAt);
+            if (response.isPaired) markPairingCodePaired();
+            else acceptPairingCode(response.pairingCode.c_str(), response.pairingCodeExpiresAt.c_str());
         }
         PairingStatus pairingStatus(int timeout) { return getPairingStatus(timeout); }
         void confirm() { device->sm->process_event(PairingConfirmed{}); }
         void repaintIfChanged() {
             if (!active()) { lastVisible = ""; return; }
-            const String visible = currentPairingCode();
+            String visible = currentPairingCode();
+            if (visible.isEmpty()) visible = pairingCodeIsPaired() ? "[paired]" : "[waiting]";
             if (visible != lastVisible) {
                 lastVisible = visible;
                 device->sm->process_event(PairingCodeChanged{});

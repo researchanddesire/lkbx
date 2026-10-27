@@ -7,6 +7,12 @@
 
 namespace lockbox::security {
 
+inline bool pairingCodeValue(std::string_view code) {
+    return code.size() == 6 && std::all_of(code.begin(), code.end(), [](char ch) {
+        return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+    });
+}
+
 // Auth responses use ISO UTC, independent of the device's timezone. Accept
 // second precision and up to six fractional digits; reject offsets/naive dates.
 inline bool pairingExpiryMs(std::string_view text, uint64_t& output) {
@@ -58,9 +64,7 @@ class PairingCodeLease {
 
     bool accept(std::string_view code, std::string_view expiry, uint64_t wallMs,
                 uint64_t monotonicMs, bool trustedClock) {
-        if (code.size() != 6 || !std::all_of(code.begin(), code.end(), [](char ch) {
-                return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
-            })) return false;
+        if (!pairingCodeValue(code)) return false;
         uint64_t parsed = 0;
         if (!expiry.empty() && (!pairingExpiryMs(expiry, parsed) ||
                                 !trustedClock || parsed <= wallMs)) return false;
@@ -81,6 +85,8 @@ class PairingCodeLease {
     }
 
     void attempted(uint64_t monotonicMs) { attempted_ = true; lastAttemptMs_ = monotonicMs; }
+    // Preserve retry bookkeeping when a claim invalidates the displayed code.
+    void clear() { code_.clear(); expiresAtMs_ = 0; maximumLifetimeMs_ = 0; }
 
  private:
     uint64_t remaining(uint64_t wallMs, uint64_t monotonicMs, bool trustedClock) const {
