@@ -236,7 +236,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 
 ### Build Scripts
 
-- `pre_build_script.py` applies `scripts/patch_sdk_security.py` to every device profile and, for development profiles only, force-includes the generated `.dev/local/include/lkbx_dev_config.h` from `scripts/dev_services.py`. Development builds never contact cloud services.
+- `pre_build_script.py` applies `scripts/patch_sdk_security.py` to every device profile and, for development profiles only, force-includes the generated `.dev/local/include/lkbx_dev_config.h` from `scripts/dev_services.py`. Outside CI, each development build reconfigures for this machine's current private LAN IP (set `LKBX_DEV_LAN_IP` to pin one), and a digest of that header forces a rebuild whenever it changes. Development builds never contact cloud services.
 - Local fixtures support `configure --api-port <port> --mqtt-port <port>` to coexist with other bench services. Reconfiguration preserves the selected primary device and ports; Windows configuration directories use explicit user/SYSTEM ACLs because `chmod` does not restrict Windows access.
 - The pinned ESP-IDF 4.4 mbedTLS hostname verifier checks only dNSName SANs. Local certificates include exact literal-IP dNSNames alongside proper IP SANs; certificate-profile migration preserves the existing CA, leaf key and validity interval so firmware trust and cached clocks remain usable.
 - Older OpenSSL 3.x micro-CA mode requires self-signed certificate input. Migrate local leaf names through private transient signing, and atomically install only after the existing CA, IP/DNS names, public key and exact validity dates pass verification; never install or trust the transient certificate.
