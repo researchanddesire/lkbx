@@ -112,6 +112,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 "include/**",
                 "lib/**",
                 "src/**",
+                "test/**",
                 "platformio.ini",
                 "partition.csv",
                 "sdkconfig*",

@@ -3,6 +3,7 @@
 #include <WiFi.h>
 
 #include "FirmwareProvenance.h"
+#include "FirmwareProvenanceResponse.h"
 #include "utils/breakTiming.h"
 #include "utils/freezeState.h"
 
@@ -394,16 +395,10 @@ radble::Result handleCommand(JsonObjectConst request, void*) {
         if (path == "device.firmwareProvenance") {
             const auto snapshot = firmware::provenance::runningSnapshot(
                 FIRMWARE_TRACK, "lkbx", VERSION, FIRMWARE_BUILD_SHA);
-            JsonDocument document;
-            document["path"] = path;
-            document["origin"] = snapshot.origin;
-            document["keyId"] = snapshot.keyId;
-            document["provenanceId"] = snapshot.provenanceId;
-            document["imageSha256"] = snapshot.imageSha256;
-            document["compactJws"] = snapshot.token;
-            String output;
-            serializeJson(document, output);
-            return radble::Result::success(output);
+            const auto response = firmware::provenance::response(snapshot, args);
+            return response.ok
+                ? radble::Result::success(response.json.c_str())
+                : radble::Result::failure(response.code, response.message);
         }
         if (path.startsWith("lockbox.motor") ||
             path.startsWith("lockbox.button") ||
@@ -462,13 +457,13 @@ radble::Result handleCommand(JsonObjectConst request, void*) {
             else
                 document["value"] = powerTelemetry.powerMw;
         } else if (path == "connectivity.clock") {
-            document["synced"] = isTimeSynced;
+            document["synced"] = isTimeSynced.load(std::memory_order_acquire);
             document["wallMs"] = currentWallClockMs();
             document["monotonicMs"] = currentMonotonicMs();
         } else if (path == "connectivity.mqtt")
             document["value"] = mqttConnected;
         else if (path == "connectivity.server")
-            document["value"] = isServerOnline;
+            document["value"] = isServerOnline(WiFi.status() == WL_CONNECTED);
         else if (path == "connectivity.wifi") {
             const bool connected = WiFi.status() == WL_CONNECTED;
             document["connected"] = connected;
@@ -939,15 +934,17 @@ String snapshot(radble::Surface surface, void*) {
                 xSemaphoreGive(preferencesMutex);
             }
             break;
-        case radble::Surface::Connectivity:
-            document["wifi"] = WiFi.status() == WL_CONNECTED;
-            document["rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+        case radble::Surface::Connectivity: {
+            const bool wifiConnected = WiFi.status() == WL_CONNECTED;
+            document["wifi"] = wifiConnected;
+            document["rssi"] = wifiConnected ? WiFi.RSSI() : 0;
             document["ip"] = WiFi.localIP().toString();
             document["mqtt"] = mqttConnected;
-            document["server"] = isServerOnline;
-            document["clockSynced"] = isTimeSynced;
+            document["server"] = isServerOnline(wifiConnected);
+            document["clockSynced"] = isTimeSynced.load(std::memory_order_acquire);
             document["wallMs"] = currentWallClockMs();
             break;
+        }
         case radble::Surface::Indicator:
             document["id"] = "backlight";
             document["available"] = true;

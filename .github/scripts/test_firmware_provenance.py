@@ -56,7 +56,7 @@ class FirmwareProvenanceTests(unittest.TestCase):
             )
             with mock.patch.dict(
                 os.environ,
-                {"FIRMWARE_PROVENANCE_SIGNING_KEY_PEM": key_path.read_text()},
+                {"FIRMWARE_PROVENANCE_SIGNING_KEY_PEM": key_path.read_text(), "PATH": os.environ.get("PATH", "")},
                 clear=True,
             ):
                 with self.assertRaisesRegex(RuntimeError, "does not match"):

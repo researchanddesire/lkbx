@@ -4,7 +4,7 @@ services:
     user: "0:0"
     entrypoint: ["/bin/sh", "/fixture/start-mosquitto.sh"]
     ports:
-      - "${LKBX_DEV_BIND_IP:-127.0.0.1}:8883:8883"
+      - "${LKBX_DEV_BIND_IP:-127.0.0.1}:${LKBX_DEV_MQTT_PORT:-8883}:8883"
     volumes:
       - ./.dev/local/broker-passwords:/local/broker-passwords:ro
       - ./.dev/local/broker.acl:/local/broker.acl:ro
@@ -27,7 +27,7 @@ services:
     image: python:3.13.7-alpine3.22@sha256:9ba6d8cbebf0fb6546ae71f2a1c14f6ffd2fdab83af7fa5669734ef30ad48844
     command: ["python", "-B", "/fixture/http_fixture.py", "--bind", "0.0.0.0", "--config", "/local/settings.json", "--cert", "/local/server.pem", "--key", "/local/server.key", "--ca", "/local/ca.pem", "--broker", "mosquitto"]
     ports:
-      - "${LKBX_DEV_BIND_IP:-127.0.0.1}:8443:8443"
+      - "${LKBX_DEV_BIND_IP:-127.0.0.1}:${LKBX_DEV_API_PORT:-8443}:8443"
     volumes:
       - ./.dev/local/settings.json:/local/settings.json:ro
       - ./.dev/local/server.key:/local/server.key:ro

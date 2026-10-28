@@ -206,6 +206,13 @@ namespace Tasks {
         .core = 1,
     };
 
+    constexpr TaskParams pairingPoll = {
+        .name = "pairingPoll",
+        .stackSize = 6 * configMINIMAL_STACK_SIZE,
+        .priority = 1,
+        .core = 1,
+    };
+
     constexpr TaskParams syncLockState = {
         .name = "syncLockState",
         .stackSize = 6 * configMINIMAL_STACK_SIZE,
@@ -280,6 +287,7 @@ namespace TaskHandles {
     extern TaskHandle_t checkWifi;
     extern TaskHandle_t checkUpdates;
     extern TaskHandle_t pairingCheck;
+    extern TaskHandle_t pairingPoll;
     extern TaskHandle_t syncLockState;
     extern TaskHandle_t syncClock;
     extern TaskHandle_t wifiConnect;

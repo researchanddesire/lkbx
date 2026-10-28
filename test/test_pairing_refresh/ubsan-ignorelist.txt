@@ -1,0 +1,5 @@
+# Boost.SML intentionally uses zero-storage empty-functor references. Clang's
+# object-size instrumentation diagnoses those inside the unmodified vendor.
+# Keep all production lease/service/polling code instrumented; ASan remains on.
+[undefined]
+src:*sml.hpp

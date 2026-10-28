@@ -2,6 +2,9 @@
 
 #include "FirmwareUpdateProtocol.h"
 
+void setUp() {}
+void tearDown() {}
+
 namespace {
 
 const char *VALID_RESPONSE = R"json({

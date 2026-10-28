@@ -2,6 +2,7 @@
 """Exercise authorization, device isolation, and HTTPS using local fixtures only."""
 
 import importlib.util
+from email.utils import parsedate_to_datetime
 import json
 from pathlib import Path
 import socket
@@ -41,8 +42,10 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_missing_and_wrong_credentials_rejected(self):
         for token in ("", "wrong", "bearer synthetic-first", "Bearer café", "Bearer " + "x" * 129):
-            self.assertEqual(self.fixture.dispatch("GET", "/api/health-check", token, {})[0], 401)
-        self.assertEqual(self.call("/api/health-check", method="GET")[0], 200)
+            for path in ("/api/health", "/api/health-check"):
+                self.assertEqual(self.fixture.dispatch("GET", path, token, {})[0], 401)
+        for path in ("/api/health", "/api/health-check"):
+            self.assertEqual(self.call(path, method="GET")[0], 200)
 
     def test_authentication_cannot_issue_another_device_credentials(self):
         self.assertEqual(self.call("/api/lockbox/auth", {"mac": SECOND})[0], 403)
@@ -77,6 +80,14 @@ class AuthorizationTests(unittest.TestCase):
         self.assertEqual(self.published[0][0], FIRST)
         self.assertEqual(self.published[0][1]["type"], "sync")
         self.assertEqual(self.call(path, {"lockState": "locked", "lockEnd": True}, token="synthetic-controller", method="PUT")[0], 400)
+
+    def test_http_duration_ms_matches_mqtt_duration_seconds(self):
+        path = "/api/local/v1/session/" + FIRST
+        code, response = self.call(path, {"lockState": "locked", "duration": 60000}, token="synthetic-controller", method="PUT")
+        self.assertEqual(code, 200)
+        self.assertEqual(response["data"]["duration"], 60000)
+        self.assertEqual(self.published[-1][1]["duration"], 60)
+        self.assertEqual(self.call("/api/lockbox/state/" + FIRST, method="GET")[1]["data"]["duration"], 60000)
 
     def test_firmware_fixture_never_returns_downloads_or_cloud_redirects(self):
         report = {"deviceType": "lkbx", "deviceId": FIRST, "reportedTrack": "main", "currentVersion": "1.2.3"}
@@ -140,6 +151,24 @@ class HttpsProcessTests(unittest.TestCase):
         self.assertEqual(self.request("/api/health-check", token)[0], 200)
         self.assertEqual(self.request("/api/lockbox/auth", token, json.dumps({"mac": SECOND}).encode())[0], 403)
         self.assertEqual(self.request("/api/lockbox/auth", token, json.dumps({"mac": FIRST}).encode())[0], 200)
+
+    def test_firmware_clock_endpoint_returns_authenticated_current_date(self):
+        # The firmware clock bootstrap uses /api/health, while its connectivity
+        # probe uses /api/health-check. Both must remain authenticated.
+        self.assertEqual(self.request("/api/health")[0], 401)
+        request = urllib.request.Request(
+            f"https://127.0.0.1:{self.port}/api/health",
+            headers={"Authorization": "Bearer " + self.config["devices"][FIRST]["api_token"]},
+        )
+        before = time.time()
+        with self.opener.open(request, timeout=2) as response:
+            self.assertEqual(response.status, 200)
+            dates = response.headers.get_all("Date")
+            self.assertEqual(len(dates), 1)
+            self.assertEqual(len(dates[0]), 29)
+            timestamp = parsedate_to_datetime(dates[0]).timestamp()
+        self.assertGreaterEqual(timestamp, int(before) - 1)
+        self.assertLessEqual(timestamp, time.time() + 1)
 
     def test_real_https_rejects_malformed_and_oversize_body(self):
         token = self.config["devices"][FIRST]["api_token"]

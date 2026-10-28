@@ -58,6 +58,7 @@ class LKBX {
     void setLoadingText(const char *text);
     void stopLoadingAnimation();
     void drawPage(const TextPage *page);
+    void drawPairingCode(bool onboarding);
     void startUnlockTimer();
     void startBreakTimer();
     void drawBreakCooldown(bool initial);
@@ -367,23 +368,13 @@ class LKBX {
             };
 
             auto drawPairingQR = [](LKBX &o) {
-                String pairingCode = getPairingCode();
-                o.drawQRCode(
-                    String(Str::Screen::PAIRING_PREFIX) + pairingCode,
-                    Str::Screen::PAIRING_DESC,
-                    String(Str::Url::DASHBOARD_PAIR_BASE) + pairingCode,
-                    Str::Label::SCAN);
+                o.drawPairingCode(false);
             };
 
             // Onboarding pairing QR — differs from the settings drawPairingQR
             // by offering a "Skip" button and different copy.
             auto drawInitPairingQR = [](LKBX &o) {
-                String pairingCode = getPairingCode();
-                o.drawQRCode(
-                    Str::Screen::INIT_PAIRING_TITLE,
-                    String(Str::Screen::INIT_PAIRING_DESC_PREFIX) + pairingCode,
-                    String(Str::Url::DASHBOARD_PAIR_BASE) + pairingCode,
-                    Str::Label::PAIR, {Str::Action::SKIP});
+                o.drawPairingCode(true);
             };
 
             auto drawEnrolInAlphaQR = [](LKBX &o) {
@@ -550,12 +541,13 @@ class LKBX {
 
             // Phase-2 pairing poll: only runs while the pairing QR is shown.
             auto startPairingPoll = [](LKBX &o) {
+                if (TaskHandles::pairingPoll != nullptr) return;
                 ESP_LOGD(TASKDEBUG_TAG, "Creating pairing poll task");
                 xTaskCreatePinnedToCore(
-                    o.pollPairingTask, Tasks::pairingCheck.name,
-                    Tasks::pairingCheck.stackSize, &o,
-                    Tasks::pairingCheck.priority, &TaskHandles::pairingCheck,
-                    Tasks::pairingCheck.core);
+                    o.pollPairingTask, Tasks::pairingPoll.name,
+                    Tasks::pairingPoll.stackSize, &o,
+                    Tasks::pairingPoll.priority, &TaskHandles::pairingPoll,
+                    Tasks::pairingPoll.core);
             };
 
             auto needsPairing = [](LKBX &o) { return o.initNeedsPairing; };
@@ -645,6 +637,7 @@ class LKBX {
 
                 // Pairing prompt (phase 2): only shown when not yet paired
                 "init.preflight.pairingPrompt"_s + on_entry<_> / (pauseLoadingAnimation, drawInitPairingQR, startPairingPoll),
+#include "PairingDisplayTransitions.inc"
                 "init.preflight.pairingPrompt"_s + event<PairingConfirmed> = "init.preflight.pairingSuccess"_s,
                 "init.preflight.pairingPrompt"_s + buttonPress = "init.preflight.syncLockState"_s,
 
@@ -704,7 +697,7 @@ class LKBX {
                 "enrolInAlpha"_s + buttonPress / (toggleAlpha) = X,
 
                 "pairing"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
-                "pairing"_s + on_entry<_> / (drawPairingQR),
+                "pairing"_s + on_entry<_> / (drawPairingQR, startPairingPoll),
                 "pairing"_s + backPress = "home.settings"_s,
                 "pairing"_s + buttonPress = "home"_s,
                 "pairing"_s + forceUpdate = "update"_s,
@@ -795,7 +788,6 @@ class LKBX {
                 // Messages from Dashboard
                 "locked"_s + locktimer / (switchToTimer)= "locking"_s,
                 "locked"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
-                "locked"_s + breakE = "locked.break"_s,
                 "locked"_s + forceUpdate = "update"_s,
 
                 "locked.timer"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
@@ -805,7 +797,6 @@ class LKBX {
                 "locked.timer"_s + lock / (switchToLock) = "locking"_s,
                 "locked.timer"_s + locktimer / (switchToTimer) = "locking"_s,
                 "locked.timer"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
-                "locked.timer"_s + breakE = "locked.break"_s,
                 "locked.timer"_s + forceUpdate = "update"_s,
 
                 "locked.ready"_s + on_entry<_> / (drawReadyToUnlock, startUnlockTimer),
@@ -835,7 +826,6 @@ class LKBX {
                 "lockMenu"_s + lock / (switchToLock) = "locking"_s,
                 "lockMenu"_s + locktimer / (switchToTimer) = "locking"_s,
                 "lockMenu"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
-                "lockMenu"_s + breakE = "locked.break"_s,
                 "lockMenu"_s + forceUpdate = "update"_s,
 
                 "locked.breaking"_s + on_entry<_> / (drawBreakQR),
@@ -849,7 +839,6 @@ class LKBX {
                 "locked.breakPreflight"_s + error[isError(ErrorT::BREAK_NOT_ENABLED)] / (drawBreakNotEnabledQR) = "locked.breakError"_s,
                 "locked.breakPreflight"_s + error[isError(ErrorT::BREAK_KEYHOLDER_ONLY)] / (drawBreakKeyholderOnlyQR) = "locked.breakError"_s,
                 "locked.breakPreflight"_s + error[isError(ErrorT::TOO_SOON_FOR_BREAK)] = "locked.breakCooldown"_s,
-                "locked.breakPreflight"_s + breakE / sendMessage(Str::Protocol::BREAK) = "locked.break"_s,
                 "locked.breakPreflight"_s + backPress = "locking"_s,
 
                 "locked.breakError"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
@@ -864,7 +853,9 @@ class LKBX {
                 "locked.breakCooldown"_s + backPress = "lockMenu"_s,
 
                 "locked.break"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
-                "locked.break"_s + on_entry<_> / (movePaddleToUnlock, startBreakTimer, clearLockedReport),
+                // Shared entry reports dashboard and local breaks after their
+                // start timestamp has been persisted by startBreakTimer.
+#include "BreakEntryTransitions.inc"
                 "locked.break"_s + done[!isBreakEndRequested] / (clearActiveBreak, movePaddleToLock) = "locking"_s,
                 "locked.break"_s + buttonPress[acceptBreakEnd] / movePaddleToLock = "locking"_s,
                 "locked.break"_s + unlock / (clearActiveBreak, clearLocalPlay, unlockAction) = "locking"_s,

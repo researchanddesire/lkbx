@@ -47,6 +47,7 @@ struct Done {};
 // Only physical pin detection can advance calibration to motor movement.
 struct ButtonCalibrated {};
 struct PairingConfirmed {};
+struct PairingCodeChanged {};
 
 struct Error {
     ErrorT error = ErrorT::UNDEFINED;
