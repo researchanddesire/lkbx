@@ -188,8 +188,8 @@ class LKBX {
 
             auto drawWifiSetupQR = [](LKBX &o) {
                 o.drawQRCode(Str::Screen::WIFI_SETUP_TITLE,
-                             portalWifiInstructions(),
-                             portalWifiQRCode(), Str::Label::WIFI);
+                             Str::Screen::WIFI_SETUP_DESC,
+                             Str::Screen::WIFI_SETUP_QR, Str::Label::WIFI);
             };
 
             auto drawWifiErrorNetworkQR = [](LKBX &o) {

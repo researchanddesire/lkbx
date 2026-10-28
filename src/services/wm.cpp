@@ -14,8 +14,6 @@
 WiFiManager wm;
 
 namespace {
-String portalPassword;
-
 bool isSetupClient(WebServer& server) {
     const auto client = server.client();
     const uint32_t apAddress = WiFi.softAPIP();
@@ -35,19 +33,6 @@ bool isSetupClient(WebServer& server) {
         uint32_t(client.localIP()), apAddress, uint32_t(client.remoteIP()),
         addresses, std::size_t(ipStations.num),
         WiFi.status() == WL_CONNECTED ? uint32_t(WiFi.localIP()) : 0);
-}
-
-const String& setupPassword() {
-    if (portalPassword.length() != 16) {
-        char value[17];
-        const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-        for (size_t i = 0; i < 16; ++i) {
-            value[i] = alphabet[esp_random() % (sizeof(alphabet) - 1)];
-        }
-        value[16] = '\0';
-        portalPassword = value;
-    }
-    return portalPassword;
 }
 
 const IPAddress kPortalApIp(192, 168, 4, 1);
@@ -93,16 +78,6 @@ void registerCaptivePortalFallbackRoutes() {
 }
 }  // namespace
 
-String portalWifiQRCode() {
-    return String("WIFI:T:WPA;S:") + Str::Wifi::PORTAL_SSID + ";P:" +
-           setupPassword() + ";;";
-}
-
-String portalWifiInstructions() {
-    return String("Scan to connect, or join Lockbox Setup with password ") +
-           setupPassword() + ". Then visit http://192.168.4.1.";
-}
-
 void initWM() {
     wm.setDebugOutput(false);
     WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t) {
@@ -145,11 +120,9 @@ void processWifiTask(void *pvParameters) {
                lkbx->sm->is("emergency.wifi"_s) || lkbx->sm->is("wmConfig"_s) ||
                lkbx->sm->is("update.wifi"_s);
     };
-    if (setupPassword().length() != 16) {
-        vTaskDelete(nullptr);
-        return;
-    }
-    wm.startConfigPortal(Str::Wifi::PORTAL_SSID, setupPassword().c_str());
+    // The setup network is intentionally open on every track; the portal
+    // guard still admits only clients associated with this access point.
+    wm.startConfigPortal(Str::Wifi::PORTAL_SSID);
     registerCaptivePortalFallbackRoutes();
     wm.process();
 

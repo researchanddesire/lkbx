@@ -3,8 +3,6 @@
 
 #include "WiFiManager.h"
 
-String portalWifiQRCode();
-String portalWifiInstructions();
 #include "http_worker.h"
 
 extern WiFiManager wm;
