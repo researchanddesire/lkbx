@@ -1001,6 +1001,7 @@ class LKBX {
     static void pollPairingTask(void *pvParameters);
     static void syncLockStateOnBootTask(void *pvParameters);
     static void syncClockOnBootTask(void *pvParameters);
+    static void retryClockSyncTask(void *pvParameters);
 
   public:
     LKBX(Adafruit_ST7789 &display, AiEsp32RotaryEncoder &encoder, Motor &motor,
@@ -1117,6 +1118,12 @@ class LKBX {
     void resendLockedReport() {
         if (!client || !isTimeSynced) {
             lockedReport::tracker.onRetry(-1, millis(), {});
+            // A failed boot-time clock sync is otherwise only retried on the
+            // next boot or reconnect, holding an accepted lock unreported.
+            const bool retrying = !isTimeSynced && startClockRetry();
+            ESP_LOGW(MQTT_TAG, "LOCKED report held: %s%s",
+                     client ? "clock not verified" : "no MQTT client",
+                     retrying ? ", retrying clock sync" : "");
             return;
         }
         std::string payload = lockedReport::tracker.payload();
@@ -1131,6 +1138,24 @@ class LKBX {
                  static_cast<unsigned>(lockedReport::tracker.attemptCount()),
                  static_cast<unsigned>(lockedReport::kMaxAttempts), result);
     }
+
+    // Starts one background clock sync at most every kClockRetryIntervalMs.
+    // It shares the boot sync's task handle, so the two never run together.
+    bool startClockRetry() {
+        const uint32_t now = millis();
+        if (TaskHandles::syncClock != nullptr ||
+            (clockRetryStartedMs != 0 &&
+             now - clockRetryStartedMs < lockedReport::kClockRetryIntervalMs))
+            return false;
+        clockRetryStartedMs = now;
+        return xTaskCreatePinnedToCore(
+                   retryClockSyncTask, Tasks::syncClock.name,
+                   Tasks::syncClock.stackSize, nullptr,
+                   Tasks::syncClock.priority, &TaskHandles::syncClock,
+                   Tasks::syncClock.core) == pdPASS;
+    }
+
+    uint32_t clockRetryStartedMs = 0;
 };
 
 #endif  // LOCKBOX_LKBX_H
