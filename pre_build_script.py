@@ -2,6 +2,7 @@
 
 Import("env")
 
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -21,10 +22,19 @@ if profile in {"development-r2", "development-r8"}:
     spec = importlib.util.spec_from_file_location("lkbx_dev_services", root / "scripts/dev_services.py")
     local = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(local)
-    settings = local.configure(root, lan_ip=os.environ.get("LKBX_DEV_LAN_IP"))
+    # Like the other firmware repos' localhost replacement, follow this
+    # machine's current LAN address unless LKBX_DEV_LAN_IP pins one.
+    lan_ip = os.environ.get("LKBX_DEV_LAN_IP")
+    if not lan_ip and not os.environ.get("CI"):
+        lan_ip = local.detect_lan_ip()
+    settings = local.configure(root, lan_ip=lan_ip)
     # A forced include keeps credentials out of compiler command lines/logs.
     header = root / ".dev/local/include/lkbx_dev_config.h"
     env.Append(CCFLAGS=["-include", str(header)])
+    # SCons does not scan forced includes; a digest of the generated header
+    # makes an address or credential change rebuild every object.
+    digest = hashlib.sha256(header.read_bytes()).hexdigest()[:16]
+    env.Append(CPPDEFINES=[("LKBX_DEV_CONFIG_DIGEST", "0x" + digest)])
     targets = set(COMMAND_LINE_TARGETS)
     if local.should_start_services(profile, targets, bool(os.environ.get("CI"))):
         if settings["lan_ip"] == "127.0.0.1":
