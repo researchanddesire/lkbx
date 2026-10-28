@@ -19,12 +19,17 @@ Published docs are aggregated at [dev.researchanddesire.com/lockbox](https://dev
 ## Build
 
 ```bash
-cp platformio_private.ini.example platformio_private.ini   # edit endpoints
-pio run -e development
-pio run -e test -t test
+python software/dev/dev_services.py configure --lan-ip <private-IP>   # local fixture services
+cd software/firmware
+pio run -e development-r8                                             # or development-r2
+pio test -e test
 pio check
 ```
 
 ## Repository layout
 
-See [Architecture](architecture.md) for state machine and task structure. Full reference: [`CLAUDE.md`](https://github.com/researchanddesire/Lockbox/blob/main/CLAUDE.md) in repo root (AI/local contributor context).
+- `software/firmware/`: the PlatformIO project (`src/`, `include/`, `lib/`, `boards/`, `test/`, `platformio.ini`).
+- `software/scripts/`: build-hook helpers, release, screen capture and rig tooling.
+- `software/dev/`: local HTTPS and MQTT fixture services for development builds.
+
+See [Architecture](architecture.md) for state machine and task structure. Full reference: [`AGENTS.md`](https://github.com/researchanddesire/Open-Source-Chastity-Lockbox_LKBX/blob/main/AGENTS.md) in the repository root.

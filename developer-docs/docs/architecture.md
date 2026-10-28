@@ -1,5 +1,7 @@
 # Architecture
 
+Source paths below are relative to the PlatformIO project in `software/firmware/`.
+
 ## State machine
 
 Core logic is a Boost.SML state machine in `src/state/LKBX.h` (~62 states). Events include `ButtonPress`, `Lock`, `Unlock`, `Break`, `WifiConnected`, `Done`, `Error`. Guards cover lock status, paddle position, online state, calibration, and emergency lockout.
