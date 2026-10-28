@@ -10,20 +10,39 @@ holds it with two parts and no adhesive:
   leaf fingers. Two edge pushers hold it against the alignment ribs, and its
   window locates the battery.
 
-`build_top_housing_snap_fit.py` applies the housing change to the Onshape
-export `../top-housing.step` and writes three files (none tracked):
-
-| File | Purpose |
-| --- | --- |
-| `../top-housing-snap-fit.step` | Housing with the lips, for test printing |
-| `../screen-keeper.step` | Keeper seated in housing coordinates, for the Onshape assembly |
-| `../screen-keeper-print.step` | Keeper flat on Z = 0, top face down, ready to slice |
-
-Run it with CadQuery 2.x (`pip install cadquery`). `top-housing.step` is
-untouched until a test print is approved; then carry the dimensions below
-into Onshape and re-export.
-
 ![Section views](snap-fit-sections.png)
+
+## The FreeCAD document
+
+`screen-snap-fit.FCStd` (FreeCAD 1.0) is the CAD for this change. It holds:
+
+| Object | What it is |
+| --- | --- |
+| `Params` | Spreadsheet of the tunable dimensions. Every feature reads them by expression, so changing a cell and recomputing rebuilds both bodies. |
+| `TopHousing` | PartDesign body. Its base feature is the Onshape export `../top-housing.step`; on top of it `RaiseTopRib` (pad), `TopLips` (one pad from `TopLipsSketch`), `TopLipLeadIn` (chamfer) and the two profile pads `BottomBlockLeft` and `BottomBlockRight`. |
+| `ScreenKeeper` | PartDesign body built from sketches: `Plate` (pad), `WindowCutout`, `TopSlots` and `BottomSlots` (through pockets), `ThinStrips` and `FingerLeaves` (pockets from below that thin the lip strips and the leaves), `FingerPillars`, `Feet` and `PusherTabs` (pads downward), `HookLeadIn` (chamfer). |
+| `References` | The screen at its datum (from `../lockbox-assembly.step`) and a 36 x 20.5 x 8 mm battery envelope, for checking fit inside FreeCAD. |
+
+Every sketch is fully constrained. Layout dimensions (slot positions, finger
+lengths, lip positions) live in the sketches; thicknesses, heights, preload
+and interference live in `Params`. The keeper body's coordinates are the
+housing's, so it sits seated in the document.
+
+`build_freecad.py` built the document (`freecadcmd build_freecad.py`) and
+also checks each body against a plain union of boxes. It is the record of
+how the geometry was derived and a regenerator; the document is the master.
+If you edit the document by hand, export from it rather than rerunning the
+script.
+
+Exports, all untracked: `../top-housing-snap-fit.step` (housing for test
+printing), `../screen-keeper.step` (keeper seated, housing coordinates) and
+`../screen-keeper-print.step` (keeper flat on Z = 0, top face down, ready to
+slice). Export them from FreeCAD or rerun the script.
+
+The housing itself is still the Onshape export underneath. Remodelling it
+natively in FreeCAD is a separate job; until then the lips are parametric
+features on the imported solid, and the dimensions below carry into any
+other tool.
 
 ## Why this shape
 
@@ -79,9 +98,9 @@ across it. Screen seated against the ribs: X -25.35 to 22.45, Y 8.05 to
 
 | Feature | Value |
 | --- | --- |
-| Top rib | Existing rib (X ±20, Y 42.65 to 45.65) raised to Z 8.85 |
-| Top lips | Three, X -17 to -11, -3 to 3, 11 to 17; underside Z 7.30; reach 1.0 mm over the pocket (to Y 41.65); 0.8 mm 45 degree chamfer on the inner top edge |
-| Bottom blocks | Two, X -12 to -8 and 4 to 8; Y 5.5 (cross wall) to 7.0; Z 1.8 to 8.85 |
+| Top rib | Existing rib (X ±20, Y 42.65 to 45.65) raised to Z 8.85 (`RaiseTopRib`) |
+| Top lips | Three, X -17 to -11, -3 to 3, 11 to 17; underside Z 7.30; reach 1.0 mm over the pocket (to Y 41.65); 0.8 mm 45 degree chamfer on the inner top edge (`TopLips`, `TopLipLeadIn`) |
+| Bottom blocks | Two, X -12 to -8 and 4 to 8; Y 5.5 (cross wall) to 7.0; Z 1.8 to 8.85 (`BottomBlockLeft`, `BottomBlockRight`) |
 | Bottom lips | On each block; underside Z 7.30; reach 0.8 mm (to Y 7.8); 45 degree lead-in on top for the hooks |
 
 No bridges: each lip is a 0.8 to 1.0 mm overhang off solid material.
@@ -90,11 +109,11 @@ No bridges: each lip is a 0.8 to 1.0 mm overhang off solid material.
 
 | Feature | Value |
 | --- | --- |
-| Outline | X -26.8 to 22.3, Y 8.2 to 42.45, 3.0 mm thick (seated Z 4.3 to 7.3) |
+| Outline | X -26.8 to 22.3, Y 7.2 to 42.45, 3.0 mm thick (seated Z 4.3 to 7.3) |
 | Battery window | X -21 to 18, Y 14.5 to 35.5 (39 x 21 mm) |
 | Ribbon cutout | Left rail open from Y 19.5 to 30.5 |
 | Top strip | Outer 1.0 mm (Y 41.45 to 42.45) thinned from below to 1.0 mm; goes under the top lips |
-| Fingers | Four leaves 3.0 wide x 1.4 thick, 12.5 mm root to tip, rooted at the middle of the top and bottom rails, free ends outward; 2 x 2 mm pillars under the tips reach Z 3.55 relaxed (0.35 mm preload) at X -20.5 to -18.5 and 13 to 15 |
+| Fingers | Four leaves 3.0 wide x 1.4 thick, 13 mm root to tip, rooted at the middle of the top and bottom rails, free ends outward; 2 x 2 mm pillars under the tips reach Z 3.55 relaxed (0.35 mm preload) at X -20.5 to -18.5 and 13 to 15 |
 | Snap hooks | Two in-plane beams 1.0 wide x 3.0 tall on the bottom edge, 11 to 12 mm long; 1.0 mm thick tabs at X -12 to -8 and 4 to 8 reach Y 7.2 under the bottom lips; 0.5 mm lead-in chamfer |
 | Y pusher | In-plane leaf 0.8 wide, 8 mm long, on the bottom edge; tab at X 0 to 2 reaches Z 2.6 beside the screen edge with 0.20 mm interference |
 | X pusher | In-plane leaf 0.8 wide, 8 mm long, on the left edge; tab at Y 16 to 19 with 0.20 mm interference |
@@ -120,6 +139,23 @@ clears the keeper; the PCB, cover and encoder clear everything; tilted 10
 degrees with its top edge under the lips, the keeper clears the housing and
 the screen.
 
+## Tuning in FreeCAD
+
+Open `screen-snap-fit.FCStd`, edit the `Params` cell, press recompute, and
+export. The cells you are most likely to touch:
+
+| Cell | Effect |
+| --- | --- |
+| `PRELOAD` | Finger interference against the screen (0.35). More if the screen still moves. |
+| `FINGER_T` | Leaf thickness (1.4). Less if the keeper is hard to seat. |
+| `PUSH_X`, `PUSH_Y` | Pusher interference (0.20). |
+| `BACKSTOP` | Gap under the rigid feet (0.15). |
+| `TAB_T` | Strip thickness under the lips (1.0); `FRAME_TOP_Z` minus the screen rear face is the lip gap. |
+| `LIP_OVERLAP`, `LIP_CHAMFER`, `FEATURE_TOP_Z` | Lip reach, lead-in and height on the housing. |
+
+Layout changes (moving a slot, lengthening a finger) are edits to the named
+sketches; each is fully constrained with distances from the body origin.
+
 ## Printing
 
 Housing: as today, face down on smooth PEI, no supports. Check the slicer
@@ -133,7 +169,7 @@ zero (Bambu Studio: "gap closing radius" 0.05). Weigh it: about 2.3 g.
 
 Tuning, in order:
 
-- Screen still moves: raise the preload, `BUMP_TIP_Z` down by 0.1.
+- Screen still moves: raise `PRELOAD` by 0.1.
 - Keeper hard to seat or the hooks do not click: check that the slots
   printed open, then reduce `FINGER_T` to 1.2 to soften the fingers.
 - Keeper sits proud of the lips: lips too low or the strip too thick; measure

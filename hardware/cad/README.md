@@ -27,10 +27,11 @@ This directory contains STEP exports from the Lockbox Onshape document. Each fil
 
 ## Variants
 
-- `screen-snap-fit/` - glue-free screen retention. Generates
-  `top-housing-snap-fit.step` (the `top-housing` with rigid lips over the
-  screen pocket), `screen-keeper.step` (a new PETG keeper frame that snaps
-  under those lips and spring-loads the screen, seated in housing
-  coordinates) and `screen-keeper-print.step` (the keeper flat for slicing).
-  The generated STEPs are not tracked; see `screen-snap-fit/README.md`. Not
-  yet carried into Onshape.
+- `screen-snap-fit/` - glue-free screen retention, modelled in FreeCAD
+  (`screen-snap-fit.FCStd`): a `TopHousing` body that adds rigid lips to the
+  imported `top-housing.step`, a native `ScreenKeeper` body for the PETG
+  keeper frame that snaps under those lips and spring-loads the screen, and a
+  `Params` spreadsheet that drives both. The STEP exports
+  (`top-housing-snap-fit.step`, `screen-keeper.step`,
+  `screen-keeper-print.step`) are not tracked; see
+  `screen-snap-fit/README.md`. Not yet carried into Onshape.
