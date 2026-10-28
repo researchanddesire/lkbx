@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,18 @@ def local_address(value: str) -> str:
     if str(address).endswith(".255") or address.is_unspecified or address.is_multicast:
         raise ValueError("A unicast local IPv4 address is required")
     return str(address)
+
+
+def detect_lan_ip() -> str | None:
+    """Return this machine's private LAN IPv4 address, or None if it has none."""
+    try:
+        # Connecting a UDP socket selects the outbound interface; it sends nothing.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))
+            address = probe.getsockname()[0]
+        return None if address.startswith("127.") else local_address(address)
+    except (OSError, ValueError):
+        return None
 
 
 def device_id(value: str) -> str:

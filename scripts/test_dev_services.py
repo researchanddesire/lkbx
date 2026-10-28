@@ -85,6 +85,14 @@ class ConfigurationTests(unittest.TestCase):
                 local.local_address(value)
         self.assertEqual(local.local_address("192.168.1.17"), "192.168.1.17")
 
+    def test_detected_lan_address_is_private_or_absent(self):
+        for detected, expected in (("192.168.1.195", "192.168.1.195"), ("8.8.4.4", None), ("127.0.0.1", None)):
+            with self.subTest(detected=detected), patch.object(local.socket, "socket") as factory:
+                factory.return_value.__enter__.return_value.getsockname.return_value = (detected, 50000)
+                self.assertEqual(local.detect_lan_ip(), expected)
+        with patch.object(local.socket, "socket", side_effect=OSError):
+            self.assertIsNone(local.detect_lan_ip())
+
     def test_configuration_is_private_idempotent_and_scoped(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
