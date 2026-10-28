@@ -39,6 +39,20 @@ class PublisherTests(unittest.TestCase):
             self.assertEqual(artifact.install_order, 2)
             self.assertEqual(artifact.sha256, "c3bf47ea1f4a4a605470313cacb3a44f4a461f68c6faeab07e737610cb5ac835")
 
+    def test_artifact_path_can_include_drive_letter(self):
+        # Exercise the CLI grammar on every host, even when CI uses POSIX paths.
+        with mock.patch.object(publisher.Path, "is_file", return_value=True), mock.patch.object(
+            publisher.Artifact, "size_bytes", new_callable=mock.PropertyMock, return_value=8
+        ):
+            artifact = parse_artifact(r"application:C:\build\firmware.bin:2:true")
+        self.assertEqual(str(artifact.path), r"C:\build\firmware.bin")
+        self.assertEqual(artifact.install_order, 2)
+        self.assertTrue(artifact.installable)
+
+    def test_rejects_malformed_artifact_order_as_cli_error(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            parse_artifact("application:firmware.bin:invalid:true")
+
     def test_lkbx_requires_explicit_psram_variant(self):
         validate_hardware_variant("lkbx", "r2")
         validate_hardware_variant("lkbx", "r8")

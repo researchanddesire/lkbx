@@ -10,12 +10,15 @@
 #include "services/rad_ble.h"
 #include "services/wm.h"
 #include "utils/dashboard.hpp"
+#include "utils/PairingPromptPoll.h"
 namespace {
 
     void persistLockboxAuthToNvs(const AuthResponse &response) {
         if (!response.valid) {
             return;
         }
+        if (response.isPaired) markPairingCodePaired();
+        else acceptPairingCode(response.pairingCode, response.pairingCodeExpiresAt);
         if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) !=
             pdTRUE) {
             return;
@@ -226,28 +229,45 @@ void LKBX::startPairingCheckTask(void *pvParameters) {
 }
 
 // Onboarding pairing prompt — phase 2.
-// Polls while the QR is shown and confirms pairing only on a successful reply.
-// Leaving via Skip must not emit an event that advances a subsequent screen.
+// One persistent worker serves both QR states. It remains dormant elsewhere,
+// avoiding task-handle races when a prompt is exited/re-entered during HTTP.
 void LKBX::pollPairingTask(void *pvParameters) {
     LKBX *plkbx = static_cast<LKBX *>(pvParameters);
-
-    auto isInPairingPrompt = [](LKBX *lkbx) {
-        return lkbx->sm->is("init.preflight.pairingPrompt"_s);
-    };
-
-    while (isInPairingPrompt(plkbx)) {
-        if (getPairingStatus(3000) == PairingStatus::Paired) {
-            // A response can arrive after Skip. This event is only handled by
-            // the pairing prompt and cannot advance the next boot screen.
-            plkbx->sm->process_event(PairingConfirmed{});
-            break;
+    struct Prompt {
+        LKBX* device;
+        String lastVisible;
+        bool active() const {
+            return device->sm->is("init.preflight.pairingPrompt"_s) || device->sm->is("pairing"_s);
         }
-
-        ESP_LOGD(PAIRING_CHECK_TAG, "Not paired yet, retrying in 1s...");
+        bool onboarding() const { return device->sm->is("init.preflight.pairingPrompt"_s); }
+        bool connected() const { return WiFi.status() == WL_CONNECTED; }
+        bool refreshDue() const { return pairingCodeRefreshDue(); }
+        void markAttempt() { markPairingCodeRefreshAttempt(); }
+        lockbox::security::PairingRefreshResponse authenticate(int timeout) {
+            return getPairingCodeRefresh(timeout);
+        }
+        void accept(const lockbox::security::PairingRefreshResponse& response) {
+            // Never reconfigure the MQTT client or restart when refreshing QR.
+            if (response.isPaired) markPairingCodePaired();
+            else acceptPairingCode(response.pairingCode.c_str(), response.pairingCodeExpiresAt.c_str());
+        }
+        PairingStatus pairingStatus(int timeout) { return getPairingStatus(timeout); }
+        void confirm() { device->sm->process_event(PairingConfirmed{}); }
+        void repaintIfChanged() {
+            if (!active()) { lastVisible = ""; return; }
+            String visible = currentPairingCode();
+            if (visible.isEmpty()) visible = pairingCodeIsPaired() ? "[paired]" : "[waiting]";
+            if (visible != lastVisible) {
+                lastVisible = visible;
+                device->sm->process_event(PairingCodeChanged{});
+            }
+        }
+    };
+    Prompt prompt{plkbx, ""};
+    for (;;) {
+        pollPairingPrompt(prompt);
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
-    TaskHandles::pairingCheck = nullptr;
-    vTaskDelete(nullptr);
 }
 
 void LKBX::syncLockStateOnBootTask(void *pvParameters) {

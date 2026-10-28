@@ -79,7 +79,7 @@ class HardwareDetectionTests(unittest.TestCase):
 
         self.assertEqual(identity.variant, "r8")
         command, kwargs = calls[0]
-        self.assertEqual(command[0:2], ["/platformio/python", "/platformio/tool-esptoolpy/esptool.py"])
+        self.assertEqual(command[0:2], ["/platformio/python", str(Path("/platformio/tool-esptoolpy/esptool.py"))])
         self.assertIn("esp32s3", command)
         self.assertIn("COM17", command)
         self.assertIn("hard_reset", command)
@@ -256,7 +256,7 @@ class DispatchTests(unittest.TestCase):
                 "platformio",
                 "run",
                 "--project-dir",
-                "/checkout/lkbx",
+                str(Path("/checkout/lkbx")),
                 "-e",
                 "production-r2",
                 "--upload-port",

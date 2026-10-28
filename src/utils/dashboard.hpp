@@ -20,6 +20,7 @@ struct AuthResponse {
     String password = "";
     String sessionId = "";
     String pairingCode = "";
+    String pairingCodeExpiresAt = "";
     int hueShift = 0;
     bool isPaired = false;
     bool pairingStatusKnown = false;
@@ -53,16 +54,31 @@ static bool isPaired() {
     return getPairingStatus() == PairingStatus::Paired;
 }
 
-// Request device-scoped runtime broker credentials from the configured API.
-static AuthResponse getAuthToken(int timeoutMs = 5000) {
-    String deviceId = getMacAddresss();
-
-
-    JsonDocument doc;
-    doc[Str::Json::MAC] = deviceId;
+static void populateAuthRequest(JsonDocument& doc) {
+    doc[Str::Json::MAC] = getMacAddresss();
     doc[Str::Json::CHIP] = ESP.getChipModel();
     doc[Str::Json::MD5] = ESP.getSketchMD5();
     doc[Str::Json::DEVICE] = Str::Api::DEVICE_NAME;
+}
+
+// Web must deploy this additive purpose before the firmware rollout. The early
+// branch changes only an existing unowned device's code/expiry: it does not
+// register firmware, count boots or allocate/reconfigure broker credentials.
+static lockbox::security::PairingRefreshResponse getPairingCodeRefresh(int timeoutMs = 3000) {
+    JsonDocument request;
+    populateAuthRequest(request);
+    request["purpose"] = "pairing_refresh";
+    String payload;
+    if (post(RAD_AUTH, request, &payload, timeoutMs) != 200) return {};
+    JsonDocument response;
+    if (deserializeJson(response, payload)) return {};
+    return lockbox::security::pairingRefreshResponse(response.as<JsonVariantConst>());
+}
+
+// Request device-scoped runtime broker credentials from the configured API.
+static AuthResponse getAuthToken(int timeoutMs = 5000) {
+    JsonDocument doc;
+    populateAuthRequest(doc);
 
     String requestBody;
     serializeJson(doc, requestBody);
@@ -106,6 +122,7 @@ static AuthResponse getAuthToken(int timeoutMs = 5000) {
             .password = response[Str::Json::PASSWORD],
             .sessionId = response[Str::Json::SESSION_ID],
             .pairingCode = response[Str::Json::PAIRING_CODE],
+            .pairingCodeExpiresAt = response["pairingCodeExpiresAt"] | "",
             .hueShift = response[Str::Json::HUE_SHIFT],
             .isPaired = response[Str::Json::IS_PAIRED] | false,
             .pairingStatusKnown = response[Str::Json::IS_PAIRED].is<bool>(),

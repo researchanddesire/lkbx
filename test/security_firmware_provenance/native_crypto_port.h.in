@@ -1,0 +1,66 @@
+// Native-only port: the unmodified firmware verifier delegates SHA-256 and
+// P-256 verification to OpenSSL. Only public test-vector material is used.
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
+#include <stdexcept>
+
+static unsigned cryptoSequence = 0;
+static std::string cryptoFile(const char* suffix) {
+    return std::string(TEST_CRYPTO_DIRECTORY) + "/" +
+           std::to_string(cryptoSequence) + suffix;
+}
+static std::string shellFile(const std::string& path) {
+    for (unsigned char value : path) {
+        if (!std::isalnum(value) && std::strchr(" /\\:.-_~", value) == nullptr)
+            throw std::runtime_error("Unsupported native crypto fixture path");
+    }
+    return "\"" + path + "\"";
+}
+static void cryptoWrite(const std::string& path, const void* data, size_t size) {
+    std::ofstream file(path, std::ios::binary);
+    file.write(static_cast<const char*>(data), size);
+    if (!file) throw std::runtime_error("Native crypto fixture write failed");
+}
+static int cryptoCommand(const std::string& command) {
+#ifdef _WIN32
+    return std::system((command + " >NUL 2>&1").c_str());
+#else
+    return std::system((command + " >/dev/null 2>&1").c_str());
+#endif
+}
+inline int mbedtls_sha256_ret(const unsigned char* data, size_t size,
+                              unsigned char* output, int is224) {
+    if (is224) return -1;
+    ++cryptoSequence;
+    const auto input = cryptoFile("-input.bin");
+    const auto digest = cryptoFile("-digest.bin");
+    cryptoWrite(input, data, size);
+    if (cryptoCommand("openssl dgst -sha256 -binary -out " + shellFile(digest) + " " + shellFile(input))) return -1;
+    std::ifstream file(digest, std::ios::binary);
+    file.read(reinterpret_cast<char*>(output), 32);
+    return file.gcount() == 32 ? 0 : -1;
+}
+inline void mbedtls_pk_init(mbedtls_pk_context* key) { key->pem.clear(); }
+inline void mbedtls_pk_free(mbedtls_pk_context* key) { key->pem.clear(); }
+inline int mbedtls_pk_parse_public_key(mbedtls_pk_context* key,
+                                       const unsigned char* data, size_t size) {
+    key->pem.assign(reinterpret_cast<const char*>(data), size);
+    if (!key->pem.empty() && key->pem.back() == '\0') key->pem.pop_back();
+    return key->pem.find("-----BEGIN PUBLIC KEY-----") == 0 ? 0 : -1;
+}
+inline int mbedtls_pk_verify(mbedtls_pk_context* key, int algorithm,
+                             const unsigned char* digest, size_t digestSize,
+                             const unsigned char* signature, size_t signatureSize) {
+    if (algorithm != MBEDTLS_MD_SHA256 || digestSize != 32) return -1;
+    ++cryptoSequence;
+    const auto publicKey = cryptoFile("-public.pem");
+    const auto hash = cryptoFile("-hash.bin");
+    const auto proof = cryptoFile("-signature.der");
+    cryptoWrite(publicKey, key->pem.data(), key->pem.size());
+    cryptoWrite(hash, digest, digestSize);
+    cryptoWrite(proof, signature, signatureSize);
+    return cryptoCommand("openssl pkeyutl -verify -pubin -inkey " + shellFile(publicKey) +
+                         " -in " + shellFile(hash) + " -sigfile " + shellFile(proof) +
+                         " -pkeyopt digest:sha256");
+}

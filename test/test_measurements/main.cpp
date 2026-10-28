@@ -2,6 +2,9 @@
 #include "unity.h"
 #include "../../src/utils/analog.h"
 
+void setUp() {}
+void tearDown() {}
+
 // Test all readings zero
 void test_allReadingsZero() {
     prepareAnalogReadData({0, 0, 0, 0, 0});  // 5 samples, all zero

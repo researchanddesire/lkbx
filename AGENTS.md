@@ -237,6 +237,10 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 ### Build Scripts
 
 - `pre_build_script.py` applies `scripts/patch_sdk_security.py` to every device profile and, for development profiles only, force-includes the generated `.dev/local/include/lkbx_dev_config.h` from `scripts/dev_services.py`. Development builds never contact cloud services.
+- Local fixtures support `configure --api-port <port> --mqtt-port <port>` to coexist with other bench services. Reconfiguration preserves the selected primary device and ports; Windows configuration directories use explicit user/SYSTEM ACLs because `chmod` does not restrict Windows access.
+- The pinned ESP-IDF 4.4 mbedTLS hostname verifier checks only dNSName SANs. Local certificates include exact literal-IP dNSNames alongside proper IP SANs; certificate-profile migration preserves the existing CA, leaf key and validity interval so firmware trust and cached clocks remain usable.
+- Older OpenSSL 3.x micro-CA mode requires self-signed certificate input. Migrate local leaf names through private transient signing, and atomically install only after the existing CA, IP/DNS names, public key and exact validity dates pass verification; never install or trust the transient certificate.
+- ESP-IDF builds on Windows require project and PlatformIO core paths without spaces, such as an isolated checkout under `C:\rad-hil\projects` and `PLATFORMIO_CORE_DIR=C:\rad-hil\platformio`.
 - `firmware_build_metadata.py` (with `serial_identity_build.py`) stamps firmware provenance and serial identity.
 
 ### Flash Partitions
@@ -272,6 +276,10 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 - Motor pins are extern and may be swapped by calibration — don't hardcode assumptions
 - Display and preferences access must use their respective mutexes
 - State machine is the single source of truth for device behavior — all logic flows through `LKBX.h`
+- Report a break from the common `locked.break` entry after its start timestamp is persisted; dashboard requests bypass the local break-preflight page. Native dispatch tests use the exact shared transition fragment.
+- BLE `connectivity.server` describes the last completed configured-RAD HTTPS operation (2xx, plus a valid Date for clock probes). It has no inferred expiry; Wi-Fi disconnect invalidates it and stale in-flight results cannot restore it. It is telemetry and never authorizes device behavior.
+- Pairing QR screens use a RAM-only authenticated code lease and `pairingCodeExpiresAt` UTC expiry, clear the QR before expiry, and refresh in a bounded worker. Never substitute a permanent MAC or production URL for an unavailable code. Development QR links use the private `--dashboard-origin`; release links use their explicit RAD origin.
+- BLE provenance defaults to bounded v2 metadata; retrieve the complete signed proof through reference-bound 64-byte base64url pages. Preserve signature/runtime-image verification, NVS and the 509-byte transport cap. A metadata summary alone is not verified proof.
 - Emergency unlock triggers a 24-hour lockout period
 - TMR sensor consensus: 2 of 3 sensors must agree for "paddle locked" status
 - Current assembly docs use the newer build guide as source of truth: 4x 4mm magnets and T7 Torx driver.

@@ -19,6 +19,7 @@
 #include "constants/dashboard.h"
 #include "constants/LogTags.h"
 #include "tasks/TaskParams.h"
+#include "services/serverOnline.h"
 
 #if defined(VERSIONDEV)
 #if !defined(LKBX_DEV_CA_PEM) || !defined(LKBX_DEV_API_TOKEN) || !defined(LKBX_DEV_API_BASE_URL)
@@ -46,6 +47,10 @@ struct HttpRequest {
     bool dateSeen = false;
     uint64_t serverTimeMs = 0;
     int64_t dateReceivedUs = 0;
+    bool serverOperation = false;
+    bool clockProbe = false;
+    bool attempted = false;
+    uint32_t connectivityAttempt = 0;
     SemaphoreHandle_t completed = xSemaphoreCreateBinary();
     // The caller and queued/active worker each own a reference. Neither stores
     // the caller's stack address or task handle.
@@ -97,6 +102,15 @@ bool allowedUrl(const String &value) {
         url[base.size()] != '?') return false;
 #endif
     return true;
+}
+
+bool configuredServerUrl(const String &value) {
+    const std::string url(value.c_str(), value.length());
+    const std::string base(RAD_SERVER);
+    return validHttpsUrl(base) && base.find_first_of("/?", 8) == std::string::npos &&
+           url.compare(0, base.size(), base) == 0 &&
+           (url.size() == base.size() || url[base.size()] == '/' ||
+            url[base.size()] == '?');
 }
 
 bool expired(const HttpRequest &req) {
@@ -265,6 +279,11 @@ void completeRequest(HttpRequest *req) {
         req->responseCode = -1;
         req->responsePayload.clear();
     }
+    if (req->serverOperation && req->attempted) {
+        const bool success = req->responseCode >= 200 && req->responseCode < 300 &&
+            (!req->clockProbe || (req->responseCode == 200 && req->serverTimeMs != 0));
+        completeServerHttpAttempt(req->connectivityAttempt, success);
+    }
     xSemaphoreGive(req->completed);
     req->release();
 }
@@ -277,6 +296,8 @@ void httpWorkerTask(void *) {
                 req->responsePayload.clear();
                 req->dateSeen = false;
                 req->serverTimeMs = 0;
+                req->attempted = true;
+                req->connectivityAttempt = beginServerHttpAttempt();
                 req->responseCode = executeAttempt(*req);
                 if (req->responseCode > 0 && req->responseCode < 500) break;
                 if (attempt < req->retries) {
@@ -324,6 +345,8 @@ int enqueue(const String &url, const String &body, bool isPost,
         return -1;
     }
     req->isPost = isPost;
+    req->serverOperation = configuredServerUrl(url);
+    req->clockProbe = serverTimeMs != nullptr;
     req->retries = retries;
     req->deadlineUs = esp_timer_get_time() +
                       static_cast<int64_t>(std::min(timeoutMs, MAX_REQUEST_MS)) * 1000;
@@ -351,6 +374,9 @@ int enqueue(const String &url, const String &body, bool isPost,
         } else {
             // The worker keeps its reference and owns all later result writes.
             req->cancelled.store(true, std::memory_order_release);
+            // An abandoned local operation is a failure now. Invalidate its
+            // generation so a late transport result cannot report success.
+            if (req->serverOperation) clearServerOnline();
         }
     }
     req->release();
@@ -393,7 +419,7 @@ bool stopHttpWorker() {
 
 bool getAuthenticatedServerTimeMs(uint64_t *out) {
     if (!out) return false;
-    return enqueue(String(RAD_SERVER "/api/health"), String(), false, nullptr,
+    return enqueue(String(RAD_SERVER "/api/health-check"), String(), false, nullptr,
                    5000, 0, out) == 200 && *out != 0;
 }
 

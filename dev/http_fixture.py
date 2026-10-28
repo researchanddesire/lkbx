@@ -60,7 +60,7 @@ class Fixture:
         if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
             return 400, {"error": "invalid_route"}
         path = unquote(parsed.path)
-        if method == "GET" and path == "/api/health-check":
+        if method == "GET" and path in ("/api/health", "/api/health-check"):
             return 200, {"ok": True, "fixture": True}
         if path in ("/api/lockbox/auth", "/api/lockbox/is-paired", "/api/lockbox/test-pair") and method == "POST":
             identity = body.get("mac") if path.endswith("/auth") else body.get("macAddress")
@@ -117,6 +117,9 @@ class Fixture:
                     return 400, {"error": "invalid_session"}
             session.update(body)
             message = {"type": "sync", "clear": session["lockState"] == "unlocked", **session}
+            # The HTTP snapshot stores milliseconds; the MQTT sync protocol
+            # carries duration in seconds, matching the real dashboard.
+            message["duration"] = session["duration"] // 1000
             try:
                 if self.publish:
                     self.publish(identity, message)
@@ -206,7 +209,8 @@ def broker_publisher(config: dict, ca: Path, host: str):
     def publish(identity: str, message: dict):
         payload = mqtt_string("MQTT") + b"\x04\xc2\x00\x0a" + mqtt_string("local-fixture-controller")
         payload += mqtt_string(credentials["username"]) + mqtt_string(credentials["password"])
-        with socket.create_connection((host, 8883), timeout=5) as plain:
+        port = 8883 if host == "mosquitto" else config.get("mqtt_port", 8883)
+        with socket.create_connection((host, port), timeout=5) as plain:
             with context.wrap_socket(plain, server_hostname=host) as secure:
                 secure.sendall(mqtt_packet(0x10, payload))
                 reply = b""
