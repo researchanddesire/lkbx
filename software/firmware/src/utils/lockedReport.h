@@ -15,6 +15,8 @@ namespace lockedReport {
 
     constexpr uint32_t kResendIntervalMs = 10 * 1000;
     constexpr uint8_t kMaxAttempts = 12;  // ~2 min of retries
+    // A report held for an unverified clock retries the clock sync this often.
+    constexpr uint32_t kClockRetryIntervalMs = 30 * 1000;
 
     // Used from the state machine task (reports), the activity task (retries)
     // and the MQTT task (acknowledgements); every operation holds the mutex.

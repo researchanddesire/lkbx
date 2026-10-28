@@ -61,6 +61,16 @@ void LKBX::syncClockOnBootTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
+// Clock retry while a LOCKED report is held for an unverified clock. Unlike
+// the boot sync it drives no state transition.
+void LKBX::retryClockSyncTask(void *) {
+    if (!isOffline() && !isTimeSynced) {
+        updateTime();  // authenticated time or preserve the previous clock
+    }
+    TaskHandles::syncClock = nullptr;
+    vTaskDelete(nullptr);
+}
+
 /**
  * This task displays the RD logo centered on screen
  * with version text below, then proceeds to the next state.
