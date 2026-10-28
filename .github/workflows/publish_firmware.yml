@@ -11,19 +11,8 @@ on:
       # publishes a signed candidate. Keep in sync with FIRMWARE_PATHS in
       # pr-firmware.yml and pr-target-policy.yml. Release tooling changes are
       # exercised by PR checks and republished manually.
-      - "CMakeLists.txt"
-      - "boards/**"
-      - "include/**"
-      - "lib/**"
-      - "src/**"
-      - "test/**"
-      - "platformio.ini"
-      - "partition.csv"
-      - "sdkconfig*"
-      - "pre_build_script.py"
-      - "firmware_build_metadata.py"
-      - "serial_identity_build.py"
-      - "scripts/patch_sdk_security.py"
+      - "software/firmware/**"
+      - "software/scripts/patch_sdk_security.py"
 
 permissions:
   contents: write
@@ -48,7 +37,7 @@ jobs:
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          if python scripts/release_version.py is-auto-commit --message "$COMMIT_MESSAGE" --track "$GITHUB_REF_NAME"; then
+          if python software/scripts/release_version.py is-auto-commit --message "$COMMIT_MESSAGE" --track "$GITHUB_REF_NAME"; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -60,6 +49,9 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: ${{ github.ref_name == 'main' && 'firmware-production' || 'firmware-staging' }}
+    defaults:
+      run:
+        working-directory: software/firmware
     env:
       FIRMWARE_PUBLISH_TOKEN: ${{ secrets.FIRMWARE_PUBLISH_TOKEN }}
       FIRMWARE_PROVENANCE_SIGNING_KEY_PEM: ${{ secrets.FIRMWARE_PROVENANCE_SIGNING_KEY_PEM }}
@@ -103,28 +95,29 @@ jobs:
 
       - name: Allocate and commit next version
         id: version
+        working-directory: .
         env:
           PR_TITLE: ${{ steps.pull_request.outputs.title }}
           DEVICE_TYPE: lkbx
-          VERSION_HEADER: src/constants/Version.h
-          RELEASE_VERSION: scripts/release_version.py
+          VERSION_HEADER: software/firmware/src/constants/Version.h
+          RELEASE_VERSION: software/scripts/release_version.py
         run: bash .github/scripts/allocate_version.sh
       - name: Install PlatformIO
         run: python -m pip install platformio==6.2.0
 
       - name: Test publisher
         run: |
-          python -m unittest discover -s .github/scripts -p 'test_*.py'
-          python scripts/test_production_autodetect.py
+          python -m unittest discover -s ../../.github/scripts -p 'test_*.py'
+          python ../scripts/test_production_autodetect.py
 
       - name: Run release helper tests
-        run: python scripts/test_release_version.py
+        run: python ../scripts/test_release_version.py
 
       - name: Run native unit tests
         run: pio test -e test
 
       - name: Select track build
-        run: python .github/scripts/release_workflow.py configure --branch "$GITHUB_REF_NAME"
+        run: python ../../.github/scripts/release_workflow.py configure --branch "$GITHUB_REF_NAME"
 
       - name: Build R2 and R8 applications
         run: |
@@ -133,12 +126,12 @@ jobs:
 
       - name: Build R2 and R8 web installers
         run: |
-          python .github/scripts/build_web_installer.py \
+          python ../../.github/scripts/build_web_installer.py \
             --profile esp32s3-16mb \
             --hardware-variant r2 \
             --build-dir ".pio/build/$PIO_ENV_R2" \
             --output ".pio/build/$PIO_ENV_R2/web-installer.bin"
-          python .github/scripts/build_web_installer.py \
+          python ../../.github/scripts/build_web_installer.py \
             --profile esp32s3-16mb \
             --hardware-variant r8 \
             --build-dir ".pio/build/$PIO_ENV_R8" \
@@ -147,7 +140,7 @@ jobs:
       - name: Publish validating R2 release
         id: publish_r2
         run: |
-          python .github/scripts/publish_immutable_firmware.py \
+          python ../../.github/scripts/publish_immutable_firmware.py \
             --device-type lkbx \
             --hardware-variant r2 \
             --track "$TRACK" \
@@ -161,7 +154,7 @@ jobs:
       - name: Publish validating R8 release
         id: publish_r8
         run: |
-          python .github/scripts/publish_immutable_firmware.py \
+          python ../../.github/scripts/publish_immutable_firmware.py \
             --device-type lkbx \
             --hardware-variant r8 \
             --track "$TRACK" \

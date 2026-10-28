@@ -50,10 +50,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn("PIO_ENV_R8=staging-r8", environment)
 
     def test_platformio_release_environments_are_variant_specific(self):
-        repository = Path(__file__).resolve().parents[2]
+        firmware = Path(__file__).resolve().parents[2] / "software/firmware"
         completed = subprocess.run(
             ["pio", "project", "config", "--json-output"],
-            cwd=repository,
+            cwd=firmware,
             text=True,
             stdout=subprocess.PIPE,
             check=True,
@@ -107,19 +107,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(
             configured_paths,
             [
-                "CMakeLists.txt",
-                "boards/**",
-                "include/**",
-                "lib/**",
-                "src/**",
-                "test/**",
-                "platformio.ini",
-                "partition.csv",
-                "sdkconfig*",
-                "pre_build_script.py",
-                "firmware_build_metadata.py",
-                "serial_identity_build.py",
-                "scripts/patch_sdk_security.py",
+                "software/firmware/**",
+                "software/scripts/patch_sdk_security.py",
             ],
         )
 

@@ -11,7 +11,7 @@ services:
       - ./.dev/local/server.key:/local/server.key:ro
       - ./.dev/local/server.pem:/local/server.pem:ro
       - ./.dev/local/ca.pem:/local/ca.pem:ro
-      - ./dev:/fixture:ro
+      - ./fixture:/fixture:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -33,7 +33,7 @@ services:
       - ./.dev/local/server.key:/local/server.key:ro
       - ./.dev/local/server.pem:/local/server.pem:ro
       - ./.dev/local/ca.pem:/local/ca.pem:ro
-      - ./dev:/fixture:ro
+      - ./fixture:/fixture:ro
     read_only: true
     tmpfs:
       - /tmp

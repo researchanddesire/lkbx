@@ -8,11 +8,11 @@
 
 Documentation/node_modules/
 
-scripts/test_update_chain/_last_production/**
-scripts/test_update_chain/_last_production
+software/scripts/test_update_chain/_last_production/**
+software/scripts/test_update_chain/_last_production
 build
 build/**
-scripts/ota_test_results.tsv
+software/scripts/ota_test_results.tsv
 scratch/
 compile_commands.json
 .DS_Store

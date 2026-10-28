@@ -19,7 +19,9 @@ from unittest.mock import patch
 
 import dev_services as local
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
+REPOSITORY = ROOT.parents[1]
+FIRMWARE = ROOT.parent / "firmware"
 
 
 def legacy_x509_input_is_self_signed(path):
@@ -353,12 +355,12 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_supported_profiles_are_explicit_and_build_only(self):
         parser = configparser.ConfigParser(interpolation=None)
-        parser.read(ROOT / "platformio.ini")
+        parser.read(FIRMWARE / "platformio.ini")
         self.assertEqual({section for section in parser.sections() if section.startswith("env:")},
                          {"env:development-r2", "env:development-r8", "env:production-r2", "env:production-r8", "env:staging-r2", "env:staging-r8", "env:test", "env:test_native"})
         for section in parser.sections():
             self.assertFalse(parser.has_option(section, "targets"))
-        self.assertIn(".dev/", (ROOT / ".gitignore").read_text())
+        self.assertIn(".dev/", (REPOSITORY / ".gitignore").read_text())
         compose = (ROOT / "compose.yaml").read_text()
         self.assertNotIn("ca.key", compose)
         self.assertNotIn("./.dev/local:/", compose)

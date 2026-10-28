@@ -30,21 +30,24 @@ jobs:
       - name: Install build tools
         run: python -m pip install platformio==6.1.19
       - name: Test native firmware
+        working-directory: software/firmware
         run: |
           pio test -e test
           pio test -e test_native
       - name: Test build tools and local services
-        run: python -m unittest discover -s scripts -p 'test_*.py'
+        run: |
+          python -m unittest discover -s software/scripts -p 'test_*.py'
+          python -m unittest discover -s software/dev -p 'test_*.py'
       - name: Test firmware release publisher
         run: python -m unittest discover -s .github/scripts -p 'test_*.py'
       - name: Test asynchronous HTTP and TLS with sanitizers
-        run: python scripts/test_http_worker_security.py
+        run: python software/scripts/test_http_worker_security.py
       - name: Test OTA stream integrity with sanitizers
-        run: python scripts/test_firmware_runtime.py
+        run: python software/scripts/test_firmware_runtime.py
       - name: Test pairing expiry and environment routing with sanitizers
-        run: python scripts/test_pairing_refresh.py
+        run: python software/scripts/test_pairing_refresh.py
       - name: Test bounded provenance and real signed-proof reassembly
-        run: python test/security_firmware_provenance/test_response.py
+        run: python software/firmware/test/security_firmware_provenance/test_response.py
       - name: Install verified secret scanner
         run: |
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
@@ -52,7 +55,7 @@ jobs:
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo install /tmp/gitleaks /usr/local/bin/gitleaks
       - name: Scan software and retained history
-        run: python scripts/check_software.py --history
+        run: python software/scripts/check_software.py --history
 
   local-service-integration:
     runs-on: ubuntu-latest
@@ -66,14 +69,14 @@ jobs:
         with:
           python-version: '3.13'
       - name: Test isolated HTTPS fixture
-        run: python dev/test_http_fixture.py -v
+        run: python software/dev/fixture/test_http_fixture.py -v
       - name: Start synthetic local services
-        run: python scripts/dev_services.py up --lan-ip 127.0.0.1 --device-id AA:BB:CC:DD:EE:FF --device-id AA:BB:CC:DD:EE:FE
+        run: python software/dev/dev_services.py up --lan-ip 127.0.0.1 --device-id AA:BB:CC:DD:EE:FF --device-id AA:BB:CC:DD:EE:FE
       - name: Verify HTTPS authentication and MQTT topic isolation
-        run: python dev/test_compose_integration.py -v
+        run: python software/dev/fixture/test_compose_integration.py -v
       - name: Stop local services
         if: always()
-        run: python scripts/dev_services.py down
+        run: python software/dev/dev_services.py down
 
   build:
     runs-on: ubuntu-latest
@@ -93,12 +96,13 @@ jobs:
       - name: Install build tools
         run: python -m pip install platformio==6.1.19
       - name: Compile firmware
+        working-directory: software/firmware
         env:
           PROFILE: ${{ matrix.profile }}
           CI: 'true'
         run: pio run -e "$PROFILE"
       - name: Verify pinned SDK DHCP backport
-        run: python scripts/test_sdk_security.py --regression
+        run: python software/scripts/test_sdk_security.py --regression
       # Development binaries contain per-run fixture credentials. Build outputs
       # stay on this disposable runner. Private release tooling builds exact,
       # reviewed Production commits and handles signing/publication separately.

@@ -12,7 +12,12 @@ Open-source ESP32-S3 smart lock firmware (MPL 2.0) and hardware designs (CERN-OH
 
 ## Build
 
+Software lives in [`software/`](software/): the PlatformIO project in
+[`software/firmware/`](software/firmware/), tooling in [`software/scripts/`](software/scripts/),
+and local fixture services in [`software/dev/`](software/dev/).
+
 ```bash
+cd software/firmware
 pio run -e development-r8                  # or development-r2 for the R2 board
 pio run -e production-r2 -e production-r8  # release profiles
 pio test -e test                           # native unit tests

@@ -33,7 +33,7 @@ class ProvenanceResponseTests(unittest.TestCase):
         source = source.replace("// ACTUAL_RESULT", between(reply, "Result Result::success(", "\nServer::Server()"))
         source = source.replace("// ACTUAL_REPLY", between(reply, "void Server::sendStage(", "\nvoid Server::sendSerialized("))
         source = source.replace("// ACTUAL_CRYPTO_PORT", (HERE / "native_crypto_port.h.in").read_text())
-        vector = json.loads((ROOT / ".github/scripts/firmware_provenance_test_vector.json").read_text())
+        vector = json.loads((ROOT.parents[1] / ".github/scripts/firmware_provenance_test_vector.json").read_text())
         source = source.replace("// SIGNED_VECTOR", "static const std::string signedToken = " + json.dumps(vector["compactJws"]) + ";")
         state_sources = [ROOT / "src/state/LKBX.h", *sorted((ROOT / "src/state").glob("*.inc"))]
         states = sorted(set(re.findall(r'"([A-Za-z][A-Za-z0-9_.]*)"_s', "\n".join(path.read_text() for path in state_sources))))

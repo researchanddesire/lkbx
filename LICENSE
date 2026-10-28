@@ -8,7 +8,7 @@ Because this project consists of many types of source, individual parts are made
 
 1. Hardware designs at `./hardware/cad` and `./hardware/pcb` are available under **CERN-OHL-S v2**. Full text: [`LICENSES/CERN-OHL-S-2.0.txt`](LICENSES/CERN-OHL-S-2.0.txt).
 
-2. Firmware and software at `./src`, `./test`, `./scripts`, `./include`, `./developer-docs`, and root build configs are available under **Mozilla Public License 2.0**. Full text: [`LICENSES/MPL-2.0.txt`](LICENSES/MPL-2.0.txt).
+2. Firmware and software at `./software/firmware/src`, `./software/firmware/test`, `./software/firmware/include`, `./software/scripts`, `./software/dev`, `./developer-docs`, and the build configs in `./software/firmware` are available under **Mozilla Public License 2.0**. Full text: [`LICENSES/MPL-2.0.txt`](LICENSES/MPL-2.0.txt).
 
 3. CI workflows at `./.github/workflows` are available under **Mozilla Public License 2.0**.
 

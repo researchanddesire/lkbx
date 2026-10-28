@@ -14,12 +14,15 @@ User-facing guides: [`simple-docs`](https://github.com/researchanddesire/simple-
 
 ## Build setup
 
+Software lives in `software/`: the PlatformIO project in `software/firmware/`, tooling in `software/scripts/`, and local fixture services in `software/dev/`.
+
 ```bash
-python scripts/dev_services.py configure --lan-ip <private-IP>   # local fixture services
-pio run -e development-r8                                        # or development-r2
+python software/dev/dev_services.py configure --lan-ip <private-IP>   # local fixture services
+cd software/firmware
+pio run -e development-r8                                             # or development-r2
 ```
 
-Development profiles talk only to the local fixture services; their generated credentials stay in the ignored `.dev/` directory.
+Development profiles talk only to the local fixture services; their generated credentials stay in the ignored `software/dev/.dev/` directory.
 
 > **Note (for AJ):** As of 2026-06, only `sdkconfig.defaults` is tracked. The
 > per-environment `sdkconfig.development` / `.staging` / `.production` files are
@@ -31,7 +34,7 @@ Development profiles talk only to the local fixture services; their generated cr
 
 - Run `pio test -e test` and `pio check` when touching firmware
 - Update `developer-docs/` if you change APIs, states, or integration behavior
-- Follow existing code style (`.clang-format`)
+- Follow existing code style (`software/.clang-format`)
 
 ## Hardware BOMs
 

@@ -9,7 +9,7 @@
 ## Branch and Release Policy
 
 - Persistent branches are lowercase `staging` and `main`. Fetch before branching.
-- The firmware directory is the firmware project at the repository root (`src/`, `include/`, `lib/`, `boards/`, `test/`, `platformio.ini`, `partition.csv`, `sdkconfig*`, `CMakeLists.txt` and the build scripts). `FIRMWARE_PATHS` in `pr-firmware.yml` and `pr-target-policy.yml` and the `publish_firmware.yml` push paths define it; keep them in sync.
+- The firmware directory is the PlatformIO project in `software/firmware/` (`src/`, `include/`, `lib/`, `boards/`, `test/`, `platformio.ini`, `partition.csv`, `sdkconfig*`, `CMakeLists.txt` and the build hooks) plus `software/scripts/patch_sdk_security.py`, which every device build applies. `FIRMWARE_PATHS` in `pr-firmware.yml` and `pr-target-policy.yml` and the `publish_firmware.yml` push paths define it; keep them in sync.
 - Firmware changes enter `staging` first: branch from `origin/staging` and open the PR into `staging`. Promote with a same-repository `staging` → `main` PR.
 - A production fix may take firmware to `main` directly from a `fix/<issue>` branch (an owner prefix such as `AJ/fix/<issue>` also works) started from `origin/main`.
 - Changes outside the firmware directory (documentation, hardware, BOMs, workflows) may open their PR straight into `main`; they need no build or hardware checks. `PR target policy` enforces these rules.
@@ -22,7 +22,7 @@
 ## Firmware Releases
 
 - Releases go only to the R+D firmware control plane (`/api/internal/firmware/v1`) and Supabase Storage bucket `lkbx-firmware`. Devices and the RAD app update only through `/api/firmware/v1/check` and the web-flasher catalog. Never publish firmware through GitHub Pages, `docs/`, or committed binaries.
-- `publish_firmware.yml` runs on firmware-input pushes to `main`: it allocates the next version, commits `AUTO: Version bump main <version>` as `rad-version-control[bot]`, builds R2 and R8, and publishes immutable *validating* candidates with signed provenance. Do not hand-edit `src/constants/Version.h` to release.
+- `publish_firmware.yml` runs on firmware-input pushes to `main`: it allocates the next version, commits `AUTO: Version bump main <version>` as `rad-version-control[bot]`, builds R2 and R8, and publishes immutable *validating* candidates with signed provenance. Do not hand-edit `software/firmware/src/constants/Version.h` to release.
 - `finalize_release.yml` (manual, production) tags a main release only after the control plane reports both variants ready with build, unit, integration, artifact and hardware validations passed. Rollout stays a control-plane action.
 - Environments: `firmware-staging` (branch `staging`) and `firmware-production` (branch `main`), each holding `FIRMWARE_PUBLISH_TOKEN` and `FIRMWARE_PROVENANCE_SIGNING_KEY_PEM`. The `rad-version-control` app credentials are organization-level. Never print, log or commit secret values.
 
@@ -65,6 +65,7 @@ Lockbox is an ESP32-S3 smart lock device firmware. It controls a DC motor lock m
 ## Quick Commands
 
 ```bash
+cd software/firmware
 pio run -e development-r8          # Use r2 for the verified R2 board
 pio run -e staging-r2 -e staging-r8 # Build both staging artifacts
 pio run -e production-r2 -e production-r8 # Compile both production profiles
@@ -73,6 +74,17 @@ pio check                        # Run clang-tidy static analysis
 ```
 
 ## Project Structure
+
+All software lives in `software/`:
+
+```
+software/
+├── firmware/   # PlatformIO project; run `pio` here
+├── scripts/    # build-hook helpers, release, screen capture and rig (hil/) tooling
+└── dev/        # local fixture services: compose.yaml, dev_services.py, fixture/
+```
+
+Firmware sources in `software/firmware/`:
 
 ```
 src/
@@ -122,10 +134,9 @@ src/
     ├── update.h             # OTA firmware updates
     ├── RecusiveMutex.h      # Thread-safe recursive mutex wrapper
     └── dashboard.hpp        # Dashboard message parsing
-assembly-docs/               # Self-contained OHAI-style assembly docs for future ohai.researchanddesire.com aggregation
-hardware/pcb/                # KiCad PCB source, footprints, symbols, datasheets, STEP exports, and production fab files imported from Lockbox-Hardware
-hardware/cad/                # Mechanical enclosure CAD landing zone
 ```
+
+Repository root: `assembly-docs/` (self-contained OHAI-style assembly docs), `hardware/pcb/` (KiCad PCB source, footprints, symbols, datasheets, STEP exports and production fab files), and `hardware/cad/` (mechanical enclosure CAD).
 
 ## Hardware Pin Map
 
@@ -236,7 +247,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 
 ### Build Scripts
 
-- `pre_build_script.py` applies `scripts/patch_sdk_security.py` to every device profile and, for development profiles only, force-includes the generated `.dev/local/include/lkbx_dev_config.h` from `scripts/dev_services.py`. Outside CI, each development build reconfigures for this machine's current private LAN IP (set `LKBX_DEV_LAN_IP` to pin one), and a digest of that header forces a rebuild whenever it changes. Development builds never contact cloud services.
+- `software/firmware/pre_build_script.py` applies `software/scripts/patch_sdk_security.py` to every device profile and, for development profiles only, force-includes the generated `software/dev/.dev/local/include/lkbx_dev_config.h` from `software/dev/dev_services.py`. Outside CI, each development build reconfigures for this machine's current private LAN IP (set `LKBX_DEV_LAN_IP` to pin one), and a digest of that header forces a rebuild whenever it changes. Development builds never contact cloud services.
 - Local fixtures support `configure --api-port <port> --mqtt-port <port>` to coexist with other bench services. Reconfiguration preserves the selected primary device and ports; Windows configuration directories use explicit user/SYSTEM ACLs because `chmod` does not restrict Windows access.
 - The pinned ESP-IDF 4.4 mbedTLS hostname verifier checks only dNSName SANs. Local certificates include exact literal-IP dNSNames alongside proper IP SANs; certificate-profile migration preserves the existing CA, leaf key and validity interval so firmware trust and cached clocks remain usable.
 - Older OpenSSL 3.x micro-CA mode requires self-signed certificate input. Migrate local leaf names through private transient signing, and atomically install only after the existing CA, IP/DNS names, public key and exact validity dates pass verification; never install or trust the transient certificate.
@@ -265,10 +276,11 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 
 ## Testing
 
-- Native firmware: `pio test -e test` and `pio test -e test_native` (Unity + ArduinoFake; suites under `test/`).
-- Tooling: `python -m unittest discover -s scripts -p 'test_*.py'`, `python -m unittest discover -s scripts/hil -p 'test_*.py'`, and `python -m unittest discover -s .github/scripts -p 'test_*.py'`.
-- Sanitizer suites: `python scripts/test_http_worker_security.py` and `python scripts/test_firmware_runtime.py`.
-- Secret/boundary scan: `python scripts/check_software.py` (needs gitleaks).
+- Native firmware (from `software/firmware/`): `pio test -e test` and `pio test -e test_native` (Unity + ArduinoFake; suites under `test/`).
+- Tooling: `python -m unittest discover -s software/scripts -p 'test_*.py'`, `python -m unittest discover -s software/dev -p 'test_*.py'`, `python -m unittest discover -s software/scripts/hil -p 'test_*.py'`, and `python -m unittest discover -s .github/scripts -p 'test_*.py'`.
+- Local services: `python software/dev/fixture/test_http_fixture.py`, then with `software/dev/dev_services.py up`, `python software/dev/fixture/test_compose_integration.py`.
+- Sanitizer suites: `python software/scripts/test_http_worker_security.py` and `python software/scripts/test_firmware_runtime.py`.
+- Secret/boundary scan: `python software/scripts/check_software.py` (needs gitleaks).
 
 ## Important Rules
 
@@ -303,15 +315,15 @@ When editing any `hardware/<product>/bom.csv`, follow the RAD BOM standard (fixe
 
 ## PR hardware validation
 
-- PRs into `staging` or `main` that change the firmware directory, or the validation tooling (`scripts/hil/`, `pr-firmware.yml`, `hardware-run.yml`, `.github/scripts/hil_evidence.py`), build every hardware variant and run the exact staging bundle for the PR merge SHA on the shared Test Rig. Other PRs skip both; `Build validation` and `Hardware validation` then pass without work.
+- PRs into `staging` or `main` that change the firmware directory, or the validation tooling (`software/scripts/hil/`, `pr-firmware.yml`, `hardware-run.yml`, `.github/scripts/hil_evidence.py`), build every hardware variant and run the exact staging bundle for the PR merge SHA on the shared Test Rig. Other PRs skip both; `Build validation` and `Hardware validation` then pass without work.
 - `PR target policy`, `Build validation` and `Hardware validation` are required on `staging` and `main`.
 - The rig records the product's camera for the whole run; `Hardware evidence` comments on the PR with each device's video and result, pass or fail. Video never decides a result.
 - Merging a firmware change into `main` allocates the next version and publishes a signed candidate through `publish_firmware.yml`; staging merges do not.
 - Firmware bundles and hardware evidence are Actions artifacts, never tracked files.
 - The reviewed harness and fixture inventory live outside the runner work directory.
 - Never infer product identity or flash capacity from a COM port or advertising name.
-- Follow scripts/hil/README.md for enrollment, shared-device locks, and rollout.
-- The shared rig (`DESKTOP-SGS6GOQ`, `C:\rad-hil`, runner `lkbx-rig-01`) serves every firmware product. `scripts/hil/catalog.py` and `reviewed-workflows.json` are identical across LKBX, DTT, OSSM and RADR; change them in all four together, reinstall with `install.ps1`, and update the organization runner group `rad-firmware-validation` allowlist to the exact reviewed `hardware-run.yml@<sha>` refs.
+- Follow software/scripts/hil/README.md for enrollment, shared-device locks, and rollout.
+- The shared rig (`DESKTOP-SGS6GOQ`, `C:\rad-hil`, runner `lkbx-rig-01`) serves every firmware product. `software/scripts/hil/` (including `catalog.py` and `reviewed-workflows.json`) is identical across LKBX, DTT, OSSM and RADR; change them in all four together, reinstall with `install.ps1`, and update the organization runner group `rad-firmware-validation` allowlist to the exact reviewed `hardware-run.yml@<sha>` refs.
 - `pr-firmware.yml` calls the reviewed wrapper by full SHA. Keep that commit reachable (branch `AJ/reviewed-hardware-runner`).
 - Keep Wi-Fi credentials, fixture identities, and raw device logs outside the repository.
 - A missing device or incomplete three-minute observation must fail validation.

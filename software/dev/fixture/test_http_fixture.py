@@ -19,7 +19,7 @@ import urllib.request
 import http_fixture as fixture_module
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT))
 import dev_services
 
 FIRST = "AA:BB:CC:DD:EE:FF"
@@ -115,7 +115,7 @@ class HttpsProcessTests(unittest.TestCase):
             cls.port = sock.getsockname()[1]
         cls.context = ssl.create_default_context(cafile=str(cls.folder / "ca.pem"))
         cls.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=cls.context))
-        cls.process = subprocess.Popen([sys.executable, "-B", str(ROOT / "dev/http_fixture.py"), "--config", str(cls.folder / "settings.json"),
+        cls.process = subprocess.Popen([sys.executable, "-B", str(ROOT / "fixture/http_fixture.py"), "--config", str(cls.folder / "settings.json"),
                                        "--ca", str(cls.folder / "ca.pem"), "--cert", str(cls.folder / "server.pem"), "--key", str(cls.folder / "server.key"),
                                        "--broker", "127.0.0.1", "--port", str(cls.port)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         deadline = time.monotonic() + 5

@@ -330,7 +330,7 @@ void test_mqtt_receive_process_unlock_from_home() {
 }
 
 // Real broker authentication and controller-only session publication are tested
-// by dev/test_compose_integration.py. Devices never receive the controller
+// by software/dev/fixture/test_compose_integration.py. Devices never receive the controller
 // credential or call a live broker administration test endpoint.
 
 void register_mqtt_dispatch_tests() {

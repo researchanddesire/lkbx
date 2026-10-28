@@ -7,12 +7,14 @@ import shutil
 import subprocess
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[1]
-SOFTWARE_ROOTS = {"src", "include", "lib", "boards", "test", "scripts", "dev"}
-SOFTWARE_FILES = {"platformio.ini", "CMakeLists.txt", "partition.csv",
-                  "sdkconfig.defaults", "sdkconfig.psram-r2.defaults",
-                  "pre_build_script.py", "firmware_build_metadata.py",
-                  "compose.yaml", ".gitignore", ".github/workflows/software-ci.yml"}
+ROOT = Path(__file__).resolve().parents[2]
+SOFTWARE_ROOTS = {"software"}
+SOFTWARE_FILES = {".gitignore", ".github/workflows/software-ci.yml"}
+# Before software/ held them, the same sources lived at the repository root.
+HISTORY_PATHS = {"src", "include", "lib", "boards", "test", "scripts", "dev",
+                 "platformio.ini", "CMakeLists.txt", "partition.csv",
+                 "sdkconfig.defaults", "sdkconfig.psram-r2.defaults",
+                 "pre_build_script.py", "firmware_build_metadata.py", "compose.yaml"}
 DOC_SUFFIXES = {".md", ".mdx", ".rst"}
 
 
@@ -54,7 +56,7 @@ def check(history=False):
     if history:
         # Git pathspecs cover the retained software ancestry only. Documentation
         # and hardware are intentionally reserved for their later release pass.
-        options = "--all -- " + " ".join(sorted(SOFTWARE_ROOTS | SOFTWARE_FILES)) + \
+        options = "--all -- " + " ".join(sorted(SOFTWARE_ROOTS | SOFTWARE_FILES | HISTORY_PATHS)) + \
                   " :(exclude)**/*.md :(exclude)**/*.mdx :(exclude)**/*.rst :(exclude)**/README"
         subprocess.run(["gitleaks", "git", str(ROOT), "--redact=100", "--no-banner",
                         "--log-opts=" + options], check=True)

@@ -270,7 +270,7 @@ def main(argv: Sequence[str] | None = None, *, runner: Any = None) -> int:
     parser.add_argument("--variant", choices=tuple(PRODUCTION_ENVIRONMENTS), help="Known hardware variant for build-only; verified against eFuses when --upload is requested")
     parser.add_argument("--upload", action="store_true", help="Explicitly flash the verified connected board after building")
     parser.add_argument("--upload-port", help="Exact serial port or unambiguous pattern; otherwise require one ESP32-S3 USB device")
-    parser.add_argument("--project-dir", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--project-dir", type=Path, default=Path(__file__).resolve().parents[1] / "firmware")
     parser.add_argument("--python", help="Python interpreter containing PlatformIO")
     parser.add_argument("--esptool", type=Path, help="Explicit bundled esptool.py path")
     parser.add_argument("--verbose", action="store_true")

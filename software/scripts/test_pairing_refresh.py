@@ -8,7 +8,7 @@ import tempfile
 
 
 def main():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[1] / "firmware"
     compiler = os.environ.get("CXX") or shutil.which("clang++") or shutil.which("g++")
     if not compiler:
         raise SystemExit("A C++17 compiler with ASan/UBSan is required")

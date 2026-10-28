@@ -338,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-port", type=int, help="Published local HTTPS port (default 8443)")
     parser.add_argument("--mqtt-port", type=int, help="Published local MQTTS port (default 8883)")
     parser.add_argument("--dashboard-origin", help="Local web UI origin for pairing QR (default http://<lan-ip>:3000)")
-    parser.add_argument("--project-dir", type=Path, default=Path(__file__).resolve().parents[1], help=argparse.SUPPRESS)
+    parser.add_argument("--project-dir", type=Path, default=Path(__file__).resolve().parent, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         if args.action in {"configure", "up"}:

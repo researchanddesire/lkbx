@@ -8,7 +8,7 @@ import tempfile
 
 
 def main():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[1] / "firmware"
     tests = root / "test/test_http_worker_security"
     compiler = os.environ.get("CXX") or shutil.which("clang++") or shutil.which("g++")
     if not compiler:
