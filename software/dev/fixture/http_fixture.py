@@ -26,6 +26,18 @@ def fresh_session(identity: str) -> dict:
             "isEUnlock": True, "isTestLock": True, "isTimeDisp": True, "displayElapsedTime": False}
 
 
+def no_update(report: dict) -> tuple[int, dict]:
+    """Local services never offer firmware, so development devices never fetch a cloud artifact."""
+    track = report.get("reportedTrack")
+    version = report.get("currentVersion")
+    if track not in ("main", "staging") or not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", version):
+        return 400, {"error": "invalid_report"}
+    return 200, {"protocolVersion": 1, "shouldUpdate": False, "updateAvailable": False, "reason": "no-target",
+                 "reportedTrack": track, "assignedTrack": track, "trackChanged": False, "currentVersion": version,
+                 "targetVersion": None, "nextHopVersion": None, "update": None, "nextCheckSeconds": 3600,
+                 "firmwareOrigin": "community"}
+
+
 class Fixture:
     def __init__(self, config: dict, publish=None):
         self.config = copy.deepcopy(config)
@@ -94,14 +106,7 @@ class Fixture:
         if path == "/api/firmware/v1/check" and method == "POST":
             if not self.device_allowed(principal, body.get("deviceId")) or body.get("deviceType") != "lkbx":
                 return 403, {"error": "device_denied"}
-            track = body.get("reportedTrack")
-            version = body.get("currentVersion")
-            if track not in ("main", "staging") or not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", version):
-                return 400, {"error": "invalid_report"}
-            return 200, {"protocolVersion": 1, "shouldUpdate": False, "updateAvailable": False, "reason": "no-target",
-                         "reportedTrack": track, "assignedTrack": track, "trackChanged": False, "currentVersion": version,
-                         "targetVersion": None, "nextHopVersion": None, "update": None, "nextCheckSeconds": 3600,
-                         "firmwareOrigin": "community"}
+            return no_update(body)
         if path.startswith("/api/local/v1/session/") and method == "PUT":
             if principal != "controller":
                 return 403, {"error": "controller_required"}

@@ -1,5 +1,8 @@
+# dev_services.py up starts exactly one profile. Both publish the same ports with
+# the same certificate, so development firmware is identical for either.
 services:
   mosquitto:
+    profiles: [fixture]
     image: eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c
     user: "0:0"
     entrypoint: ["/bin/sh", "/fixture/start-mosquitto.sh"]
@@ -24,6 +27,7 @@ services:
       timeout: 2s
       retries: 15
   api:
+    profiles: [fixture]
     image: python:3.13.7-alpine3.22@sha256:9ba6d8cbebf0fb6546ae71f2a1c14f6ffd2fdab83af7fa5669734ef30ad48844
     command: ["python", "-B", "/fixture/http_fixture.py", "--bind", "0.0.0.0", "--config", "/local/settings.json", "--cert", "/local/server.pem", "--key", "/local/server.key", "--ca", "/local/ca.pem", "--broker", "mosquitto"]
     ports:
@@ -48,9 +52,38 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
+  rad-app:
+    # TLS front for a local RAD App (:3000) and its EMQX broker (:1883) on this
+    # machine. It holds the TLS leaf only, never fixture credentials, and
+    # answers firmware checks itself so devices are never offered an update.
+    profiles: [rad-app]
+    image: python:3.13.7-alpine3.22@sha256:9ba6d8cbebf0fb6546ae71f2a1c14f6ffd2fdab83af7fa5669734ef30ad48844
+    command: ["python", "-B", "/fixture/rad_app_front.py", "--bind", "0.0.0.0", "--cert", "/local/server.pem", "--key", "/local/server.key", "--ca", "/local/ca.pem", "--upstream", "host.docker.internal"]
+    ports:
+      - "${LKBX_DEV_BIND_IP:-127.0.0.1}:${LKBX_DEV_API_PORT:-8443}:8443"
+      - "${LKBX_DEV_BIND_IP:-127.0.0.1}:${LKBX_DEV_MQTT_PORT:-8883}:8883"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./.dev/local/server.key:/local/server.key:ro
+      - ./.dev/local/server.pem:/local/server.pem:ro
+      - ./.dev/local/ca.pem:/local/ca.pem:ro
+      - ./fixture:/fixture:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks: [fixtures]
+    healthcheck:
+      test: ["CMD", "python", "-B", "/fixture/rad_app_front.py", "--healthcheck", "--ca", "/local/ca.pem"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
 networks:
   fixtures:
     # Keep published local ports usable without giving fixture traffic an
-    # outbound masquerade route. The fixture client only addresses Mosquitto.
+    # outbound masquerade route. The fixture client only addresses Mosquitto;
+    # the RAD App front only addresses the host's RAD App and EMQX ports.
     driver_opts:
       com.docker.network.bridge.enable_ip_masquerade: "false"

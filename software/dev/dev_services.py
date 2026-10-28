@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Configure and operate isolated local lockbox fixtures; no cloud fallback."""
+"""Configure and operate local lockbox services; no cloud fallback.
+
+Development firmware always uses the same generated HTTPS/MQTTS endpoints and
+certificate. `up` serves them from a running local RAD App and its EMQX broker
+when both answer on this machine, and otherwise from the Mosquitto fixtures.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import argparse
 import contextlib
 import csv
 from functools import lru_cache
+import http.client
 import ipaddress
 import json
 import os
@@ -24,6 +30,10 @@ from urllib.parse import urlsplit
 DEFAULT_DEVICE = "AA:BB:CC:DD:EE:FF"
 SCHEMA = 1
 CERTIFICATE_PROFILE = 2
+BACKENDS = ("auto", "fixture", "rad-app")
+# rad-app's own local services: EMQX status on its dashboard port, then the web app.
+EMQX_STATUS_PORT = 18083
+RAD_APP_PORT = 3000
 PRIVATE_NETWORKS = tuple(ipaddress.ip_network(x) for x in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"))
 
 
@@ -287,6 +297,50 @@ def should_start_services(profile: str, targets: set[str], ci: bool = False) -> 
     return not ci and profile in {"development-r2", "development-r8"} and bool(targets & {"upload", "test", "__test"})
 
 
+def loopback_get(port: int, path: str, timeout: float) -> tuple[int, bytes]:
+    # http.client ignores proxy settings and never follows redirects off loopback.
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        return response.status, response.read(4096)
+    finally:
+        connection.close()
+
+
+def rad_app_problem() -> str | None:
+    """Return why the local RAD App stack cannot serve devices, or None when it can."""
+    try:
+        status, body = loopback_get(EMQX_STATUS_PORT, "/status", 2)
+        if status != 200 or b"emqx is running" not in body:
+            return "EMQX is not running"
+    except (OSError, http.client.HTTPException):
+        return "EMQX is not running"
+    try:
+        # The first request after a dev-server start may compile the route.
+        status, _ = loopback_get(RAD_APP_PORT, "/api/health-check", 15)
+        if status != 200:
+            return f"RAD App is not answering on port {RAD_APP_PORT}"
+    except (OSError, http.client.HTTPException):
+        return f"RAD App is not answering on port {RAD_APP_PORT}"
+    return None
+
+
+def select_backend(requested: str, ci: bool = False) -> str:
+    if requested not in BACKENDS:
+        raise ValueError("Backend must be one of: " + ", ".join(BACKENDS))
+    if requested == "fixture" or (requested == "auto" and ci):
+        return "fixture"
+    problem = rad_app_problem()
+    if problem is None:
+        print("Local RAD App and EMQX detected; serving development devices through the RAD App TLS front")
+        return "rad-app"
+    if requested == "rad-app":
+        raise RuntimeError(problem + "; start it with `pnpm dev:web` in rad-app, or use --backend fixture")
+    print(problem + "; using the local Mosquitto fixtures")
+    return "fixture"
+
+
 def docker_environment(root: Path, executable: str) -> dict[str, str]:
     # These fixtures use public images only. Do not inherit account credentials or
     # invoke desktop credential helpers when operating the project-local stack.
@@ -314,7 +368,7 @@ def docker_environment(root: Path, executable: str) -> dict[str, str]:
     return environment
 
 
-def compose(root: Path, action: str) -> None:
+def compose(root: Path, action: str, backend: str | None = None) -> None:
     root = Path(root).resolve()
     config = root / ".dev/local/compose.env"
     if not config.exists():
@@ -322,12 +376,21 @@ def compose(root: Path, action: str) -> None:
     executable = shutil.which("docker")
     if not executable:
         raise RuntimeError("Docker with Compose is required to run local fixtures")
-    command = [executable, "compose", "--project-name", "lkbx-local-" + __import__("hashlib").sha256(str(root).encode()).hexdigest()[:10],
-               "--env-file", str(config), "-f", str(root / "compose.yaml")]
-    command += {"up": ["up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45"], "down": ["down"], "status": ["ps"]}[action]
-    result = subprocess.run(command, cwd=root, env=docker_environment(root, executable), check=False)
-    if result.returncode:
-        raise RuntimeError("Local Docker fixtures failed; start the Docker daemon and retry. Cloud fallback is disabled.")
+    base = [executable, "compose", "--project-name", "lkbx-local-" + __import__("hashlib").sha256(str(root).encode()).hexdigest()[:10],
+            "--env-file", str(config), "-f", str(root / "compose.yaml")]
+    every = ["--profile", "fixture", "--profile", "rad-app"]
+    if action == "up":
+        selected = select_backend(backend or os.environ.get("LKBX_DEV_BACKEND", "auto"), bool(os.environ.get("CI")))
+        # Both backends publish the same ports, so stop either before starting one.
+        commands = [base + every + ["down"],
+                    base + ["--profile", selected, "up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45"]]
+    else:
+        commands = [base + every + {"down": ["down"], "status": ["ps"]}[action]]
+    environment = docker_environment(root, executable)
+    for command in commands:
+        result = subprocess.run(command, cwd=root, env=environment, check=False)
+        if result.returncode:
+            raise RuntimeError("Local Docker services failed; start the Docker daemon and retry. Cloud fallback is disabled.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -338,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-port", type=int, help="Published local HTTPS port (default 8443)")
     parser.add_argument("--mqtt-port", type=int, help="Published local MQTTS port (default 8883)")
     parser.add_argument("--dashboard-origin", help="Local web UI origin for pairing QR (default http://<lan-ip>:3000)")
+    parser.add_argument("--backend", choices=BACKENDS, help="up: auto (default, or LKBX_DEV_BACKEND) uses a running local RAD App and EMQX, else the Mosquitto fixtures, and always the fixtures under CI")
     parser.add_argument("--project-dir", type=Path, default=Path(__file__).resolve().parent, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
@@ -345,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
             settings = configure(args.project_dir, args.lan_ip, args.device_ids, args.api_port, args.mqtt_port, args.dashboard_origin)
             print(f"Local HTTPS: https://{settings['lan_ip']}:{settings['api_port']}; MQTTS: {settings['lan_ip']}:{settings['mqtt_port']}; device: {settings['primary_device']}")
         if args.action != "configure":
-            compose(args.project_dir, args.action)
+            compose(args.project_dir, args.action, args.backend)
         return 0
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)

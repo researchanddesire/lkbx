@@ -335,10 +335,85 @@ class ConfigurationTests(unittest.TestCase):
             (root / ".dev/local/compose.env").write_text("LKBX_DEV_BIND_IP=127.0.0.1\n")
             with patch.object(local.shutil, "which", return_value="docker"), patch.object(local.subprocess, "run") as run:
                 run.return_value.returncode = 1
-                with patch.object(local, "docker_environment", return_value={}), self.assertRaisesRegex(RuntimeError, "Cloud fallback is disabled"):
+                with patch.object(local, "docker_environment", return_value={}), \
+                        patch.object(local, "rad_app_problem", return_value="EMQX is not running"), \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        self.assertRaisesRegex(RuntimeError, "Cloud fallback is disabled"):
                     local.compose(root, "up")
                 self.assertEqual(run.call_count, 1)
                 self.assertIn(str(root.resolve() / "compose.yaml"), run.call_args.args[0])
+
+    def test_backend_falls_back_to_mosquitto_without_local_rad_app(self):
+        with patch.object(local, "rad_app_problem", return_value="EMQX is not running"), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(local.select_backend("auto"), "fixture")
+        self.assertIn("Mosquitto", output.getvalue())
+        with patch.object(local, "rad_app_problem", return_value=None), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(local.select_backend("auto"), "rad-app")
+            self.assertEqual(local.select_backend("rad-app"), "rad-app")
+        with patch.object(local, "rad_app_problem", return_value="EMQX is not running"), \
+                self.assertRaisesRegex(RuntimeError, "EMQX is not running"):
+            local.select_backend("rad-app")
+        # CI and an explicit fixture request never probe the machine at all.
+        with patch.object(local, "rad_app_problem", side_effect=AssertionError("probed")):
+            self.assertEqual(local.select_backend("auto", ci=True), "fixture")
+            self.assertEqual(local.select_backend("fixture"), "fixture")
+        with self.assertRaises(ValueError):
+            local.select_backend("cloud")
+
+    def test_rad_app_detection_only_probes_loopback(self):
+        probes = []
+
+        def reply(status, body):
+            def get(port, path, timeout):
+                probes.append((port, path))
+                return status, body
+            return get
+
+        with patch.object(local.http.client, "HTTPConnection") as connection:
+            connection.return_value.getresponse.return_value.status = 200
+            connection.return_value.getresponse.return_value.read.return_value = b"emqx is running"
+            self.assertIsNone(local.rad_app_problem())
+            self.assertEqual({call.args[0] for call in connection.call_args_list}, {"127.0.0.1"})
+            self.assertEqual({call.args[1] for call in connection.call_args_list}, {local.EMQX_STATUS_PORT, local.RAD_APP_PORT})
+        with patch.object(local, "loopback_get", side_effect=reply(200, b"Node emqx@127.0.0.1 is stopped")):
+            self.assertEqual(local.rad_app_problem(), "EMQX is not running")
+        with patch.object(local, "loopback_get", side_effect=ConnectionRefusedError):
+            self.assertEqual(local.rad_app_problem(), "EMQX is not running")
+        answers = iter([(200, b"emqx is running"), ConnectionRefusedError()])
+
+        def emqx_without_app(port, path, timeout):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        with patch.object(local, "loopback_get", side_effect=emqx_without_app):
+            self.assertIn("RAD App is not answering", local.rad_app_problem())
+        self.assertEqual(probes, [(local.EMQX_STATUS_PORT, "/status")])
+
+    def test_up_stops_both_backends_before_starting_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".dev/local").mkdir(parents=True)
+            (root / ".dev/local/compose.env").write_text("LKBX_DEV_BIND_IP=127.0.0.1\n")
+            for backend in ("fixture", "rad-app"):
+                with self.subTest(backend=backend), patch.object(local.shutil, "which", return_value="docker"), \
+                        patch.object(local.subprocess, "run") as run, patch.object(local, "docker_environment", return_value={}), \
+                        patch.object(local, "select_backend", return_value=backend) as select:
+                    run.return_value.returncode = 0
+                    local.compose(root, "up")
+                    down, up = (call.args[0] for call in run.call_args_list)
+                    self.assertEqual(down[down.index("down") - 4:down.index("down")], ["--profile", "fixture", "--profile", "rad-app"])
+                    self.assertEqual(up[up.index("up") - 2:up.index("up")], ["--profile", backend])
+                    self.assertEqual(up.count("--profile"), 1)
+            with patch.object(local.shutil, "which", return_value="docker"), patch.object(local.subprocess, "run") as run, \
+                    patch.object(local, "docker_environment", return_value={}), \
+                    patch.dict(os.environ, {"LKBX_DEV_BACKEND": "fixture", "CI": ""}), \
+                    patch.object(local, "rad_app_problem", side_effect=AssertionError("probed")):
+                run.return_value.returncode = 0
+                local.compose(root, "up")
+                self.assertIn(["--profile", "fixture", "up"], [call.args[0][-8:-5] for call in run.call_args_list])
 
     def test_public_image_client_never_inherits_credentials_or_remote_daemon(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -365,6 +440,11 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("ca.key", compose)
         self.assertNotIn("./.dev/local:/", compose)
         self.assertIn('com.docker.network.bridge.enable_ip_masquerade: "false"', compose)
+        # The RAD App front holds the TLS leaf only, never fixture credentials.
+        front = compose[compose.index("  rad-app:"):compose.index("\nnetworks:")]
+        for private in ("settings.json", "broker-passwords", "broker.acl"):
+            self.assertNotIn(private, front)
+        self.assertIn('"--upstream", "host.docker.internal"', front)
 
 
 if __name__ == "__main__":
