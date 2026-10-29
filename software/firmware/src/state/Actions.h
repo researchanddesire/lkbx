@@ -14,6 +14,7 @@
 #include "services/mqtt.h"
 #include "services/rad_ble.h"
 #include "services/settings.h"
+#include "utils/emergencyBlockState.h"
 #include "services/wm.h"
 #include "tasks/TaskParams.h"
 #include "utils/syncState.h"
@@ -159,6 +160,12 @@ auto acceptNaturalUnlock = []() { return acceptExpiredTimer(false); };
 auto acceptLocalTimerUnlock = []() { return acceptExpiredTimer(true); };
 
 auto clearEBlock = []() {
+    // Backstop for every path that reaches this action: the block only ends
+    // once its stored end has passed, whatever event asked for the clear.
+    if (emergencyBlockHeldNow()) {
+        ESP_LOGW(ACTIONS_TAG, "Emergency block still running; not clearing");
+        return;
+    }
     ESP_LOGD(ACTIONS_TAG, "Clearing emergency block");
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
         preferences.begin(Keys::base, false);

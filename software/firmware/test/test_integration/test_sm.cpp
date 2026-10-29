@@ -549,10 +549,22 @@ void test_emergency_block_uses_emergency_end_not_session_lock_end() {
     TEST_ASSERT_TRUE_MESSAGE(isEmergencyBlockedPref(),
                              "Emergency block should remain set");
 
+    // A remote unlock (server clear, dashboard or Chaster unlock) arriving
+    // during the block must leave it in place.
+    lkbx->sm->process_event(Unlock{});
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(
+        "emergency.blocked", currentState().c_str(),
+        "Remote unlock must not clear a running block");
+    TEST_ASSERT_TRUE_MESSAGE(isEmergencyBlockedPref(),
+                             "Emergency block should survive a remote unlock");
+
+    // Once the stored end has passed, the same unlock releases the box.
+    setupEmergencyBlockPrefs(nowMs() - 1000);
     lkbx->sm->process_event(Unlock{});
     bool returnedHome = waitFor(smAtHome, 15000, 250);
     TEST_ASSERT_TRUE_MESSAGE(returnedHome,
-                             "Remote unlock override should clear block");
+                             "Unlock after the block end should clear it");
 }
 
 // ── Full lifecycle (5 min lock, 2 breaks, timer expiry) ──────────────────

@@ -54,6 +54,7 @@ static inline void resetPrefsToUnlocked() {
         preferences.putBool(Keys::Base::isLocked, false);
         preferences.putBool(Keys::Base::isLockTimer, false);
         preferences.putBool(Keys::Base::isEBlocked, false);
+        preferences.putULong64(Keys::Base::emergencyEnd, 0);
         preferences.putBool(Keys::Base::isLocalPlay, false);
         preferences.end();
 
