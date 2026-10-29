@@ -10,6 +10,7 @@
 #include "services/serverOnline.h"
 #include "services/settings.h"
 #include "services/wm.h"
+#include "utils/emergencyBlock.h"
 #include "utils/freezeState.h"
 
 static auto isOnline = []() { return WiFiClass::status() == WL_CONNECTED; };
@@ -118,6 +119,31 @@ static auto isEmergencyBlocked = []() {
     ESP_LOGD(GUARD_TAG, "isEmergencyBlocked: %d", lockState);
 
     return lockState;
+};
+
+// The emergency block ends on the clock only. A server clear or unlock that
+// arrives while the box is blocked (the server's own reaction to the
+// emergency report, a dashboard or Chaster unlock) must leave the block in
+// place; the countdown task fires the unlock once the stored end has passed.
+static auto isEmergencyExpired = []() {
+    uint64_t blockEndMs = 0;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::base);
+        blockEndMs = preferences.getULong64(Keys::Base::emergencyEnd, 0);
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+
+    struct timeval tv{};
+    lockboxGetTimeOfDay(&tv, nullptr);
+    const uint64_t nowMs =
+        ((uint64_t)tv.tv_sec) * 1000 + ((uint64_t)tv.tv_usec) / 1000;
+    const bool expired = emergencyBlockExpired(nowMs, blockEndMs);
+
+    ESP_LOGD(GUARD_TAG, "isEmergencyExpired: %d (now %llu, end %llu)", expired,
+             nowMs, blockEndMs);
+
+    return expired;
 };
 
 static auto isLockedTimer = []() {

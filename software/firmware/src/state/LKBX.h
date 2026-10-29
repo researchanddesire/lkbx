@@ -892,11 +892,11 @@ class LKBX {
                 "emergency.unlock"_s + breakE = "locked.break"_s,
                 "emergency.unlock"_s + forceUpdate = "update"_s,
 
-                "emergency.blocked"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "emergency.blocked"_s + lockOffered [isEmergencyExpired] / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "emergency.blocked"_s + on_entry<_> / (drawEBlockedQR, startUnlockTimer),
-                "emergency.blocked"_s + unlock / (clearEBlock, clearLocalPlay, unlockAction) = "home"_s,
-                "emergency.blocked"_s + lock / (clearEBlock, clearLocalPlay, lockAction) = "locking"_s,
-                "emergency.blocked"_s + locktimer / (clearEBlock, clearLocalPlay, lockTimerAction) = "locking"_s,
+                "emergency.blocked"_s + unlock [isEmergencyExpired] / (clearEBlock, clearLocalPlay, unlockAction) = "home"_s,
+                "emergency.blocked"_s + lock [isEmergencyExpired] / (clearEBlock, clearLocalPlay, lockAction) = "locking"_s,
+                "emergency.blocked"_s + locktimer [isEmergencyExpired] / (clearEBlock, clearLocalPlay, lockTimerAction) = "locking"_s,
                 "emergency.blocked"_s + buttonPress = "emergency.wifi"_s,
                 "emergency.blocked"_s + forceUpdate = "update"_s,
 
