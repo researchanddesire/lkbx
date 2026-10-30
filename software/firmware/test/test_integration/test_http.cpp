@@ -118,17 +118,30 @@ void test_http_version_check() {
         return;
     }
     assertHeapForTLS("pre version-check");
-    Version remote = getRemoteVersion();
+    // Use the HTTP worker: firmware::postCheck trusts only the public CA bundle
+    // and sends no bearer, so it cannot reach the Development fixture.
+    const firmware::DeviceReport report = currentFirmwareReport();
+    String payload;
+    int code = post(String(RAD_SERVER) + "/api/firmware/v1/check",
+                    String(firmware::serializeReport(report).c_str()),
+                    &payload);
     logHeap("post version-check");
 
     char msg[128];
-    snprintf(msg, sizeof(msg),
-             "GET version.json -> remote v%d.%d.%d",
-             remote.major, remote.minor, remote.patch);
+    snprintf(msg, sizeof(msg), "POST /api/firmware/v1/check -> %d", code);
     TEST_MESSAGE(msg);
-    TEST_ASSERT_TRUE_MESSAGE(remote.major >= 0 && remote.minor >= 0 &&
-                                 remote.patch >= 0,
-                             "Remote version fields should be non-negative");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(200, code,
+                                  "Firmware check should return 200");
+
+    firmware::Decision decision;
+    std::string parseError;
+    TEST_ASSERT_TRUE_MESSAGE(
+        firmware::parseDecision(payload.c_str(), report.deviceType, decision,
+                                parseError),
+        parseError.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(
+        firmware::decisionMatchesReport(report, decision),
+        "Firmware decision should match the reported track and version");
 }
 
 void test_http_pull_session_parsed() {
