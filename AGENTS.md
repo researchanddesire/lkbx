@@ -211,6 +211,15 @@ On first boot, the motor calibration routine auto-detects:
 - Publish: `<MAC_ADDRESS>` (state), `<MAC_ADDRESS>/log` (activity logs)
 - QoS 2, TLS on port 8883 (prod), plain on 1883 (dev)
 - Messages: "locked", "unlocked", "disconnected", "break", "emergency"
+- Commands are `sync` and `reboot` only. Never re-add a command that moves the motor directly.
+
+**Device identity (`software/firmware/lib/LockboxSecurity/README.md`):**
+- `services/deviceIdentity` owns the device secret and command key (NVS namespace `identity`). Never log either value. The secret goes only to the configured RAD server, and is withheld while the running OTA image is pending verification.
+- Firmware reads eFuses and never burns one. `software/scripts/provision_device_identity.py` is the only burn path, it is manual, and rig or CI automation must never run it.
+- A device holding a command key accepts only verified v2 envelopes (`lib/LockboxSecurity/src/CommandEnvelope.h`). A valid `/auth` 200 without `commandKey` erases the key, so the server can withdraw signing. Without a key, plain JSON behaves as it always did.
+- Keep the shared command-envelope vector in `test/test_command_envelope` identical to the server suite. It runs on the host against a test implementation; `test_integration` runs it on hardware against mbedTLS.
+- Retained messages on the command topic are dropped in both modes.
+- A failed or refused authentication (401 backs off to 60 seconds) only keeps the device off the broker. It must never lock, unlock or discard a session.
 
 **HTTP (Server Sync):**
 - `GET/POST {RAD_SERVER}/api/lockbox/state/{MAC_ADDRESS}`
@@ -222,7 +231,7 @@ On first boot, the motor calibration routine auto-detects:
 
 ### NVS Preferences
 
-Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqtt`. Keys defined in `PerferenceKeys.h`.
+Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqtt`, `identity`. Keys defined in `PerferenceKeys.h`.
 
 ### Error Codes
 
@@ -256,7 +265,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 
 ### Flash Partitions
 
-`partition.csv`: NVS (5KB), OTA data (2KB), App0/App1 (6.4MB each), SPIFFS (3.375MB), Coredump (64KB)
+`partition.csv`: NVS (20KB), OTA data (8KB), App0/App1 (6.25MB each), SPIFFS (3.375MB), Coredump (64KB)
 
 ## Libraries
 

@@ -9,6 +9,13 @@ namespace Keys {
     constexpr char mqtt[] = "mqtt";
     constexpr char base[] = "lockbox";
     constexpr char session[] = "session";
+    constexpr char identity[] = "identity";
+
+    namespace Identity {
+        constexpr char secret[] = "secret";
+        constexpr char commandKey[] = "cmdKey";
+        constexpr char commandLastTimestamp[] = "cmdLastTs";
+    }
 
     namespace Base {
         constexpr char isAlpha[] = "isAlpha";

@@ -11,6 +11,7 @@
 
 #include "constants/LogTags.h"
 #include "constants/strings.h"
+#include "services/deviceIdentity.h"
 #include "services/getId.h"
 #include "services/hardwareHealth.h"
 #include "services/machine.h"
@@ -104,9 +105,14 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
         case MQTT_EVENT_DATA:
             if (mqttFrame.append(mqttTopic, event->topic, event->topic_len,
                                  event->data, event->data_len,
-                                 event->total_data_len, event->current_data_offset) !=
+                                 event->total_data_len, event->current_data_offset,
+                                 event->retain) !=
                 lockbox::security::FrameResult::complete) break;
-            mqtt_data_string = String(mqttFrame.data(), mqttFrame.size());
+            if (!openCloudCommand(mqttTopic, mqttFrame.data(), mqttFrame.size(),
+                                  mqtt_data_string)) {
+                mqttFrame.reset();
+                break;
+            }
             mqttFrame.reset();
             message = parseJsonMessage(mqtt_data_string, doc);
 
@@ -217,42 +223,7 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                 break;
             }
 
-            if (message.type != MessageType::PROCESS) {
-                ESP_LOGE(MQTT_TAG, "Invalid message type");
-                break;
-            }
-
-            if (message.message == Str::Protocol::PROCESS_UNLOCK) {
-                ESP_LOGD(MQTT_TAG, "Processing unlock event");
-                lkbx->sm->process_event(Unlock{});
-            } else if (message.message == Str::Protocol::PROCESS_LOCK) {
-                ESP_LOGD(MQTT_TAG, "Processing lock event");
-                lkbx->sm->process_event(Lock{});
-            } else if (message.message == Str::Protocol::PROCESS_LOCK_TIMER) {
-                // 1722941895389
-                // 1722941925389
-
-                if (xSemaphoreTake(preferencesMutex,
-                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
-                    preferences.begin(Keys::session, false);
-                    preferences.putULong64(Keys::Session::lockEnd,
-                                           message.lockEnd);
-                    preferences.end();
-                    xSemaphoreGive(preferencesMutex);
-                }
-
-                // get system time
-                time_t now = 0;
-                lockboxTime(&now);
-
-                ESP_LOGD(MQTT_TAG,
-                         "Processing lock timer. Now: %ld, lockEnd: %llu", now,
-                         message.lockEnd);
-                lkbx->sm->process_event(LockTimer{
-                    .lockEnd = message.lockEnd,
-                });
-            }
-
+            ESP_LOGE(MQTT_TAG, "Invalid message type");
             break;
         default:
             break;

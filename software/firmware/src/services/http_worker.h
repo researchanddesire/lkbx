@@ -22,6 +22,12 @@ bool getAuthenticatedServerTimeMs(uint64_t *out);
 int get(const String &url, String *responsePayload = nullptr,
         int timeoutMs = 5000, int retries = 0);
 
+// Sends the device secret as x-lkbx-device-secret. Only the configured RAD
+// server may receive it: any other origin returns -1 without a request.
+int getWithDeviceSecret(const String &url, const String &deviceSecret,
+                        String *responsePayload = nullptr, int timeoutMs = 5000,
+                        int retries = 0);
+
 int post(const String &url, const String &body,
          String *responsePayload = nullptr, int timeoutMs = 5000,
          int retries = 0);

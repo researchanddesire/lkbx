@@ -5,15 +5,13 @@
 #include "CloudInput.h"
 #include "constants/strings.h"
 
-enum MessageType { EVENT, STATE, PROCESS, UNKNOWN, SYNC, REBOOT };
+enum MessageType { EVENT, STATE, UNKNOWN, SYNC, REBOOT };
 
 // Structure to hold parsed JSON values
 struct ParsedMessage {
     String id;
     MessageType type;
-    String message;
     long at;
-    uint64_t lockEnd;
     bool valid;
 };
 
@@ -32,8 +30,7 @@ static String generateRandomID() {
 // MESSAGE STRUCTURE
 // {
 //   id: string, // a random event id string
-//   type: "event" | "state" | "process",
-//   message: string // up to 255 characters
+//   type: "sync" | "reboot",
 //   at: number // in milliseconds
 // }
 
@@ -53,18 +50,14 @@ inline ParsedMessage parseJsonMessage(const String& jsonString,
     }
 
     parsedMessage.id = doc[Str::Json::ID].as<String>();
-    parsedMessage.message = doc[Str::Json::MESSAGE].as<String>();
     parsedMessage.at = doc[Str::Json::AT].as<uint64_t>();
     parsedMessage.valid = true;
-    parsedMessage.lockEnd = doc[Str::Json::LOCK_END].as<uint64_t>();
 
     String type = doc[Str::Json::TYPE].as<String>();
     if (type.equals(Str::MsgType::EVENT)) {
         parsedMessage.type = EVENT;
     } else if (type.equals(Str::MsgType::STATE)) {
         parsedMessage.type = STATE;
-    } else if (type.equals(Str::MsgType::PROCESS)) {
-        parsedMessage.type = PROCESS;
     } else if (type.equals(Str::MsgType::SYNC)) {
         parsedMessage.type = SYNC;
     } else if (type.equals(Str::MsgType::REBOOT)) {
