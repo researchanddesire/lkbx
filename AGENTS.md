@@ -81,7 +81,7 @@ All software lives in `software/`:
 software/
 ├── firmware/   # PlatformIO project; run `pio` here
 ├── scripts/    # build-hook helpers, release, screen capture and rig (hil/) tooling
-└── dev/        # local fixture services: compose.yaml, dev_services.py, fixture/
+└── dev/        # local services: compose.yaml, dev_services.py, fixture/ (Mosquitto fixtures or local RAD App front)
 ```
 
 Firmware sources in `software/firmware/`:
@@ -257,6 +257,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 ### Build Scripts
 
 - `software/firmware/pre_build_script.py` applies `software/scripts/patch_sdk_security.py` to every device profile and, for development profiles only, force-includes the generated `software/dev/.dev/local/include/lkbx_dev_config.h` from `software/dev/dev_services.py`. Outside CI, each development build reconfigures for this machine's current private LAN IP (set `LKBX_DEV_LAN_IP` to pin one), and a digest of that header forces a rebuild whenever it changes. Development builds never contact cloud services.
+- `dev_services.py up` (also run by development uploads and device tests) serves the generated endpoints from a local RAD App when EMQX (`:18083/status`) and RAD App (`:3000/api/health-check`) both answer on loopback, through `fixture/rad_app_front.py`, which reuses the local certificate, forwards only to those host ports, drops the fixture bearer and answers `/api/firmware/*` with no update. Otherwise it falls back to the Mosquitto fixtures. `--backend`/`LKBX_DEV_BACKEND` (`auto`, `fixture`, `rad-app`) overrides; under CI, `auto` always uses `fixture`. The firmware header is identical for both backends.
 - Local fixtures support `configure --api-port <port> --mqtt-port <port>` to coexist with other bench services. Reconfiguration preserves the selected primary device and ports; Windows configuration directories use explicit user/SYSTEM ACLs because `chmod` does not restrict Windows access.
 - The pinned ESP-IDF 4.4 mbedTLS hostname verifier checks only dNSName SANs. Local certificates include exact literal-IP dNSNames alongside proper IP SANs; certificate-profile migration preserves the existing CA, leaf key and validity interval so firmware trust and cached clocks remain usable.
 - Older OpenSSL 3.x micro-CA mode requires self-signed certificate input. Migrate local leaf names through private transient signing, and atomically install only after the existing CA, IP/DNS names, public key and exact validity dates pass verification; never install or trust the transient certificate.
@@ -287,7 +288,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 
 - Native firmware (from `software/firmware/`): `pio test -e test` and `pio test -e test_native` (Unity + ArduinoFake; suites under `test/`).
 - Tooling: `python -m unittest discover -s software/scripts -p 'test_*.py'`, `python -m unittest discover -s software/dev -p 'test_*.py'`, `python -m unittest discover -s software/scripts/hil -p 'test_*.py'`, and `python -m unittest discover -s .github/scripts -p 'test_*.py'`.
-- Local services: `python software/dev/fixture/test_http_fixture.py`, then with `software/dev/dev_services.py up`, `python software/dev/fixture/test_compose_integration.py`.
+- Local services: `python software/dev/fixture/test_http_fixture.py` and `python software/dev/fixture/test_rad_app_front.py`, then with `software/dev/dev_services.py up --backend fixture --lan-ip 127.0.0.1 --device-id AA:BB:CC:DD:EE:FF --device-id AA:BB:CC:DD:EE:FE`, `python software/dev/fixture/test_compose_integration.py`.
 - Sanitizer suites: `python software/scripts/test_http_worker_security.py` and `python software/scripts/test_firmware_runtime.py`.
 - Secret/boundary scan: `python software/scripts/check_software.py` (needs gitleaks).
 
