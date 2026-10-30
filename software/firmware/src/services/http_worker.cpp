@@ -39,6 +39,7 @@ constexpr size_t MAX_URL_BYTES = 2048;
 struct HttpRequest {
     String url;
     String body;
+    String deviceSecret;
     bool isPost = false;
     int retries = 0;
     int64_t deadlineUs = 0;
@@ -192,7 +193,9 @@ bool addHeaders(esp_http_client_handle_t client, const HttpRequest &req) {
     };
     if (!add("Accept-Encoding", "identity") ||
         !add("X-RAD-Firmware-Provenance-Capability", "1") ||
-        (req.isPost && !add("Content-Type", "application/json"))) return false;
+        (req.isPost && !add("Content-Type", "application/json")) ||
+        (req.deviceSecret.length() > 0 &&
+         !add("x-lkbx-device-secret", req.deviceSecret.c_str()))) return false;
 #if defined(VERSIONDEV)
     const std::string authorization = std::string("Bearer ") + LKBX_DEV_API_TOKEN;
     if (!add("Authorization", authorization.c_str())) return false;
@@ -327,11 +330,12 @@ void httpWorkerTask(void *) {
 
 int enqueue(const String &url, const String &body, bool isPost,
             String *responsePayload, int timeoutMs, int retries,
-            uint64_t *serverTimeMs = nullptr) {
+            uint64_t *serverTimeMs = nullptr, const String *deviceSecret = nullptr) {
     if (responsePayload) responsePayload->clear();
     if (serverTimeMs) *serverTimeMs = 0;
     if (!allowedUrl(url) || body.length() > MAX_BODY_BYTES || timeoutMs <= 0 ||
-        retries < 0 || retries > 2) return -1;
+        retries < 0 || retries > 2 ||
+        (deviceSecret && !configuredServerUrl(url))) return -1;
     HttpRequest *req = new (std::nothrow) HttpRequest;
     if (!req) return -1;
     if (!req->completed) {
@@ -340,7 +344,9 @@ int enqueue(const String &url, const String &body, bool isPost,
     }
     req->url = url;
     req->body = body;
-    if (req->url.length() != url.length() || req->body.length() != body.length()) {
+    if (deviceSecret) req->deviceSecret = *deviceSecret;
+    if (req->url.length() != url.length() || req->body.length() != body.length() ||
+        (deviceSecret && req->deviceSecret.length() != deviceSecret->length())) {
         req->release();
         return -1;
     }
@@ -425,6 +431,12 @@ bool getAuthenticatedServerTimeMs(uint64_t *out) {
 
 int get(const String &url, String *responsePayload, int timeoutMs, int retries) {
     return enqueue(url, String(), false, responsePayload, timeoutMs, retries);
+}
+
+int getWithDeviceSecret(const String &url, const String &deviceSecret,
+                        String *responsePayload, int timeoutMs, int retries) {
+    return enqueue(url, String(), false, responsePayload, timeoutMs, retries, nullptr,
+                   deviceSecret.length() > 0 ? &deviceSecret : nullptr);
 }
 
 int post(const String &url, const String &body, String *responsePayload,

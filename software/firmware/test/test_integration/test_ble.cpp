@@ -14,7 +14,7 @@ static constexpr char CHR_UUID[] = "522b443a-4c4b-4258-0002-420badbabe69";
 // ── Tests ───────────────────────────────────────────────────────────────
 
 void test_nimble_initialized() {
-    TEST_ASSERT_TRUE_MESSAGE(NimBLEDevice::getInitialized(),
+    TEST_ASSERT_TRUE_MESSAGE(NimBLEDevice::isInitialized(),
                              "NimBLE should be initialized after initBoard()");
 }
 

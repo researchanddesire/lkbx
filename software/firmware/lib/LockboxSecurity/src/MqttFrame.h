@@ -18,8 +18,14 @@ class MqttFrame {
 
     FrameResult append(const char* allowedTopic, const char* topic,
                        int topicLength, const char* bytes, int length,
-                       int total, int offset) {
+                       int total, int offset, bool retained = false) {
         if (offset == 0) reset();
+        // A retained command would fire again on every reconnect. Dropping the
+        // first fragment leaves later fragments with nothing to continue.
+        if (retained) {
+            reset();
+            return FrameResult::rejected;
+        }
         if (!allowedTopic || !bytes || length <= 0 || total <= 0 ||
             offset < 0 || topicLength < 0 ||
             static_cast<std::size_t>(total) > Capacity || offset > total ||

@@ -70,8 +70,10 @@ jobs:
           python-version: '3.13'
       - name: Test isolated HTTPS fixture
         run: python software/dev/fixture/test_http_fixture.py -v
+      - name: Test local RAD App TLS front
+        run: python software/dev/fixture/test_rad_app_front.py -v
       - name: Start synthetic local services
-        run: python software/dev/dev_services.py up --lan-ip 127.0.0.1 --device-id AA:BB:CC:DD:EE:FF --device-id AA:BB:CC:DD:EE:FE
+        run: python software/dev/dev_services.py up --backend fixture --lan-ip 127.0.0.1 --device-id AA:BB:CC:DD:EE:FF --device-id AA:BB:CC:DD:EE:FE
       - name: Verify HTTPS authentication and MQTT topic isolation
         run: python software/dev/fixture/test_compose_integration.py -v
       - name: Stop local services

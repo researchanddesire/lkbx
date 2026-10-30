@@ -49,6 +49,10 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_authentication_cannot_issue_another_device_credentials(self):
         self.assertEqual(self.call("/api/lockbox/auth", {"mac": SECOND})[0], 403)
+        # The fixture never signs commands, so a device with a secret stays in plain mode.
+        code, body = self.call("/api/lockbox/auth", {"mac": FIRST, "deviceSecret": "A" * 43})
+        self.assertEqual(code, 200)
+        self.assertNotIn("commandKey", body)
         code, body = self.call("/api/lockbox/auth", {"mac": FIRST})
         self.assertEqual(code, 200)
         self.assertEqual(body["clientId"], FIRST)

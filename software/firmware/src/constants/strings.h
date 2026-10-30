@@ -261,9 +261,6 @@ namespace Str {
         constexpr char STATE_CHANGE[] PROGMEM = "state_change";
         constexpr char PENDING[] PROGMEM = "pending";
         constexpr char ABANDONED[] PROGMEM = "abandoned";
-        constexpr char PROCESS_UNLOCK[] PROGMEM = "unlock";
-        constexpr char PROCESS_LOCK[] PROGMEM = "lock";
-        constexpr char PROCESS_LOCK_TIMER[] PROGMEM = "lockTimer";
         constexpr char MQTT_CONNECTED[] PROGMEM = "MQTT Connected";
         constexpr char MQTT_DISCONNECTED[] PROGMEM = "MQTT Disconnected";
         constexpr char MQTT_SUBSCRIBED[] PROGMEM = "MQTT Subscribed";
@@ -330,6 +327,8 @@ namespace Str {
         constexpr char PASSWORD[] PROGMEM = "password";
         constexpr char PAIRING_CODE[] PROGMEM = "pairingCode";
         constexpr char HUE_SHIFT[] PROGMEM = "hueShift";
+        constexpr char DEVICE_SECRET[] PROGMEM = "deviceSecret";
+        constexpr char COMMAND_KEY[] PROGMEM = "commandKey";
         // Message parsing
         constexpr char TYPE[] PROGMEM = "type";
         constexpr char MESSAGE[] PROGMEM = "message";
@@ -341,7 +340,6 @@ namespace Str {
     namespace MsgType {
         constexpr char EVENT[] PROGMEM = "event";
         constexpr char STATE[] PROGMEM = "state";
-        constexpr char PROCESS[] PROGMEM = "process";
         constexpr char SYNC[] PROGMEM = "sync";
         constexpr char REBOOT[] PROGMEM = "reboot";
     }  // namespace MsgType

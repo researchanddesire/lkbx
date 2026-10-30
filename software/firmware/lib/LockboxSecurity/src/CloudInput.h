@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include "Base64Url.h"
 #include "PairingCodeLease.h"
 
 namespace lockbox::security {
@@ -14,6 +15,14 @@ inline bool boundedString(JsonVariantConst value, std::size_t min,
     const JsonString text = value.as<JsonString>();
     return text.size() >= min && text.size() <= max &&
            std::strlen(text.c_str()) == text.size();
+}
+
+// Older servers omit commandKey. A present key must be exactly 32 bytes.
+inline bool optionalCommandKey(JsonVariantConst value) {
+    if (value.isNull()) return true;
+    if (!boundedString(value, 43, 43)) return false;
+    const JsonString text = value.as<JsonString>();
+    return isBase64UrlOfLength(text.c_str(), text.size(), 32);
 }
 
 inline bool authResponse(JsonVariantConst value) {
@@ -30,7 +39,8 @@ inline bool authResponse(JsonVariantConst value) {
            value["hueShift"].is<int>() &&
            value["hueShift"].as<int>() >= 0 &&
            value["hueShift"].as<int>() <= 360 &&
-           value["isPaired"].is<bool>();
+           value["isPaired"].is<bool>() &&
+           optionalCommandKey(value["commandKey"]);
 }
 
 struct PairingRefreshResponse {
@@ -109,17 +119,9 @@ inline bool commandResponse(JsonVariantConst value) {
         !boundedString(value["type"], 1, 16)) return false;
     const char* type = value["type"];
     if (!std::strcmp(type, "reboot")) return true;
-    if (!std::strcmp(type, "sync")) {
-        if (!value["clear"].isNull() && !value["clear"].is<bool>()) return false;
-        return value["clear"] == true || sessionResponse(value, true);
-    }
-    if (std::strcmp(type, "process") ||
-        !boundedString(value["message"], 1, 32)) return false;
-    const char* message = value["message"];
-    if (!std::strcmp(message, "unlock") || !std::strcmp(message, "lock")) return true;
-    return !std::strcmp(message, "lockTimer") &&
-           boundedNumber(value["lockEnd"], true) &&
-           value["lockEnd"].as<uint64_t>() != 0;
+    if (std::strcmp(type, "sync")) return false;
+    if (!value["clear"].isNull() && !value["clear"].is<bool>()) return false;
+    return value["clear"] == true || sessionResponse(value, true);
 }
 
 }  // namespace lockbox::security

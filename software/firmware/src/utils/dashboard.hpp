@@ -12,6 +12,7 @@
 #include "constants/strings.h"
 #include "getEfuseMac.h"
 #include "pairingStatus.h"
+#include "services/deviceIdentity.h"
 #include "services/wm.h"
 
 struct AuthResponse {
@@ -25,12 +26,16 @@ struct AuthResponse {
     bool isPaired = false;
     bool pairingStatusKnown = false;
     bool valid = false;
+    String commandKey = "";
+    bool rejected = false;
 };
 
 static PairingStatus getPairingStatus(int timeoutMs = 5000) {
     String deviceId = getMacAddresss();
     JsonDocument doc;
     doc[Str::Json::MAC_ADDRESS] = deviceId;
+    const String deviceSecret = deviceSecretForRequest();
+    if (deviceSecret.length() > 0) doc[Str::Json::DEVICE_SECRET] = deviceSecret;
 
     String payload;
 
@@ -59,6 +64,8 @@ static void populateAuthRequest(JsonDocument& doc) {
     doc[Str::Json::CHIP] = ESP.getChipModel();
     doc[Str::Json::MD5] = ESP.getSketchMD5();
     doc[Str::Json::DEVICE] = Str::Api::DEVICE_NAME;
+    const String deviceSecret = deviceSecretForRequest();
+    if (deviceSecret.length() > 0) doc[Str::Json::DEVICE_SECRET] = deviceSecret;
 }
 
 // Web must deploy this additive purpose before the firmware rollout. The early
@@ -96,6 +103,15 @@ static AuthResponse getAuthToken(int timeoutMs = 5000) {
             .clientId = "", .username = "", .password = "", .sessionId = ""};
     }
 
+    // The server refused this device's identity. This is the same failed
+    // authentication as any other: it changes no lock, session or pairing state.
+    if (httpResponseCode == 401) {
+        ESP_LOGW(UTILS_TAG, "Server rejected this device's identity");
+        AuthResponse rejected;
+        rejected.rejected = true;
+        return rejected;
+    }
+
     if (httpResponseCode != 200) {
         ESP_LOGW(UTILS_TAG, "Authentication request failed with HTTP status %d",
                  httpResponseCode);
@@ -126,7 +142,8 @@ static AuthResponse getAuthToken(int timeoutMs = 5000) {
             .hueShift = response[Str::Json::HUE_SHIFT],
             .isPaired = response[Str::Json::IS_PAIRED] | false,
             .pairingStatusKnown = response[Str::Json::IS_PAIRED].is<bool>(),
-            .valid = true};
+            .valid = true,
+            .commandKey = response[Str::Json::COMMAND_KEY] | ""};
 }
 
 #endif  // LOCKBOX_DASHBOARD_HPP

@@ -6,6 +6,7 @@ inline constexpr const char* STARTUP_TAG = "LKBX";
 inline constexpr const char* STATE_MACHINE_TAG = "StateLogger";
 inline constexpr const char* UPDATE_TAG = "Update";
 inline constexpr const char* MQTT_TAG = "MQTT";
+inline constexpr const char* IDENTITY_TAG = "Identity";
 inline constexpr const char* OTA_TAG = "OTA";
 inline constexpr const char* TASKDEBUG_TAG = "TASKDEBUG";
 inline constexpr const char* BREAK_TIMER_TAG = "BreakTimer";

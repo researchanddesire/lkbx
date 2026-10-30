@@ -300,6 +300,42 @@ void testTlsAndUrls() {
     assert(snapshots().size() == 4); // no redirect hop, even with retries requested
 }
 
+void testDeviceSecretOnlyReachesConfiguredServer() {
+    reset();
+    schedule(Scenario{});
+    assert(getWithDeviceSecret(url("/api/lockbox/state/device"), String("device-secret-value")) == 200);
+    auto seen = snapshots();
+    assert(seen.size() == 1);
+    assert(seen[0].headers.at("x-lkbx-device-secret") == "device-secret-value");
+    assert(seen[0].method == HTTP_METHOD_GET);
+
+    // No secret: the same call sends no header, for a device that must not prove itself yet.
+    reset();
+    schedule(Scenario{});
+    assert(getWithDeviceSecret(url("/api/lockbox/state/device"), String()) == 200);
+    seen = snapshots();
+    assert(seen.size() == 1 && seen[0].headers.count("x-lkbx-device-secret") == 0);
+
+    // Ordinary requests never carry it.
+    reset();
+    schedule(Scenario{});
+    assert(get(url("/api/test")) == 200);
+    seen = snapshots();
+    assert(seen.size() == 1 && seen[0].headers.count("x-lkbx-device-secret") == 0);
+
+#ifndef VERSIONDEV
+    // Another HTTPS origin is refused before any request exists.
+    reset();
+    String response("stale");
+    assert(getWithDeviceSecret(String("https://other.example.test/api"),
+                               String("device-secret-value"), &response) == -1);
+    assert(response.length() == 0 && snapshots().empty());
+    assert(getWithDeviceSecret(String("https://dashboard.example.test.attacker.test/api"),
+                               String("device-secret-value")) == -1);
+    assert(snapshots().empty());
+#endif
+}
+
 void testBoundsAndRetry() {
     reset();
     String response("stale");
@@ -518,6 +554,7 @@ void testCallerTimeoutCannotLeaveOrRestoreOnline() {
 
 int main() {
     testTlsAndUrls();
+    testDeviceSecretOnlyReachesConfiguredServer();
     testBoundsAndRetry();
     testCallerTimeoutAndLateCompletion();
     testStopAndQueueSaturation();
