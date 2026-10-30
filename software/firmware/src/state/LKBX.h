@@ -650,7 +650,7 @@ class LKBX {
                 "init.preflight.syncLockState"_s + lock / (stopLoadingAnimation, lockAction) = "locking"_s,
                 "init.preflight.syncLockState"_s + locktimer [isOnActiveBreak] / stopLoadingAnimation = "locked.break"_s,
                 "init.preflight.syncLockState"_s + locktimer / (stopLoadingAnimation, lockTimerAction) = "locking"_s,
-                "init.preflight.syncLockState"_s + lockOffered[isEmergencyHeld] / (stopLoadingAnimation, declineLockAction) = "home"_s,
+                "init.preflight.syncLockState"_s + lockOffered[isEmergencyKnownHeld] / (stopLoadingAnimation, declineLockAction) = "home"_s,
                 "init.preflight.syncLockState"_s + lockOffered[!isEmergencyHeld] / (stopLoadingAnimation, movePaddleToUnlock) = "acceptLock"_s,
                 "init.preflight.syncLockState"_s + breakE / stopLoadingAnimation = "locked.break"_s,
                 "init.preflight.syncLockState"_s + done / stopLoadingAnimation = "home"_s,
@@ -771,7 +771,7 @@ class LKBX {
 
                 "permalock.confirm"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "acceptLock"_s + on_entry<_> / drawAcceptLockQR,
-                "acceptLock"_s + buttonPress[acceptOfferedLockSession] / (clearEBlock, lockTimerAction) = "locking"_s,
+                "acceptLock"_s + buttonPress[!isEmergencyHeld && acceptOfferedLockSession] / (clearEBlock, lockTimerAction) = "locking"_s,
                 "acceptLock"_s + backPress / declineLockAction = "home"_s,
                 "acceptLock"_s + decline / declineLockAction = "home"_s,
                 "acceptLock"_s + lockOffered / drawAcceptLockQR,
@@ -941,7 +941,7 @@ class LKBX {
                 "update.failed"_s + done / restart = X,
 
                 "update.none"_s + on_entry<_> / ([](LKBX &) { bootHttpDone = true; }, drawNoUpdateQR),
-                "update.none"_s + lockOffered[isEmergencyHeld] / declineLockAction,
+                "update.none"_s + lockOffered[isEmergencyKnownHeld] / declineLockAction,
                 "update.none"_s + lockOffered[!isEmergencyHeld] / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "update.none"_s + buttonPress = "home"_s,
                 "update.none"_s + backPress = "home"_s,

@@ -7,8 +7,9 @@ using namespace sml;
 
 // Hardware boundaries only are stubbed. The transition rows below are the
 // exact fragment used by LKBX::InnerStateMachine, not a copy of its behavior.
+enum class Hold { Free, Held, Unknown };
 struct Context {
-    bool held = true;
+    Hold hold = Hold::Held;
     int declines = 0;
     int clears = 0;
     int motors = 0;
@@ -19,7 +20,10 @@ struct Context {
 struct Noop {};
 struct Fixture {
     auto operator()() const {
-        auto isEmergencyHeld = [](Context& c) { return c.held; };
+        auto isEmergencyHeld = [](Context& c) { return c.hold != Hold::Free; };
+        auto isEmergencyKnownHeld = [](Context& c) {
+            return c.hold == Hold::Held;
+        };
         auto declineLockAction = [](Context& c) { ++c.declines; };
         auto clearActiveBreak = [](Context&) {};
         auto movePaddleToUnlock = [](Context& c) { ++c.motors; };
@@ -79,7 +83,7 @@ void test_held_wifi_screen_holds_the_same_line() {
 
 void test_expired_block_releases_on_unlock() {
     Context c;
-    c.held = false;
+    c.hold = Hold::Free;
     Machine machine{c};
     machine.set_current_states("emergency.blocked"_s);
     machine.process_event(Unlock{});
@@ -90,7 +94,7 @@ void test_expired_block_releases_on_unlock() {
 
 void test_expired_block_takes_an_offer() {
     Context c;
-    c.held = false;
+    c.hold = Hold::Free;
     Machine machine{c};
     machine.set_current_states("emergency.blocked"_s);
     machine.process_event(LockOffered{});
@@ -102,7 +106,7 @@ void test_expired_block_takes_an_offer() {
 void test_expired_block_takes_locks() {
     {
         Context c;
-        c.held = false;
+        c.hold = Hold::Free;
         Machine machine{c};
         machine.set_current_states("emergency.blocked"_s);
         machine.process_event(Lock{});
@@ -112,7 +116,7 @@ void test_expired_block_takes_locks() {
     }
     {
         Context c;
-        c.held = false;
+        c.hold = Hold::Free;
         Machine machine{c};
         machine.set_current_states("emergency.blocked"_s);
         machine.process_event(LockTimer{});
@@ -125,7 +129,7 @@ void test_expired_block_takes_locks() {
 void test_expired_wifi_screen_releases_and_accepts() {
     {
         Context c;
-        c.held = false;
+        c.hold = Hold::Free;
         Machine machine{c};
         machine.set_current_states("emergency.wifi"_s);
         machine.process_event(Unlock{});
@@ -134,7 +138,7 @@ void test_expired_wifi_screen_releases_and_accepts() {
     }
     {
         Context c;
-        c.held = false;
+        c.hold = Hold::Free;
         Machine machine{c};
         machine.set_current_states("emergency.wifi"_s);
         machine.process_event(LockOffered{});
@@ -143,8 +147,44 @@ void test_expired_wifi_screen_releases_and_accepts() {
     }
 }
 
+void test_unreadable_block_ignores_events_instead_of_acting() {
+    Context c;
+    c.hold = Hold::Unknown;
+    Machine machine{c};
+    machine.set_current_states("emergency.blocked"_s);
+    machine.process_event(LockOffered{});
+    machine.process_event(Unlock{});
+    machine.process_event(Lock{});
+    TEST_ASSERT_TRUE(machine.is("emergency.blocked"_s));
+    TEST_ASSERT_EQUAL_INT(0, c.declines);
+    TEST_ASSERT_EQUAL_INT(0, c.clears + c.motors + c.unlocks + c.locks);
+}
+
+void test_held_accept_screen_declines_instead_of_locking() {
+    Context c;
+    Machine machine{c};
+    machine.set_current_states("acceptLock"_s);
+    machine.process_event(ButtonPress{});
+    TEST_ASSERT_TRUE(machine.is("home"_s));
+    TEST_ASSERT_EQUAL_INT(1, c.declines);
+    TEST_ASSERT_EQUAL_INT(0, c.timers + c.locks + c.clears);
+}
+
+void test_unreadable_accept_screen_waits() {
+    Context c;
+    c.hold = Hold::Unknown;
+    Machine machine{c};
+    machine.set_current_states("acceptLock"_s);
+    machine.process_event(ButtonPress{});
+    TEST_ASSERT_TRUE(machine.is("acceptLock"_s));
+    TEST_ASSERT_EQUAL_INT(0, c.declines);
+}
+
 int runUnityTests(void) {
     UNITY_BEGIN();
+    RUN_TEST(test_unreadable_block_ignores_events_instead_of_acting);
+    RUN_TEST(test_held_accept_screen_declines_instead_of_locking);
+    RUN_TEST(test_unreadable_accept_screen_waits);
     RUN_TEST(test_held_block_ignores_remote_unlock_and_locks);
     RUN_TEST(test_held_block_declines_an_offer_without_moving);
     RUN_TEST(test_held_wifi_screen_holds_the_same_line);

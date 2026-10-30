@@ -133,6 +133,15 @@ static auto isEmergencyHeld = []() {
     return held;
 };
 
+// True only when storage was readable and the block is running: the answer
+// that lets the box decline an offer. A read failure matches neither guard,
+// so the offer is left stored and the activity task retries it shortly.
+static auto isEmergencyKnownHeld = []() {
+    const bool held = emergencyBlockKnownHeldNow();
+    ESP_LOGD(GUARD_TAG, "isEmergencyKnownHeld: %d", held);
+    return held;
+};
+
 static auto isLockedTimer = []() {
     auto lockState = false;
     auto lockTimer = false;

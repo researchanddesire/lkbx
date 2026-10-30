@@ -26,18 +26,33 @@ inline bool readEmergencyBlock(EmergencyBlockState* out) {
     return true;
 }
 
+enum class EmergencyBlockHold { Free, Held, Unknown };
+
 // Whether a software emergency block is set and has not yet reached its
 // stored end on the box's wall clock (the clock the countdown task uses).
-// Storage that cannot be read keeps the block: the safe answer for a state
-// that exists to refuse. No block set means nothing is held, so a box that
-// still carries an old end from a block cleared by earlier firmware is not
-// affected.
-inline bool emergencyBlockHeldNow() {
+// Unknown when storage cannot be read: callers that refuse (clearing the
+// block, taking an unlock or a lock) treat it as held, callers that would
+// act on the block (declining an offer) wait for a readable answer. No block
+// set means Free, so a box that still carries an old end from a block cleared
+// by earlier firmware is not affected.
+inline EmergencyBlockHold emergencyBlockHoldNow() {
     EmergencyBlockState state;
-    if (!readEmergencyBlock(&state)) return true;
-    if (!state.blocked) return false;
+    if (!readEmergencyBlock(&state)) return EmergencyBlockHold::Unknown;
+    if (!state.blocked) return EmergencyBlockHold::Free;
     const int64_t now = currentWallClockMs();
-    return !emergencyBlockExpired(now > 0 ? (uint64_t)now : 0, state.endMs);
+    return emergencyBlockExpired(now > 0 ? (uint64_t)now : 0, state.endMs)
+               ? EmergencyBlockHold::Free
+               : EmergencyBlockHold::Held;
+}
+
+// Safe-side answer: anything but a readable Free keeps the block.
+inline bool emergencyBlockHeldNow() {
+    return emergencyBlockHoldNow() != EmergencyBlockHold::Free;
+}
+
+// Readable and running: the only answer that justifies acting on the block.
+inline bool emergencyBlockKnownHeldNow() {
+    return emergencyBlockHoldNow() == EmergencyBlockHold::Held;
 }
 
 #endif  // LOCKBOX_EMERGENCY_BLOCK_STATE_H
