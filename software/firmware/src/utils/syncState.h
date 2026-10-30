@@ -13,6 +13,7 @@
 #include "constants/Pins.h"
 #include "constants/dashboard.h"
 #include "constants/strings.h"
+#include "services/deviceIdentity.h"
 #include "services/magnetics.h"
 #include "services/settings.h"
 #include "services/wm.h"
@@ -508,7 +509,7 @@ static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
     String url = String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss();
 
     String payload;
-    int httpResponseCode = get(url, &payload);
+    int httpResponseCode = getWithDeviceSecret(url, deviceSecretForRequest(), &payload);
 
     if (httpResponseCode != 200) {
         ESP_LOGD(SYNC_STATE_TAG, "Failed to reach server. Response code: %d",

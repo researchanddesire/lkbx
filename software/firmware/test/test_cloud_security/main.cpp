@@ -71,20 +71,34 @@ void incomplete_credentials_never_become_valid_auth() {
     TEST_ASSERT_FALSE(boundedString(doc["password"], 1, 512));
 }
 
+void command_key_in_auth_is_optional_but_must_be_exact() {
+    JsonDocument doc;
+    deserializeJson(doc, R"({"clientId":"pool-channel","username":"device","password":"synthetic-only","sessionId":"pool-channel","pairingCode":"example","hueShift":120,"isPaired":false})");
+    TEST_ASSERT_TRUE(authResponse(doc.as<JsonVariantConst>()));
+    doc["commandKey"] = "BWt_KAZ_bF4kiAgB54ujyb3xMqmK8mUvEto3EY9FTOA";
+    TEST_ASSERT_TRUE(authResponse(doc.as<JsonVariantConst>()));
+    for (const auto* bad : {"", "short", "BWt_KAZ_bF4kiAgB54ujyb3xMqmK8mUvEto3EY9FTOA=",
+                            "BWt/KAZ+bF4kiAgB54ujyb3xMqmK8mUvEto3EY9FTOA",
+                            "BWt_KAZ_bF4kiAgB54ujyb3xMqmK8mUvEto3EY9FTOB"}) {
+        doc["commandKey"] = bad;
+        TEST_ASSERT_FALSE_MESSAGE(authResponse(doc.as<JsonVariantConst>()), bad);
+    }
+    doc["commandKey"] = 123;
+    TEST_ASSERT_FALSE(authResponse(doc.as<JsonVariantConst>()));
+}
+
 void malformed_commands_have_no_accepted_action() {
     JsonDocument doc;
     const char* rejected[] = {"{}", "[]", R"({"type":"sync"})",
         R"({"type":"sync","clear":"true"})",
-        R"({"type":"process","message":"lockTimer","lockEnd":-1})",
-        R"({"type":"process","message":"lockTimer","lockEnd":0})",
-        R"({"type":"process","message":"lockTimer","lockEnd":18446744073709551615})",
-        R"({"type":"process","message":"unlock\u0000anything"})"};
+        R"({"type":"process","message":"lock"})",
+        R"({"type":"process","message":"unlock"})",
+        R"({"type":"process","message":"lockTimer","lockEnd":1788800000000})"};
     for (const auto* json : rejected) {
         TEST_ASSERT_FALSE(deserializeJson(doc, json));
         TEST_ASSERT_FALSE_MESSAGE(commandResponse(doc.as<JsonVariantConst>()), json);
     }
-    for (const auto* json : {R"({"type":"reboot"})", R"({"type":"sync","clear":true})",
-         R"({"type":"process","message":"lockTimer","lockEnd":1788800000000})"}) {
+    for (const auto* json : {R"({"type":"reboot"})", R"({"type":"sync","clear":true})"}) {
         deserializeJson(doc, json);
         TEST_ASSERT_TRUE(commandResponse(doc.as<JsonVariantConst>()));
     }
@@ -167,6 +181,7 @@ int main() {
     RUN_TEST(fragmented_publication_is_atomic);
     RUN_TEST(wrong_topic_and_invalid_fragments_are_rejected);
     RUN_TEST(incomplete_credentials_never_become_valid_auth);
+    RUN_TEST(command_key_in_auth_is_optional_but_must_be_exact);
     RUN_TEST(malformed_commands_have_no_accepted_action);
     RUN_TEST(session_types_and_ranges_are_checked_before_persistence);
     RUN_TEST(postgres_integral_decimal_timestamps_remain_compatible);
