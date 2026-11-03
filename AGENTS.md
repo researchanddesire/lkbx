@@ -220,6 +220,8 @@ On first boot, the motor calibration routine auto-detects:
 - With a burned key the device signs in only through `/api/lockbox/v2/*` with its token (HMAC of `lkbx-device-token-v2`) and never presents its MAC as proof. A 404, 401 or outage from v2 falls back to the v1 routes for that boot. Keep the shared vector in `test/test_device_key` identical to rad-app's `v2Vector.spec.ts`.
 - A device holding a command key accepts only verified v2 envelopes (`lib/LockboxSecurity/src/CommandEnvelope.h`). A valid `/auth` 200 without `commandKey` erases the key, so the server can withdraw signing. Without a key, plain JSON behaves as it always did.
 - Keep the shared command-envelope vector in `test/test_command_envelope` identical to the server suite. It runs on the host against a test implementation; `test_integration` runs it on hardware against mbedTLS.
+- A device holding a command key seals every state report and activity log (`CommandGate::seal`, labels `lkbx-rpt-mac-v2` / `lkbx-rpt-enc-v2`, signature over `r2.{ts}.{MAC}.{iv}.{ct}`); the dashboard refuses plain reports from a hardware-bound device. Keep the report vector in `test/test_command_envelope` identical to rad-app's `reportVector.spec.ts`. The `<MAC>/firmware` provenance and the last will stay plain.
+- The MQTT client task runs with a 12 KB stack (`mqtt_cfg.task_stack`) and `syncLockState`/`mqttConnect` with 10x the minimum: opening envelopes and parsing the full v2 state payload overflowed the old sizes on hardware.
 - Retained messages on the command topic are dropped in both modes.
 - A failed or refused authentication (401 backs off to 60 seconds) only keeps the device off the broker. It must never lock, unlock or discard a session.
 
