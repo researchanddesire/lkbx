@@ -100,6 +100,18 @@ namespace Str {
             "Could not connect to the messaging server within 30 seconds. You "
             "can retry or skip for now.";
 
+        constexpr char AUTH_RATE_LIMITED_TITLE[] PROGMEM =
+            "E-LOCK-13: Too Many Requests";
+        constexpr char AUTH_RATE_LIMITED_DESC[] PROGMEM =
+            "The dashboard is receiving too many requests from your network. "
+            "Wait a minute, then retry, or skip for now.";
+
+        constexpr char SIGN_IN_FAILED_TITLE[] PROGMEM =
+            "E-LOCK-14: Dashboard Sign-In Failed";
+        constexpr char SIGN_IN_FAILED_DESC[] PROGMEM =
+            "The Lockbox could not finish signing in to the dashboard. Check "
+            "your internet connection, then retry, or skip for now.";
+
         constexpr char WELCOME_TITLE[] PROGMEM = "Welcome to your new Lockbox!";
         constexpr char WELCOME_DESC[] PROGMEM =
             "Scan the QR code for setup instructions and documentation.";
@@ -391,6 +403,12 @@ namespace Str {
         constexpr char DOCS_SERVER_HEALTH_ERROR[] PROGMEM =
             "https://docs.researchanddesire.com/common-errors/"
             "e-lock-12-server-unreachable";
+        constexpr char DOCS_RATE_LIMITED_ERROR[] PROGMEM =
+            "https://docs.researchanddesire.com/common-errors/"
+            "e-lock-13-too-many-requests";
+        constexpr char DOCS_SIGN_IN_FAILED_ERROR[] PROGMEM =
+            "https://docs.researchanddesire.com/common-errors/"
+            "e-lock-14-dashboard-sign-in-failed";
         constexpr char DOCS_CALIBRATION[] PROGMEM =
             "https://docs.researchanddesire.com/calibration";
         constexpr char DOCS_UPDATES[] PROGMEM =

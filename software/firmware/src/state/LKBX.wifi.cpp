@@ -332,6 +332,7 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     constexpr int AUTH_MAX_ATTEMPTS = 3;
     constexpr uint32_t AUTH_RETRY_MS = 5000;
     constexpr uint32_t AUTH_REJECTED_RETRY_MS = 60000;
+    constexpr uint32_t AUTH_RATE_LIMITED_RETRY_MS = 30000;
     constexpr uint32_t MQTT_CONNECT_TIMEOUT_MS = 30000;
     constexpr uint32_t MQTT_POLL_MS = 500;
 
@@ -352,14 +353,17 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
         bootHttpDone = true;
         for (int attempt = 0; attempt < AUTH_MAX_ATTEMPTS; attempt++) {
             response = getAuthToken();
-            if (response.valid || response.rejected) break;
+            if (response.valid || response.rejected || response.rateLimited)
+                break;
             ESP_LOGW(MQTT_CONNECT_TAG, "Auth attempt %d/%d failed, retrying...",
                      attempt + 1, AUTH_MAX_ATTEMPTS);
             vTaskDelay(AUTH_RETRY_MS / portTICK_PERIOD_MS);
         }
         if (!response.valid && bootPending) {
             bootPending = false;
-            plkbx->sm->process_event(Error{.error = ErrorT::MQTT_AUTH_FAILED});
+            plkbx->sm->process_event(Error{
+                .error = response.rateLimited ? ErrorT::AUTH_RATE_LIMITED
+                                              : ErrorT::DASHBOARD_SIGN_IN_FAILED});
             if (!returningDevice) {
                 TaskHandles::mqttConnect = nullptr;
                 vTaskDelete(nullptr);
@@ -370,6 +374,10 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
         // continues as it does for any other failed authentication.
         if (response.rejected) {
             vTaskDelay(AUTH_REJECTED_RETRY_MS / portTICK_PERIOD_MS);
+        }
+        // Wait out the dashboard's rate-limit window before trying again.
+        if (response.rateLimited) {
+            vTaskDelay(AUTH_RATE_LIMITED_RETRY_MS / portTICK_PERIOD_MS);
         }
     }
 

@@ -241,6 +241,10 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 | E-LOCK-2  | Could not unlock                        |
 | E-LOCK-3  | No backplate detected                   |
 | E-LOCK-10 | WiFi connection failed                  |
+| E-LOCK-11 | MQTT broker connection failed           |
+| E-LOCK-12 | Dashboard health check failed           |
+| E-LOCK-13 | Dashboard sign-in rate limited (429)    |
+| E-LOCK-14 | Dashboard sign-in failed                |
 | E-LOCK-20 | Emergency unlock used (24hr lockout)    |
 
 ## Build Configuration

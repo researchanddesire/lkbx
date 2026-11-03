@@ -23,6 +23,8 @@ enum class ErrorT : uint8_t {
     TOO_SOON_FOR_BREAK,
     BREAK_KEYHOLDER_ONLY,
     OTA_FAILED,
+    AUTH_RATE_LIMITED,
+    DASHBOARD_SIGN_IN_FAILED,
 };
 
 /**

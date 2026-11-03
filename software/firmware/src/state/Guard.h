@@ -89,7 +89,9 @@ static auto isError = [](ErrorT error) {
 
 static auto isMqttConnectionError = [](const auto& e) {
     return e.error == ErrorT::MQTT_AUTH_FAILED ||
-           e.error == ErrorT::MQTT_TIMEOUT;
+           e.error == ErrorT::MQTT_TIMEOUT ||
+           e.error == ErrorT::AUTH_RATE_LIMITED ||
+           e.error == ErrorT::DASHBOARD_SIGN_IN_FAILED;
 };
 
 static auto always = []() { return true; };

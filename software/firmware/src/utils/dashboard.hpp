@@ -28,6 +28,7 @@ struct AuthResponse {
     bool valid = false;
     String commandKey = "";
     bool rejected = false;
+    bool rateLimited = false;
 };
 
 static PairingStatus getPairingStatus(int timeoutMs = 5000) {
@@ -110,6 +111,15 @@ static AuthResponse getAuthToken(int timeoutMs = 5000) {
         AuthResponse rejected;
         rejected.rejected = true;
         return rejected;
+    }
+
+    // The dashboard's firewall limits authentication requests per network.
+    // Retrying at the normal pace only keeps the network over that limit.
+    if (httpResponseCode == 429) {
+        ESP_LOGW(UTILS_TAG, "Authentication request was rate limited");
+        AuthResponse limited;
+        limited.rateLimited = true;
+        return limited;
     }
 
     if (httpResponseCode != 200) {
