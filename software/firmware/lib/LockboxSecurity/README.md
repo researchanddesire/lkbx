@@ -61,6 +61,43 @@ identity and no v1 request can ever replace it.
 kept in the `efuse_em` flash partition; erase that partition to start over.
 `test/test_device_key` holds the vector shared with the dashboard.
 
+## Sealed reports
+
+A device holding a command key seals its state reports and activity logs in
+the same envelope shape as commands, with keys derived from the command key by
+the labels `lkbx-rpt-mac-v2` and `lkbx-rpt-enc-v2`, and a signature over
+`r2.{ts}.{MAC}.{iv}.{ct}`. Other broker clients can neither read nor forge
+them, and a captured report never opens as a command (its signature fails).
+Each LOCKED retry is sealed afresh from the stored plain report. The dashboard
+opens them in Postgres (`lockbox_device_report_open`), accepts plain reports
+from firmware without a key, and refuses plain reports for a hardware-bound
+device, which always seals. The retained `<MAC>/firmware` provenance and the
+last will stay plain; neither carries session data.
+
+## Physical access
+
+These measures protect the cloud channel, not a box in someone's hands. The
+chip ships without secure boot, flash encryption or a restricted download mode,
+so anyone with a USB-C cable can read the NVS (Wi-Fi password, session, and the
+command key) and flash other firmware; the v2 key itself stays unreadable
+because its block is read-protected, but other firmware on that unit can still
+use it through the HMAC peripheral. Every key is per device, so this exposes
+only the box in hand.
+
+Closing it is a factory change, not a firmware one, because every step is a
+permanent eFuse burn that also changes how technicians flash units:
+
+1. Secure Boot v2 (signed bootloader and app; the RSA key digest goes in a free
+   key block, which the v2 device key, in the highest block, leaves free).
+2. Flash encryption in release mode, with NVS encryption keyed by the HMAC
+   peripheral, so the command key and Wi-Fi password are no longer readable.
+3. `ENABLE_SECURITY_DOWNLOAD` (no flash reads over USB), and `DIS_USB_JTAG`
+   plus `DIS_PAD_JTAG`.
+
+Prove the sequence on a sacrificial unit, move the Build PC to signed images,
+and only then burn production units. Never run it on a bench unit someone still
+needs to reflash freely.
+
 ## Authentication responses
 
 `POST /api/lockbox/auth` may return `commandKey`, 32 bytes as 43-character base64url.

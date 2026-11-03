@@ -90,7 +90,9 @@ void initWM() {
     // that caused the captive portal to reappear on every boot.
     WiFi.begin();
     wm.setCleanConnect(true);
-    const char *portalMenu[] = {"wifinoscan", "info", "exit"};
+    // No "info" page: it shows the station MAC, which identifies the box to
+    // the dashboard and broker, to anyone who joins the open setup network.
+    const char *portalMenu[] = {"wifinoscan", "exit"};
     wm.setMenu(portalMenu, sizeof(portalMenu) / sizeof(portalMenu[0]));
     wm.setShowInfoUpdate(false);
     // WiFiManager installs its upload handlers after this callback. WebServer

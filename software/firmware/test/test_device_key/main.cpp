@@ -11,9 +11,9 @@ namespace {
 
 // Shared with rad-app lib/lockbox-device/__tests__/v2Vector.spec.ts. The
 // dashboard derives the same values from the key it issued.
-constexpr const char* VECTOR_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
-constexpr const char* VECTOR_TOKEN = "jlTDfyPZWokCUjnMoagQMl9KzFB7yzit4CiLmJ9QunY";
-constexpr const char* VECTOR_V1_SECRET = "jNHn_HG_26kKo7YjnUsXjV4a7V94lm28B_7n0Y8BirI";
+constexpr const char* VECTOR_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";  // gitleaks:allow
+constexpr const char* VECTOR_TOKEN = "jlTDfyPZWokCUjnMoagQMl9KzFB7yzit4CiLmJ9QunY";  // gitleaks:allow
+constexpr const char* VECTOR_V1_SECRET = "jNHn_HG_26kKo7YjnUsXjV4a7V94lm28B_7n0Y8BirI";  // gitleaks:allow
 
 void vectorKey(std::uint8_t (&key)[DEVICE_KEY_BYTES]) {
     for (std::size_t index = 0; index < DEVICE_KEY_BYTES; ++index) {

@@ -19,6 +19,11 @@ void applyAuthCommandKey(const String& commandKey);
 bool openCloudCommand(const char* mac, const char* frame, size_t size,
                       String& command);
 
+// Seals a state report or activity log for the dashboard when this device
+// holds a command key, so other broker clients can neither read nor forge it.
+// Without a key the report goes out unchanged. Call only on a trusted clock.
+String sealCloudReport(const char* mac, const String& report);
+
 // An image that could still roll back must not enroll the device or burn its
 // key, or the older image it returns to would be locked out of its identity.
 bool runningImageConfirmed();

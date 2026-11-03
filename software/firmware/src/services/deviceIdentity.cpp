@@ -20,6 +20,7 @@
 #include "constants/PerferenceKeys.h"
 #include "services/settings.h"
 #include "utils/getEfuseMac.h"
+#include "utils/trustedClock.h"
 
 namespace {
 constexpr size_t SECRET_BYTES = 32;
@@ -252,6 +253,27 @@ bool openCloudCommand(const char* mac, const char* frame, size_t size,
     if (after != before) persistLastTimestamp(after);
     command = String(opened.data(), opened.size());
     return command.length() == opened.size();
+}
+
+String sealCloudReport(const char* mac, const String& report) {
+    loadCommandGate();
+    struct timeval tv{};
+    lockboxGetTimeOfDay(&tv, nullptr);
+    const uint64_t timestamp = static_cast<uint64_t>(tv.tv_sec) * 1000 +
+                               static_cast<uint64_t>(tv.tv_usec) / 1000;
+    uint8_t iv[lockbox::security::COMMAND_IV_BYTES];
+    esp_fill_random(iv, sizeof(iv));
+    std::string sealed;
+    {
+        std::lock_guard<std::mutex> lock(identityMutex);
+        if (!commandGateLoaded || !commandGate.hasKey()) return report;
+        if (!commandGate.seal(mac, std::string(report.c_str(), report.length()),
+                              timestamp, iv, sealed)) {
+            ESP_LOGW(IDENTITY_TAG, "Could not seal a report; sending it as is");
+            return report;
+        }
+    }
+    return String(sealed.c_str());
 }
 
 bool runningImageConfirmed() {

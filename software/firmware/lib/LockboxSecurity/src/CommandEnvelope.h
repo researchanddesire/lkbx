@@ -68,15 +68,23 @@ class CommandGate {
             written != sizeof(key)) return false;
         static const char macLabel[] = "lkbx-cmd-mac-v2";
         static const char encLabel[] = "lkbx-cmd-enc-v2";
+        static const char reportMacLabel[] = "lkbx-rpt-mac-v2";
+        static const char reportEncLabel[] = "lkbx-rpt-enc-v2";
         std::uint8_t macKey[HMAC_SHA256_BYTES], encKey[HMAC_SHA256_BYTES];
-        if (!hmacSha256(key, sizeof(key),
-                        reinterpret_cast<const std::uint8_t*>(macLabel),
-                        sizeof(macLabel) - 1, macKey) ||
-            !hmacSha256(key, sizeof(key),
-                        reinterpret_cast<const std::uint8_t*>(encLabel),
-                        sizeof(encLabel) - 1, encKey)) return false;
+        std::uint8_t reportMacKey[HMAC_SHA256_BYTES], reportEncKey[HMAC_SHA256_BYTES];
+        const auto derive = [&key](const char* label, std::size_t length,
+                                   std::uint8_t* out) {
+            return hmacSha256(key, sizeof(key),
+                              reinterpret_cast<const std::uint8_t*>(label), length, out);
+        };
+        if (!derive(macLabel, sizeof(macLabel) - 1, macKey) ||
+            !derive(encLabel, sizeof(encLabel) - 1, encKey) ||
+            !derive(reportMacLabel, sizeof(reportMacLabel) - 1, reportMacKey) ||
+            !derive(reportEncLabel, sizeof(reportEncLabel) - 1, reportEncKey)) return false;
         std::memcpy(macKey_, macKey, sizeof(macKey_));
         std::memcpy(encKey_, encKey, sizeof(encKey_));
+        std::memcpy(reportMacKey_, reportMacKey, sizeof(reportMacKey_));
+        std::memcpy(reportEncKey_, reportEncKey, sizeof(reportEncKey_));
         hasKey_ = true;
         ringCount_ = 0;
         ringNext_ = 0;
@@ -86,6 +94,8 @@ class CommandGate {
     void clearKey() {
         std::memset(macKey_, 0, sizeof(macKey_));
         std::memset(encKey_, 0, sizeof(encKey_));
+        std::memset(reportMacKey_, 0, sizeof(reportMacKey_));
+        std::memset(reportEncKey_, 0, sizeof(reportEncKey_));
         hasKey_ = false;
         ringCount_ = 0;
         ringNext_ = 0;
@@ -187,9 +197,43 @@ class CommandGate {
         return CommandGateResult::opened;
     }
 
+    // Seals a report to the dashboard in the command envelope's shape. Its own
+    // keys and an "r2." signature prefix mean a captured report can never be
+    // opened, or replayed, as a command. `iv` must be fresh random bytes.
+    bool seal(const char* mac, const std::string& report, std::uint64_t timestamp,
+              const std::uint8_t (&iv)[COMMAND_IV_BYTES], std::string& envelope) const {
+        envelope.clear();
+        if (!hasKey_ || !mac || report.empty() || report.size() > COMMAND_MAX_TEXT ||
+            timestamp == 0 || timestamp > COMMAND_MAX_TIMESTAMP) return false;
+        const std::size_t padding = COMMAND_AES_BLOCK - report.size() % COMMAND_AES_BLOCK;
+        std::vector<std::uint8_t> plain(report.begin(), report.end());
+        plain.insert(plain.end(), padding, static_cast<std::uint8_t>(padding));
+        std::vector<std::uint8_t> cipher(plain.size());
+        if (!aes256CbcEncrypt(reportEncKey_, iv, plain.data(), plain.size(),
+                              cipher.data())) return false;
+        const std::string ivText = base64UrlEncode(iv, sizeof(iv));
+        const std::string cipherText = base64UrlEncode(cipher.data(), cipher.size());
+        const std::string message = "r2." + std::to_string(timestamp) + "." + mac +
+                                    "." + ivText + "." + cipherText;
+        std::uint8_t signature[HMAC_SHA256_BYTES];
+        if (!hmacSha256(reportMacKey_, sizeof(reportMacKey_),
+                        reinterpret_cast<const std::uint8_t*>(message.data()),
+                        message.size(), signature)) return false;
+        JsonDocument document;
+        document["v"] = 2;
+        document["ts"] = timestamp;
+        document["iv"] = ivText;
+        document["ct"] = cipherText;
+        document["sig"] = base64UrlEncode(signature, sizeof(signature));
+        serializeJson(document, envelope);
+        return true;
+    }
+
  private:
     std::uint8_t macKey_[HMAC_SHA256_BYTES] = {};
     std::uint8_t encKey_[HMAC_SHA256_BYTES] = {};
+    std::uint8_t reportMacKey_[HMAC_SHA256_BYTES] = {};
+    std::uint8_t reportEncKey_[HMAC_SHA256_BYTES] = {};
     bool hasKey_ = false;
     std::uint64_t lastTimestamp_ = 0;
     std::array<std::array<std::uint8_t, COMMAND_REPLAY_PREFIX>, COMMAND_REPLAY_RING> ring_{};

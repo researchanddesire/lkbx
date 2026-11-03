@@ -14,6 +14,7 @@
 #include "../services/serverOnline.h"
 #include "../services/tasks.h"
 #include "../services/wm.h"
+#include "services/deviceIdentity.h"
 #include "../utils/RecusiveMutex.h"
 #include "../utils/StateLogger.h"
 #include "../utils/clockCorrection.h"
@@ -1097,11 +1098,11 @@ class LKBX {
 
         String msg = createStateMessage(message, true, sessionId);
 
-
-
         String topic = getMacAddresss();
+        // The tracker keeps the plain report, so each retry is sealed afresh.
+        const String sealed = sealCloudReport(topic.c_str(), msg);
 
-        int result = esp_mqtt_client_enqueue(client, topic.c_str(), msg.c_str(),
+        int result = esp_mqtt_client_enqueue(client, topic.c_str(), sealed.c_str(),
                                              0, 2, false, true);
         if (isLockedReport) {
             lockedReport::tracker.onReport(result, millis(), msg.c_str());
@@ -1123,9 +1124,9 @@ class LKBX {
             sm->visit_current_states(
                 [&](auto state) { currentState = state.c_str(); });
         }
-        String msg = createActivityLogMessage(message, currentState);
-
-
+        const String mac = getMacAddresss();
+        String msg = sealCloudReport(mac.c_str(),
+                                     createActivityLogMessage(message, currentState));
 
         char topic[24];
         snprintf(topic, sizeof(topic), "%s%s", getMacAddresss().c_str(),
@@ -1173,8 +1174,9 @@ class LKBX {
             payload = createStateMessage(Str::Protocol::LOCKED, true, "").c_str();
         }
         String topic = getMacAddresss();
+        const String sealed = sealCloudReport(topic.c_str(), String(payload.c_str()));
         int result = esp_mqtt_client_enqueue(client, topic.c_str(),
-                                             payload.c_str(), 0, 2, false, true);
+                                             sealed.c_str(), 0, 2, false, true);
         lockedReport::tracker.onRetry(result, millis(), payload);
         ESP_LOGW(MQTT_TAG, "LOCKED report unconfirmed, resent (%u/%u), id %d",
                  static_cast<unsigned>(lockedReport::tracker.attemptCount()),
