@@ -1,0 +1,5 @@
+# Public test vectors shared with rad-app's v2Vector.spec.ts. The commit that
+# added them predates their inline gitleaks:allow markers.
+6a93224aaeae469a9903609a870a5f38e1fadbaf:software/firmware/test/test_device_key/main.cpp:generic-api-key:14
+6a93224aaeae469a9903609a870a5f38e1fadbaf:software/firmware/test/test_device_key/main.cpp:generic-api-key:15
+6a93224aaeae469a9903609a870a5f38e1fadbaf:software/firmware/test/test_device_key/main.cpp:generic-api-key:16
