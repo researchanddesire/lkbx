@@ -61,7 +61,19 @@ void test_sm_boot_to_home() {
             logHeap("mqttError");
             TEST_FAIL_MESSAGE(
                 "SM stuck at init.preflight.mqttError — MQTT connection "
-                "or auth failed. Check broker address and heap for TLS.");
+                "failed. Check broker address and heap for TLS.");
+            return;
+        }
+        if (state == "init.preflight.signInFailed") {
+            TEST_FAIL_MESSAGE(
+                "SM stuck at init.preflight.signInFailed — dashboard "
+                "authentication failed. Check the server and network.");
+            return;
+        }
+        if (state == "init.preflight.authRateLimited") {
+            TEST_FAIL_MESSAGE(
+                "SM stuck at init.preflight.authRateLimited — dashboard "
+                "authentication returned 429. Wait out the rate limit.");
             return;
         }
         if (state.startsWith("calibrate")) {

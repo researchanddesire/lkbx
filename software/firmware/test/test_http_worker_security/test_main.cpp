@@ -119,6 +119,7 @@ struct Scenario {
     int64_t declaredLength = -2;
     bool chainValid = true, hostnameValid = true, truncated = false, cachedAtHeaders = false;
     int readDelayMs = 0, chunkSize = 512;
+    int headerTimeouts = 0; // slices that time out before the headers arrive
     std::shared_ptr<Gate> openGate;
     std::vector<std::pair<std::string, std::string>> headers;
 };
@@ -185,6 +186,11 @@ int esp_http_client_write(esp_http_client_handle_t client, const char *data, int
     return written;
 }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t client) {
+    if (client->scenario.headerTimeouts > 0) {
+        --client->scenario.headerTimeouts;
+        std::this_thread::sleep_for(std::chrono::milliseconds(client->timeout));
+        return -1; // IDF 4.4 reports a timed-out read as ESP_FAIL
+    }
     for (const auto &header : client->scenario.headers) {
         esp_http_client_event_t event{HTTP_EVENT_ON_HEADER, client->userData,
                                      header.first.c_str(), header.second.c_str()};
@@ -368,6 +374,28 @@ void testBoundsAndRetry() {
     reset();
     schedule(fail); Scenario tlsFailure; tlsFailure.chainValid = false; schedule(tlsFailure);
     assert(get(url(), &response, 1500, 1) == -1 && response.length() == 0);
+}
+
+void testSlowServerResponse() {
+    reset();
+    String response("stale");
+    // Headers arrive after two full slices, still within the request deadline.
+    Scenario slow; slow.headerTimeouts = 2; schedule(slow);
+    auto started = std::chrono::steady_clock::now();
+    assert(post(url(), String("{}"), &response, 5000) == 200);
+    assert(std::chrono::steady_clock::now() - started >= 2s);
+    assert(std::string(response.c_str()) == "ok");
+    // A server that never answers ends at the request deadline, not later.
+    Scenario silent; silent.headerTimeouts = 100; schedule(silent);
+    started = std::chrono::steady_clock::now();
+    assert(post(url(), String("{}"), &response, 1500) == -1 && response.length() == 0);
+    assert(std::chrono::steady_clock::now() - started < 2500ms);
+    // An immediate failure is final and is not retried until the deadline.
+    Scenario failed; failed.declaredLength = -1; schedule(failed);
+    started = std::chrono::steady_clock::now();
+    assert(post(url(), String("{}"), &response, 5000) == -1);
+    assert(std::chrono::steady_clock::now() - started < 500ms);
+    assert(snapshots().size() == 3);
 }
 
 void testCallerTimeoutAndLateCompletion() {
@@ -556,6 +584,7 @@ int main() {
     testTlsAndUrls();
     testDeviceSecretOnlyReachesConfiguredServer();
     testBoundsAndRetry();
+    testSlowServerResponse();
     testCallerTimeoutAndLateCompletion();
     testStopAndQueueSaturation();
     testAuthenticatedTime();

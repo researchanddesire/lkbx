@@ -131,6 +131,23 @@ bool prepareIo(esp_http_client_handle_t client, const HttpRequest &req) {
                client, std::min(IO_TIMEOUT_MS, remainingMs(req))) == ESP_OK;
 }
 
+// The dashboard can take longer than one I/O slice to start its response, for
+// example when the request crosses continents. Wait for the headers in bounded
+// slices until the request deadline, so stop and cancellation are still seen.
+// IDF reports a timed-out slice like any other failure (and resumes parsing on
+// the next call), so a failure that returns before half its slice is final.
+int64_t fetchHeaders(esp_http_client_handle_t client, const HttpRequest &req) {
+    while (prepareIo(client, req)) {
+        const int sliceMs = std::min(IO_TIMEOUT_MS, remainingMs(req));
+        const int64_t startedUs = esp_timer_get_time();
+        const int64_t contentLength = esp_http_client_fetch_headers(client);
+        if (contentLength >= 0) return contentLength;
+        if (esp_timer_get_time() - startedUs < static_cast<int64_t>(sliceMs) * 500)
+            return -1;
+    }
+    return -1;
+}
+
 bool leapYear(int year) {
     return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
 }
@@ -249,8 +266,7 @@ int executeAttempt(HttpRequest &req) {
         if (count <= 0) return -1;
         written += static_cast<size_t>(count);
     }
-    if (!prepareIo(client, req)) return -1;
-    const int64_t contentLength = esp_http_client_fetch_headers(client);
+    const int64_t contentLength = fetchHeaders(client, req);
     const int status = esp_http_client_get_status_code(client);
     if (expired(req) || contentLength < 0 || status < 100 || status > 599 ||
         contentLength > static_cast<int64_t>(MAX_RESPONSE_BYTES)) return -1;

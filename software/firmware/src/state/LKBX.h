@@ -228,6 +228,22 @@ class LKBX {
                              {Str::Action::SKIP}, {Str::Action::RETRY});
             };
 
+            auto drawAuthRateLimitedQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::AUTH_RATE_LIMITED_TITLE,
+                             Str::Screen::AUTH_RATE_LIMITED_DESC,
+                             Str::Url::DOCS_RATE_LIMITED_ERROR,
+                             Str::Label::HELP, {Str::Action::SKIP},
+                             {Str::Action::RETRY});
+            };
+
+            auto drawSignInFailedQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::SIGN_IN_FAILED_TITLE,
+                             Str::Screen::SIGN_IN_FAILED_DESC,
+                             Str::Url::DOCS_SIGN_IN_FAILED_ERROR,
+                             Str::Label::HELP, {Str::Action::SKIP},
+                             {Str::Action::RETRY});
+            };
+
             auto drawWelcomeQR = [](LKBX &o) {
                 o.drawQRCode(
                     Str::Screen::WELCOME_TITLE, Str::Screen::WELCOME_DESC,
@@ -621,7 +637,17 @@ class LKBX {
                 "init.preflight.mqttConnecting"_s + on_entry<_> / (setLoadingText(Str::Screen::LOADING_SESSION), startMqttConnection),
                 "init.preflight.mqttConnecting"_s + done = "init.preflight.pairingCheck"_s,
                 "init.preflight.mqttConnecting"_s + error[hasFinishedOnboarding && isMqttConnectionError] = "init.preflight.pairingCheck"_s,
+                "init.preflight.mqttConnecting"_s + error[isError(ErrorT::AUTH_RATE_LIMITED)] = "init.preflight.authRateLimited"_s,
+                "init.preflight.mqttConnecting"_s + error[isError(ErrorT::DASHBOARD_SIGN_IN_FAILED)] = "init.preflight.signInFailed"_s,
                 "init.preflight.mqttConnecting"_s + error[isMqttConnectionError] = "init.preflight.mqttError"_s,
+
+                "init.preflight.authRateLimited"_s + on_entry<_> / (pauseLoadingAnimation, drawAuthRateLimitedQR),
+                "init.preflight.authRateLimited"_s + buttonPress = "init.preflight.mqttConnecting"_s,
+                "init.preflight.authRateLimited"_s + backPress = "init.preflight.wifiCheck"_s,
+
+                "init.preflight.signInFailed"_s + on_entry<_> / (pauseLoadingAnimation, drawSignInFailedQR),
+                "init.preflight.signInFailed"_s + buttonPress = "init.preflight.mqttConnecting"_s,
+                "init.preflight.signInFailed"_s + backPress = "init.preflight.wifiCheck"_s,
 
                 "init.preflight.mqttError"_s + on_entry<_> / (pauseLoadingAnimation, drawMqttErrorQR),
                 "init.preflight.mqttError"_s + buttonPress = "init.preflight.mqttConnecting"_s,
