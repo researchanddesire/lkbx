@@ -11,7 +11,7 @@ Each device holds a 32-byte secret, sent as unpadded base64url (43 characters).
 | HMAC-SHA256 of `lkbx-device-secret-v1:<MAC>` with an eFuse key of purpose `HMAC_UP` | The unit was provisioned with an identity key | Yes |
 | Random bytes stored in NVS (`identity/secret`) | Every other unit | No |
 
-Firmware only reads eFuses and never burns one. Provisioning is a manual, per-device step with `software/scripts/provision_device_identity.py`, which refuses to run without an explicit permanent-action flag.
+Firmware 2.x burns one key itself through the v2 exchange below. `software/scripts/provision_device_identity.py` remains a manual factory step, which refuses to run without an explicit permanent-action flag; a unit it provisioned holds a key the dashboard does not know and signs in with v1 only.
 
 The secret is withheld while the running OTA image is still pending verification, so an image that could yet roll back never enrols the device.
 
@@ -22,6 +22,44 @@ The secret is withheld while the running OTA image is still pending verification
 | `GET /api/lockbox/state/<mac>` | `x-lkbx-device-secret` header |
 
 The secret goes only to the configured RAD server over verified TLS, and is never logged.
+
+## v2 device key (firmware 2.x)
+
+A one-time exchange replaces the MAC as the device's identity. The dashboard
+generates a random 256-bit key that has nothing to do with the MAC, sends it
+exactly once, and keeps it only as AES-256 ciphertext. The device burns it into
+the highest free eFuse key block with purpose `HMAC_UP`, which also sets read
+and write protection. Firmware never reads the key back: every value it sends
+is an HMAC that the chip computes internally.
+
+| Step | Request | Outcome |
+|------|---------|---------|
+| Pre-auth, only while no key is burned | `POST /api/lockbox/v2/provision` with `mac`, `chip`, `md5`, `device`, `version`, the v1 `deviceSecret` and any previous `failureCode` | 201 `{deviceKey}`: burn now. 409 or 403: never ask again (stored in `identity/v2Refused`). 429: wait 24 hours (`identity/v2RetryAt`). Anything else: try on a later boot |
+| Sign-in | `POST /api/lockbox/v2/auth` with `deviceToken` = base64url HMAC-SHA256 of `lkbx-device-token-v2` | The v1 response shape. 401 `unknown_device`, a 404 or an outage falls back to `/api/lockbox/auth` for that boot |
+| Pairing status | `POST /api/lockbox/v2/is-paired` with `deviceToken` | 200 paired, 418 not paired |
+| State | `GET /api/lockbox/v2/state` with header `x-lkbx-device-token` | The v1 state payload |
+
+Every check that could refuse a burn runs before the key is requested: the
+running image is confirmed, no key is burned, a key block is free, and the board
+is on USB power or its battery reads at least 3.5 V. After the burn, the
+firmware compares an HMAC of `lkbx-device-key-check-v2` from the peripheral with
+one computed from the key still in RAM, then wipes the key.
+
+A failure to store a received key is E-LOCK-999. During first setup it shows a
+page that continues to the v1 sign-in; an onboarded device just signs in with
+v1. Its code (993 invalid key, 994 no free block, 995 write failed, 996 verify
+failed, 997 burn refused in a development build) goes to the dashboard with
+the next key request, which may then replace an unconfirmed key for the same v1
+secret, up to three times.
+
+The burned key also changes the v1 secret, which derives from the same eFuse
+key. The dashboard re-enrolls the device to that secret at its first v2 sign-in
+and marks it hardware-bound, so an older image on the same chip keeps its
+identity and no v1 request can ever replace it.
+
+`development-r8-virtual-efuse` runs the whole exchange against simulated eFuses
+kept in the `efuse_em` flash partition; erase that partition to start over.
+`test/test_device_key` holds the vector shared with the dashboard.
 
 ## Authentication responses
 

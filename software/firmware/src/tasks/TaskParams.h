@@ -215,7 +215,7 @@ namespace Tasks {
 
     constexpr TaskParams syncLockState = {
         .name = "syncLockState",
-        .stackSize = 6 * configMINIMAL_STACK_SIZE,
+        .stackSize = 10 * configMINIMAL_STACK_SIZE,  // The v2 state payload parse overflowed 6x.
         .priority = 1,
         .core = 1,
     };
@@ -236,7 +236,7 @@ namespace Tasks {
 
     constexpr TaskParams mqttConnect = {
         .name = "mqttConnect",
-        .stackSize = 8 * configMINIMAL_STACK_SIZE,
+        .stackSize = 10 * configMINIMAL_STACK_SIZE,  // Pre-auth key request and v1/v2 sign-in.
         .priority = 1,
         .core = 0,
     };

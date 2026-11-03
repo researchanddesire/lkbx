@@ -40,6 +40,8 @@ struct HttpRequest {
     String url;
     String body;
     String deviceSecret;
+    // The identity value is a v2 device token rather than a v1 secret.
+    bool deviceSecretIsToken = false;
     bool isPost = false;
     int retries = 0;
     int64_t deadlineUs = 0;
@@ -212,7 +214,8 @@ bool addHeaders(esp_http_client_handle_t client, const HttpRequest &req) {
         !add("X-RAD-Firmware-Provenance-Capability", "1") ||
         (req.isPost && !add("Content-Type", "application/json")) ||
         (req.deviceSecret.length() > 0 &&
-         !add("x-lkbx-device-secret", req.deviceSecret.c_str()))) return false;
+         !add(req.deviceSecretIsToken ? "x-lkbx-device-token" : "x-lkbx-device-secret",
+              req.deviceSecret.c_str()))) return false;
 #if defined(VERSIONDEV)
     const std::string authorization = std::string("Bearer ") + LKBX_DEV_API_TOKEN;
     if (!add("Authorization", authorization.c_str())) return false;
@@ -346,7 +349,8 @@ void httpWorkerTask(void *) {
 
 int enqueue(const String &url, const String &body, bool isPost,
             String *responsePayload, int timeoutMs, int retries,
-            uint64_t *serverTimeMs = nullptr, const String *deviceSecret = nullptr) {
+            uint64_t *serverTimeMs = nullptr, const String *deviceSecret = nullptr,
+            bool deviceSecretIsToken = false) {
     if (responsePayload) responsePayload->clear();
     if (serverTimeMs) *serverTimeMs = 0;
     if (!allowedUrl(url) || body.length() > MAX_BODY_BYTES || timeoutMs <= 0 ||
@@ -361,6 +365,7 @@ int enqueue(const String &url, const String &body, bool isPost,
     req->url = url;
     req->body = body;
     if (deviceSecret) req->deviceSecret = *deviceSecret;
+    req->deviceSecretIsToken = deviceSecretIsToken;
     if (req->url.length() != url.length() || req->body.length() != body.length() ||
         (deviceSecret && req->deviceSecret.length() != deviceSecret->length())) {
         req->release();
@@ -453,6 +458,13 @@ int getWithDeviceSecret(const String &url, const String &deviceSecret,
                         String *responsePayload, int timeoutMs, int retries) {
     return enqueue(url, String(), false, responsePayload, timeoutMs, retries, nullptr,
                    deviceSecret.length() > 0 ? &deviceSecret : nullptr);
+}
+
+int getWithDeviceToken(const String &url, const String &deviceToken,
+                       String *responsePayload, int timeoutMs, int retries) {
+    if (deviceToken.length() == 0) return -1;
+    return enqueue(url, String(), false, responsePayload, timeoutMs, retries, nullptr,
+                   &deviceToken, true);
 }
 
 int post(const String &url, const String &body, String *responsePayload,

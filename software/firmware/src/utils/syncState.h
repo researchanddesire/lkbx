@@ -506,10 +506,17 @@ static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
         return SyncResult::FAILED;
     }
 
-    String url = String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss();
-
     String payload;
-    int httpResponseCode = getWithDeviceSecret(url, deviceSecretForRequest(), &payload);
+    int httpResponseCode = -1;
+    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
+    if (token.length() > 0) {
+        httpResponseCode = getWithDeviceToken(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_V2_STATE, token, &payload);
+    } else {
+        httpResponseCode = getWithDeviceSecret(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss(),
+            deviceSecretForRequest(), &payload);
+    }
 
     if (httpResponseCode != 200) {
         ESP_LOGD(SYNC_STATE_TAG, "Failed to reach server. Response code: %d",

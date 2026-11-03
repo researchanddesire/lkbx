@@ -5,6 +5,7 @@
 #include <esp_ota_ops.h>
 
 #include "constants/dashboard.h"
+#include "services/deviceKeyProvisioning.h"
 #include "services/mqtt.h"
 #include "services/ntp.h"
 #include "services/rad_ble.h"
@@ -338,6 +339,17 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
 
     bool bootPending = true;
     const bool returningDevice = hasFinishedOnboarding();
+
+    // Pre-auth: a chip without its v2 key asks for one and burns it. Any
+    // failure leaves the device signing in with v1. Only first setup shows
+    // E-LOCK-999; an onboarded device carries on as before.
+    if (prepareDeviceKey() == DeviceKeyOutcome::failed && !returningDevice) {
+        plkbx->sm->process_event(Error{.error = ErrorT::DEVICE_KEY_FAILED});
+        TaskHandles::mqttConnect = nullptr;
+        vTaskDelete(nullptr);
+        return;
+    }
+
     AuthResponse response;
     while (!response.valid) {
         if (WiFiClass::status() != WL_CONNECTED) {
@@ -407,6 +419,9 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     mqtt_cfg.keepalive = 15;
     mqtt_cfg.buffer_size = 4096;
     mqtt_cfg.cert_pem = root_ca;
+    // Commands are opened (signature check, decryption, JSON) on the MQTT
+    // task. The 6 KB default overflowed once a box held a command key.
+    mqtt_cfg.task_stack = 12 * 1024;
 
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
     if (!mqttClient ||

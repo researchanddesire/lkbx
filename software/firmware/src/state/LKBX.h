@@ -244,6 +244,14 @@ class LKBX {
                              {Str::Action::RETRY});
             };
 
+            auto drawDeviceKeyFailedQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::DEVICE_KEY_FAILED_TITLE,
+                             Str::Screen::DEVICE_KEY_FAILED_DESC,
+                             Str::Url::DOCS_DEVICE_KEY_ERROR,
+                             Str::Label::HELP, {Str::Action::BACK},
+                             {Str::Action::CONTINUE});
+            };
+
             auto drawWelcomeQR = [](LKBX &o) {
                 o.drawQRCode(
                     Str::Screen::WELCOME_TITLE, Str::Screen::WELCOME_DESC,
@@ -639,6 +647,7 @@ class LKBX {
                 "init.preflight.mqttConnecting"_s + error[hasFinishedOnboarding && isMqttConnectionError] = "init.preflight.pairingCheck"_s,
                 "init.preflight.mqttConnecting"_s + error[isError(ErrorT::AUTH_RATE_LIMITED)] = "init.preflight.authRateLimited"_s,
                 "init.preflight.mqttConnecting"_s + error[isError(ErrorT::DASHBOARD_SIGN_IN_FAILED)] = "init.preflight.signInFailed"_s,
+                "init.preflight.mqttConnecting"_s + error[isError(ErrorT::DEVICE_KEY_FAILED)] = "init.preflight.deviceKeyFailed"_s,
                 "init.preflight.mqttConnecting"_s + error[isMqttConnectionError] = "init.preflight.mqttError"_s,
 
                 "init.preflight.authRateLimited"_s + on_entry<_> / (pauseLoadingAnimation, drawAuthRateLimitedQR),
@@ -648,6 +657,13 @@ class LKBX {
                 "init.preflight.signInFailed"_s + on_entry<_> / (pauseLoadingAnimation, drawSignInFailedQR),
                 "init.preflight.signInFailed"_s + buttonPress = "init.preflight.mqttConnecting"_s,
                 "init.preflight.signInFailed"_s + backPress = "init.preflight.wifiCheck"_s,
+
+                // E-LOCK-999, first setup only: the key could not be stored.
+                // Continuing signs in with v1; the key is not requested again
+                // this boot.
+                "init.preflight.deviceKeyFailed"_s + on_entry<_> / (pauseLoadingAnimation, drawDeviceKeyFailedQR),
+                "init.preflight.deviceKeyFailed"_s + buttonPress = "init.preflight.mqttConnecting"_s,
+                "init.preflight.deviceKeyFailed"_s + backPress = "init.preflight.wifiCheck"_s,
 
                 "init.preflight.mqttError"_s + on_entry<_> / (pauseLoadingAnimation, drawMqttErrorQR),
                 "init.preflight.mqttError"_s + buttonPress = "init.preflight.mqttConnecting"_s,

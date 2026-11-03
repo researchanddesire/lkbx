@@ -28,6 +28,12 @@ int getWithDeviceSecret(const String &url, const String &deviceSecret,
                         String *responsePayload = nullptr, int timeoutMs = 5000,
                         int retries = 0);
 
+// Sends the v2 device token as x-lkbx-device-token, to the configured RAD
+// server only. An empty token returns -1 without a request.
+int getWithDeviceToken(const String &url, const String &deviceToken,
+                       String *responsePayload = nullptr, int timeoutMs = 5000,
+                       int retries = 0);
+
 int post(const String &url, const String &body,
          String *responsePayload = nullptr, int timeoutMs = 5000,
          int retries = 0);

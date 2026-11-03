@@ -15,6 +15,12 @@ namespace Keys {
         constexpr char secret[] = "secret";
         constexpr char commandKey[] = "cmdKey";
         constexpr char commandLastTimestamp[] = "cmdLastTs";
+        // The dashboard's answer to the one-time v2 key request: it will
+        // never send a key (refused), or the earliest time to ask again.
+        constexpr char keyRequestRefused[] = "v2Refused";
+        constexpr char keyRequestRetryAt[] = "v2RetryAt";
+        // Why the last key received could not be stored (E-LOCK-999 code).
+        constexpr char keyFailure[] = "v2Failure";
     }
 
     namespace Base {
