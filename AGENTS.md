@@ -40,7 +40,7 @@
 - Every `assembly-docs` change on `main`, including a deletion, reaches the live site within minutes without review. Ask AJ before any change that could remove written documentation.
 - Keep `assembly-docs/_bom/source.json` at `{"repo": "Open-Source-Chastity-Lockbox_LKBX", "commit": "main"}`. Whenever `_bom/bom.csv` changes, regenerate `_bom/bom.json` (same repo/commit, columns and rows parsed from the CSV) in the same commit, or the hub import fails.
 - Never rewrite `main` history, and keep `trigger-assembly-docs.yml` on `main`.
-- `developer-docs/**` feeds dev.researchanddesire.com through `trigger-dev-docs.yml`.
+- `developer-docs/**` is not published automatically. The old `trigger-dev-docs.yml` dispatch was removed on 2026-11-04: its token was invalid and `researchanddesire/dev-docs` no longer listens for it.
 - Keep assembly docs as English Fumadocs MDX with `meta.json`; keep `_bom/` CSV, provenance and generated JSON together. Hardware sources live in `hardware/cad/`, `hardware/pcb/` and `hardware/cables/`. Do not commit generated assembly-site output, rendered BOM HTML, `.DS_Store`, `cable-export/` or cable render outputs.
 - Product BOMs list cable harnesses as top-level assemblies; link Wireviz `.bom.tsv` output instead of copying child cable rows into `hardware/bom.csv`.
 
