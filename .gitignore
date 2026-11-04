@@ -29,6 +29,7 @@ sdkconfig.*
 __pycache__/
 *.pyc
 !sdkconfig.psram-r2.defaults
+!sdkconfig.efuse-virtual.defaults
 hardware-bundle/
 
 # Local development display captures

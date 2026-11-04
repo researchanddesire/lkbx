@@ -25,6 +25,7 @@ enum class ErrorT : uint8_t {
     OTA_FAILED,
     AUTH_RATE_LIMITED,
     DASHBOARD_SIGN_IN_FAILED,
+    DEVICE_KEY_FAILED,
 };
 
 /**

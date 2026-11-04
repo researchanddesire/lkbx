@@ -1,0 +1,5 @@
+# development-r8-virtual-efuse: every eFuse read and write goes to a copy kept in
+# the efuse_em partition instead of the chip, so the v2 key exchange can run on
+# a bench unit without a permanent burn. Erase efuse_em to start over.
+CONFIG_EFUSE_VIRTUAL=y
+CONFIG_EFUSE_VIRTUAL_KEEP_IN_FLASH=y

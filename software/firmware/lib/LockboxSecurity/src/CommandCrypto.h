@@ -40,6 +40,22 @@ inline bool aes256CbcDecrypt(const std::uint8_t* key, const std::uint8_t* iv,
     return decrypted;
 }
 
+// Input length must already be a non-zero multiple of the AES block size.
+inline bool aes256CbcEncrypt(const std::uint8_t* key, const std::uint8_t* iv,
+                             const std::uint8_t* input, std::size_t length,
+                             std::uint8_t* output) {
+    std::uint8_t chain[COMMAND_AES_BLOCK];
+    std::memcpy(chain, iv, sizeof(chain));
+    mbedtls_aes_context context;
+    mbedtls_aes_init(&context);
+    const bool encrypted =
+        mbedtls_aes_setkey_enc(&context, key, 256) == 0 &&
+        mbedtls_aes_crypt_cbc(&context, MBEDTLS_AES_ENCRYPT, length, chain, input,
+                              output) == 0;
+    mbedtls_aes_free(&context);
+    return encrypted;
+}
+
 #else
 
 // Host-only primitives for native tests. Devices use mbedTLS above; the shared
@@ -240,6 +256,49 @@ inline void aes256DecryptBlock(const std::uint8_t* roundKeys,
     std::memcpy(output, state, sizeof(state));
 }
 
+inline void aes256EncryptBlock(const std::uint8_t* roundKeys,
+                               const std::uint8_t* input, std::uint8_t* output) {
+    const SBox& box = sbox();
+    std::uint8_t state[16];
+    std::memcpy(state, input, sizeof(state));
+    const auto addRoundKey = [&](int round) {
+        for (int index = 0; index < 16; ++index) {
+            state[index] ^= roundKeys[round * 16 + index];
+        }
+    };
+    const auto subAndShift = [&]() {
+        std::uint8_t shifted[16];
+        for (int column = 0; column < 4; ++column) {
+            for (int row = 0; row < 4; ++row) {
+                shifted[column * 4 + row] =
+                    box.forward[state[(column + row) % 4 * 4 + row]];
+            }
+        }
+        std::memcpy(state, shifted, sizeof(state));
+    };
+    addRoundKey(0);
+    for (int round = 1; round <= 13; ++round) {
+        subAndShift();
+        for (int column = 0; column < 4; ++column) {
+            const std::uint8_t* word = state + column * 4;
+            const std::uint8_t mixed[4] = {
+                static_cast<std::uint8_t>(multiply(word[0], 2) ^ multiply(word[1], 3) ^
+                                          word[2] ^ word[3]),
+                static_cast<std::uint8_t>(word[0] ^ multiply(word[1], 2) ^
+                                          multiply(word[2], 3) ^ word[3]),
+                static_cast<std::uint8_t>(word[0] ^ word[1] ^
+                                          multiply(word[2], 2) ^ multiply(word[3], 3)),
+                static_cast<std::uint8_t>(multiply(word[0], 3) ^ word[1] ^ word[2] ^
+                                          multiply(word[3], 2))};
+            std::memcpy(state + column * 4, mixed, sizeof(mixed));
+        }
+        addRoundKey(round);
+    }
+    subAndShift();
+    addRoundKey(14);
+    std::memcpy(output, state, sizeof(state));
+}
+
 inline void aes256ExpandKey(const std::uint8_t* key, std::uint8_t* roundKeys) {
     const SBox& box = sbox();
     std::memcpy(roundKeys, key, 32);
@@ -310,6 +369,25 @@ inline bool aes256CbcDecrypt(const std::uint8_t* key, const std::uint8_t* iv,
         }
         std::memcpy(chain, input + offset, sizeof(chain));
         std::memcpy(output + offset, block, sizeof(block));
+    }
+    return true;
+}
+
+// Input length must already be a non-zero multiple of the AES block size.
+inline bool aes256CbcEncrypt(const std::uint8_t* key, const std::uint8_t* iv,
+                             const std::uint8_t* input, std::size_t length,
+                             std::uint8_t* output) {
+    std::uint8_t roundKeys[240];
+    host_crypto::aes256ExpandKey(key, roundKeys);
+    std::uint8_t chain[COMMAND_AES_BLOCK];
+    std::memcpy(chain, iv, sizeof(chain));
+    for (std::size_t offset = 0; offset < length; offset += COMMAND_AES_BLOCK) {
+        std::uint8_t block[COMMAND_AES_BLOCK];
+        for (std::size_t index = 0; index < sizeof(block); ++index) {
+            block[index] = input[offset + index] ^ chain[index];
+        }
+        host_crypto::aes256EncryptBlock(roundKeys, block, output + offset);
+        std::memcpy(chain, output + offset, sizeof(chain));
     }
     return true;
 }

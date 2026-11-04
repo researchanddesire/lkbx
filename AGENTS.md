@@ -215,9 +215,13 @@ On first boot, the motor calibration routine auto-detects:
 
 **Device identity (`software/firmware/lib/LockboxSecurity/README.md`):**
 - `services/deviceIdentity` owns the device secret and command key (NVS namespace `identity`). Never log either value. The secret goes only to the configured RAD server, and is withheld while the running OTA image is pending verification.
-- Firmware reads eFuses and never burns one. `software/scripts/provision_device_identity.py` is the only burn path, it is manual, and rig or CI automation must never run it.
+- Firmware burns exactly one eFuse key block, once: the v2 device key the dashboard issues through `POST /api/lockbox/v2/provision` (purpose HMAC_UP, read- and write-protected, highest free key block). `burnDeviceKey` in `services/deviceIdentity` is the only firmware burn path, and `services/deviceKeyProvisioning` runs every refusing check (image confirmed, no key yet, free block, USB or battery >= 3.5 V) before it asks for a key. Development builds burn only simulated eFuses (`development-r8-virtual-efuse`) unless built with `LKBX_ALLOW_REAL_EFUSE_BURN`. Never log the key, the token or the v1 secret.
+- `software/scripts/provision_device_identity.py` stays a manual factory tool, and rig or CI automation must never run it. A unit it provisioned holds a key the dashboard does not know, so it never signs in with v2; do not use it on units that will run 2.x firmware.
+- With a burned key the device signs in only through `/api/lockbox/v2/*` with its token (HMAC of `lkbx-device-token-v2`) and never presents its MAC as proof. A 404, 401 or outage from v2 falls back to the v1 routes for that boot. Keep the shared vector in `test/test_device_key` identical to rad-app's `v2Vector.spec.ts`.
 - A device holding a command key accepts only verified v2 envelopes (`lib/LockboxSecurity/src/CommandEnvelope.h`). A valid `/auth` 200 without `commandKey` erases the key, so the server can withdraw signing. Without a key, plain JSON behaves as it always did.
 - Keep the shared command-envelope vector in `test/test_command_envelope` identical to the server suite. It runs on the host against a test implementation; `test_integration` runs it on hardware against mbedTLS.
+- A device holding a command key seals every state report and activity log (`CommandGate::seal`, labels `lkbx-rpt-mac-v2` / `lkbx-rpt-enc-v2`, signature over `r2.{ts}.{MAC}.{iv}.{ct}`); the dashboard refuses plain reports from a hardware-bound device. Keep the report vector in `test/test_command_envelope` identical to rad-app's `reportVector.spec.ts`. The `<MAC>/firmware` provenance and the last will stay plain.
+- Task stacks come from internal RAM, which TLS and AES DMA also need; on staging hardware the boot peak leaves only a few KB. The MQTT client task runs with 10 KB (`mqtt_cfg.task_stack`: 6 KB overflowed opening envelopes, 12 KB could not be created at boot) and `syncLockState`/`mqttConnect` with 10x the minimum (the v2 state parse overflowed 6x). Its message buffers are 8 KB so they come from PSRAM: allocations of up to 4096 bytes stay internal (`SPIRAM_MALLOC_ALWAYSINTERNAL`). Before growing any stack or internal buffer, measure `uxTaskGetStackHighWaterMark` and `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)` on a staging build on both rig units. The MQTT client start retries, and a boot sync that cannot start carries on as a failed pull.
 - Retained messages on the command topic are dropped in both modes.
 - A failed or refused authentication (401 backs off to 60 seconds) only keeps the device off the broker. It must never lock, unlock or discard a session.
 
@@ -231,7 +235,7 @@ On first boot, the motor calibration routine auto-detects:
 
 ### NVS Preferences
 
-Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqtt`, `identity`. Keys defined in `PerferenceKeys.h`.
+Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqtt`, `identity`. Keys defined in `PerferenceKeys.h`. `identity` also records the dashboard's final answer to the one-time key request (`v2Refused`, `v2RetryAt`) and the last E-LOCK-999 code (`v2Failure`); erasing NVS lets a unit without a key ask once more.
 
 ### Error Codes
 
@@ -246,6 +250,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 | E-LOCK-13 | Dashboard sign-in rate limited (429)    |
 | E-LOCK-14 | Dashboard sign-in failed                |
 | E-LOCK-20 | Emergency unlock used (24hr lockout)    |
+| E-LOCK-999 | Device key could not be stored in eFuse (first setup only; signs in with v1) |
 
 ## Build Configuration
 

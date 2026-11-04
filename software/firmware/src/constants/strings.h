@@ -112,6 +112,13 @@ namespace Str {
             "The Lockbox could not finish signing in to the dashboard. Check "
             "your internet connection, then retry, or skip for now.";
 
+        constexpr char DEVICE_KEY_FAILED_TITLE[] PROGMEM =
+            "E-LOCK-999: Secure ID Not Saved";
+        constexpr char DEVICE_KEY_FAILED_DESC[] PROGMEM =
+            "The Lockbox could not store its secure ID. It still works and "
+            "signs in as before. Press to continue, and contact support if "
+            "this keeps appearing.";
+
         constexpr char WELCOME_TITLE[] PROGMEM = "Welcome to your new Lockbox!";
         constexpr char WELCOME_DESC[] PROGMEM =
             "Scan the QR code for setup instructions and documentation.";
@@ -341,6 +348,8 @@ namespace Str {
         constexpr char HUE_SHIFT[] PROGMEM = "hueShift";
         constexpr char DEVICE_SECRET[] PROGMEM = "deviceSecret";
         constexpr char COMMAND_KEY[] PROGMEM = "commandKey";
+        constexpr char DEVICE_TOKEN[] PROGMEM = "deviceToken";
+        constexpr char FAILURE_CODE[] PROGMEM = "failureCode";
         // Message parsing
         constexpr char TYPE[] PROGMEM = "type";
         constexpr char MESSAGE[] PROGMEM = "message";
@@ -361,6 +370,11 @@ namespace Str {
     namespace Api {
         constexpr char LOCKBOX_STATE[] PROGMEM = "/api/lockbox/state/";
         constexpr char LOCKBOX_IS_PAIRED[] PROGMEM = "/api/lockbox/is-paired";
+        // v2 routes identify the device by its eFuse token, never its MAC.
+        constexpr char LOCKBOX_V2_PROVISION[] PROGMEM = "/api/lockbox/v2/provision";
+        constexpr char LOCKBOX_V2_AUTH[] PROGMEM = "/api/lockbox/v2/auth";
+        constexpr char LOCKBOX_V2_IS_PAIRED[] PROGMEM = "/api/lockbox/v2/is-paired";
+        constexpr char LOCKBOX_V2_STATE[] PROGMEM = "/api/lockbox/v2/state";
         constexpr char HEALTH_CHECK[] PROGMEM = "/api/health-check";
         constexpr char VERSION_JSON[] PROGMEM = "version.json";
         constexpr char FIRMWARE_BIN[] PROGMEM = "firmware.bin";
@@ -409,6 +423,9 @@ namespace Str {
         constexpr char DOCS_SIGN_IN_FAILED_ERROR[] PROGMEM =
             "https://docs.researchanddesire.com/common-errors/"
             "e-lock-14-dashboard-sign-in-failed";
+        constexpr char DOCS_DEVICE_KEY_ERROR[] PROGMEM =
+            "https://docs.researchanddesire.com/common-errors/"
+            "e-lock-999-secure-id-not-saved";
         constexpr char DOCS_CALIBRATION[] PROGMEM =
             "https://docs.researchanddesire.com/calibration";
         constexpr char DOCS_UPDATES[] PROGMEM =

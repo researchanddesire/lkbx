@@ -327,6 +327,72 @@ void retained_commands_are_dropped_and_fragments_still_reassemble() {
     TEST_ASSERT_EQUAL_STRING(command, frame.data());
 }
 
+// Reports from the box use the same command key with their own labels. Shared
+// with rad-app lib/lockbox-device/__tests__/reports.spec.ts.
+const char* REPORT_PLAINTEXT = R"({"id":"r1","state":"locked"})";
+const char* REPORT_CT = "cgockepMrxiE4IyVbiid_TrENQtDDxNEVUzy8OLa9NM";
+const char* REPORT_SIG = "EBC0TL_w-NkbHSlhesWvuTcyCrTjW2tuqD8eYsDvDRM";
+
+void aes_encrypt_matches_fips_197() {
+    std::uint8_t key[32];
+    for (std::size_t index = 0; index < sizeof(key); ++index) {
+        key[index] = static_cast<std::uint8_t>(index);
+    }
+    const std::uint8_t plain[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                                    0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
+    const std::uint8_t zeroIv[16] = {};
+    std::uint8_t cipher[16];
+    std::uint8_t back[16];
+    TEST_ASSERT_TRUE(aes256CbcEncrypt(key, zeroIv, plain, sizeof(plain), cipher));
+    TEST_ASSERT_EQUAL_STRING("8ea2b7ca516745bfeafc49904b496089",
+                             hex(cipher, sizeof(cipher)).c_str());
+    TEST_ASSERT_TRUE(aes256CbcDecrypt(key, zeroIv, cipher, sizeof(cipher), back));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(plain, back, sizeof(plain));
+}
+
+void reports_seal_to_the_shared_vector() {
+    CommandGate gate;
+    TEST_ASSERT_TRUE(gate.setKey(COMMAND_KEY, std::strlen(COMMAND_KEY)));
+    std::uint8_t iv[COMMAND_IV_BYTES];
+    for (std::size_t index = 0; index < sizeof(iv); ++index) {
+        iv[index] = static_cast<std::uint8_t>(index);
+    }
+    std::string envelope;
+    TEST_ASSERT_TRUE(gate.seal(MAC, REPORT_PLAINTEXT, TS, iv, envelope));
+    JsonDocument document;
+    TEST_ASSERT_FALSE(deserializeJson(document, envelope));
+    TEST_ASSERT_EQUAL_UINT32(5, document.as<JsonObjectConst>().size());
+    TEST_ASSERT_EQUAL_INT(2, document["v"].as<int>());
+    TEST_ASSERT_TRUE(document["ts"].as<std::uint64_t>() == TS);
+    TEST_ASSERT_EQUAL_STRING(IV, document["iv"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(REPORT_CT, document["ct"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(REPORT_SIG, document["sig"].as<const char*>());
+}
+
+void a_sealed_report_never_opens_as_a_command() {
+    CommandGate gate;
+    TEST_ASSERT_TRUE(gate.setKey(COMMAND_KEY, std::strlen(COMMAND_KEY)));
+    std::uint8_t iv[COMMAND_IV_BYTES] = {};
+    std::string envelope;
+    TEST_ASSERT_TRUE(gate.seal(MAC, R"({"type":"sync","clear":true})", TS, iv, envelope));
+    std::string command;
+    TEST_ASSERT_TRUE(gate.open(MAC, envelope.data(), envelope.size(), command) ==
+                     CommandGateResult::badSignature);
+    TEST_ASSERT_TRUE(command.empty());
+}
+
+void sealing_needs_a_key_and_a_clock() {
+    CommandGate gate;
+    std::uint8_t iv[COMMAND_IV_BYTES] = {};
+    std::string envelope;
+    TEST_ASSERT_FALSE(gate.seal(MAC, REPORT_PLAINTEXT, TS, iv, envelope));
+    TEST_ASSERT_TRUE(gate.setKey(COMMAND_KEY, std::strlen(COMMAND_KEY)));
+    TEST_ASSERT_FALSE(gate.seal(MAC, REPORT_PLAINTEXT, 0, iv, envelope));
+    gate.clearKey();
+    TEST_ASSERT_FALSE(gate.seal(MAC, REPORT_PLAINTEXT, TS, iv, envelope));
+    TEST_ASSERT_TRUE(envelope.empty());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(primitives_match_published_vectors);
@@ -343,5 +409,9 @@ int main() {
     RUN_TEST(restored_timestamp_survives_a_reboot);
     RUN_TEST(invalid_key_text_is_refused);
     RUN_TEST(retained_commands_are_dropped_and_fragments_still_reassemble);
+    RUN_TEST(aes_encrypt_matches_fips_197);
+    RUN_TEST(reports_seal_to_the_shared_vector);
+    RUN_TEST(a_sealed_report_never_opens_as_a_command);
+    RUN_TEST(sealing_needs_a_key_and_a_clock);
     return UNITY_END();
 }

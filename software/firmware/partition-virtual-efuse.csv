@@ -1,0 +1,10 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# development-r8-virtual-efuse only: partition.csv with 8 KB moved from the core
+# dump to the simulated eFuses, so every application and data offset is unchanged.
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x640000,
+app1,     app,  ota_1,   0x650000,0x640000,
+spiffs,   data, spiffs,  0xc90000,0x360000,
+coredump, data, coredump,0xFF0000,0xE000,
+efuse_em, data, efuse,   0xFFE000,0x2000,

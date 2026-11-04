@@ -10,14 +10,14 @@ from pathlib import Path
 from SCons.Script import COMMAND_LINE_TARGETS
 
 profile = env.subst("$PIOENV")
-if profile in {"development-r2", "development-r8", "production-r2", "production-r8", "staging-r2", "staging-r8"}:
+if profile in {"development-r2", "development-r8", "development-r8-virtual-efuse", "production-r2", "production-r8", "staging-r2", "staging-r8"}:
     root = Path(env.subst("$PROJECT_DIR"))
     spec = importlib.util.spec_from_file_location("lkbx_sdk_security", root.parent / "scripts/patch_sdk_security.py")
     sdk_security = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sdk_security)
     sdk_security.install(env)
 
-if profile in {"development-r2", "development-r8"}:
+if profile in {"development-r2", "development-r8", "development-r8-virtual-efuse"}:
     # Local fixture configuration and services live in software/dev.
     root = Path(env.subst("$PROJECT_DIR")).parent / "dev"
     spec = importlib.util.spec_from_file_location("lkbx_dev_services", root / "dev_services.py")

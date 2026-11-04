@@ -6,22 +6,28 @@
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_random.h>
+#include <mbedtls/platform_util.h>
+#include <sdkconfig.h>
 
+#include <atomic>
 #include <mutex>
 #include <string>
 
 #include "Base64Url.h"
 #include "CommandEnvelope.h"
+#include "DeviceKey.h"
 #include "constants/LogTags.h"
 #include "constants/PerferenceKeys.h"
 #include "services/settings.h"
 #include "utils/getEfuseMac.h"
+#include "utils/trustedClock.h"
 
 namespace {
 constexpr size_t SECRET_BYTES = 32;
 constexpr size_t SECRET_TEXT_LENGTH = 43;
 
 std::mutex identityMutex;
+std::atomic<bool> v2SignIn{false};
 String cachedSecret;
 lockbox::security::CommandGate commandGate;
 bool commandGateLoaded = false;
@@ -32,30 +38,61 @@ bool validSecretText(const String& text) {
                                                   SECRET_BYTES);
 }
 
-// A build that can still roll back must not enrol this device, or the older
-// image it returns to would be locked out of its own identity.
-bool runningImageConfirmed() {
-    const esp_partition_t* running = esp_ota_get_running_partition();
-    if (!running) return false;
-    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
-    const esp_err_t result = esp_ota_get_state_partition(running, &state);
-    if (result == ESP_ERR_NOT_SUPPORTED || result == ESP_ERR_NOT_FOUND) return true;
-    return result == ESP_OK && state != ESP_OTA_IMG_PENDING_VERIFY;
+// Staging and production burn real eFuses. A development build burns only
+// virtual ones unless it opts in, so bench work cannot use up a chip's blocks.
+#if defined(VERSIONDEV) && !defined(CONFIG_EFUSE_VIRTUAL) && \
+    !defined(LKBX_ALLOW_REAL_EFUSE_BURN)
+constexpr bool EFUSE_BURN_ALLOWED = false;
+#else
+constexpr bool EFUSE_BURN_ALLOWED = true;
+#endif
+
+bool findDeviceKey(esp_efuse_block_t& block) {
+    block = EFUSE_BLK_KEY_MAX;
+    return esp_efuse_find_purpose(ESP_EFUSE_KEY_PURPOSE_HMAC_UP, &block);
+}
+
+// Prefer the highest free block and leave the low ones for secure boot and
+// flash encryption keys. KEY5 cannot hold an XTS key anyway (hardware erratum).
+esp_efuse_block_t freeKeyBlock() {
+    for (int block = EFUSE_BLK_KEY_MAX - 1; block >= EFUSE_BLK_KEY0; --block) {
+        if (esp_efuse_key_block_unused(static_cast<esp_efuse_block_t>(block))) {
+            return static_cast<esp_efuse_block_t>(block);
+        }
+    }
+    return EFUSE_BLK_KEY_MAX;
+}
+
+// HMAC-SHA256 keyed by the burned key. On hardware the key never leaves the
+// HMAC peripheral. Virtual eFuses (bench builds) have no peripheral key, so
+// they compute the same value in software from the simulated block.
+bool hmacWithDeviceKey(esp_efuse_block_t block, const void* message,
+                       size_t length, uint8_t (&digest)[SECRET_BYTES]) {
+#if CONFIG_EFUSE_VIRTUAL
+    uint8_t key[SECRET_BYTES];
+    const bool derived =
+        esp_efuse_read_block(block, key, 0, sizeof(key) * 8) == ESP_OK &&
+        lockbox::security::hmacSha256(key, sizeof(key),
+                                      static_cast<const uint8_t*>(message),
+                                      length, digest);
+    mbedtls_platform_zeroize(key, sizeof(key));
+    return derived;
+#else
+    return esp_hmac_calculate(static_cast<hmac_key_id_t>(block - EFUSE_BLK_KEY0),
+                              message, length, digest) == ESP_OK;
+#endif
 }
 
 enum class EfuseSecret { absent, derived, failed };
 
-// Provisioned units derive the secret from a read-protected eFuse key, so it
-// survives an NVS erase. Firmware only reads eFuses and never burns one.
+// A unit with a burned key derives the secret from it, so it survives an NVS
+// erase and matches what the dashboard derives from the same key.
 EfuseSecret deriveEfuseSecret(String& secret) {
     esp_efuse_block_t block = EFUSE_BLK_KEY_MAX;
-    if (!esp_efuse_find_purpose(ESP_EFUSE_KEY_PURPOSE_HMAC_UP, &block)) {
-        return EfuseSecret::absent;
-    }
+    if (!findDeviceKey(block)) return EfuseSecret::absent;
     const String message = String("lkbx-device-secret-v1:") + getMacAddresss();
     uint8_t digest[SECRET_BYTES];
-    if (esp_hmac_calculate(static_cast<hmac_key_id_t>(block - EFUSE_BLK_KEY0),
-                           message.c_str(), message.length(), digest) != ESP_OK) {
+    if (!hmacWithDeviceKey(block, message.c_str(), message.length(), digest)) {
         return EfuseSecret::failed;
     }
     const std::string text = lockbox::security::base64UrlEncode(digest, sizeof(digest));
@@ -217,3 +254,101 @@ bool openCloudCommand(const char* mac, const char* frame, size_t size,
     command = String(opened.data(), opened.size());
     return command.length() == opened.size();
 }
+
+String sealCloudReport(const char* mac, const String& report) {
+    loadCommandGate();
+    struct timeval tv{};
+    lockboxGetTimeOfDay(&tv, nullptr);
+    const uint64_t timestamp = static_cast<uint64_t>(tv.tv_sec) * 1000 +
+                               static_cast<uint64_t>(tv.tv_usec) / 1000;
+    uint8_t iv[lockbox::security::COMMAND_IV_BYTES];
+    esp_fill_random(iv, sizeof(iv));
+    std::string sealed;
+    {
+        std::lock_guard<std::mutex> lock(identityMutex);
+        if (!commandGateLoaded || !commandGate.hasKey()) return report;
+        if (!commandGate.seal(mac, std::string(report.c_str(), report.length()),
+                              timestamp, iv, sealed)) {
+            ESP_LOGW(IDENTITY_TAG, "Could not seal a report; sending it as is");
+            return report;
+        }
+    }
+    return String(sealed.c_str());
+}
+
+bool runningImageConfirmed() {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (!running) return false;
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    const esp_err_t result = esp_ota_get_state_partition(running, &state);
+    if (result == ESP_ERR_NOT_SUPPORTED || result == ESP_ERR_NOT_FOUND) return true;
+    return result == ESP_OK && state != ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+DeviceKeyState deviceKeyState() {
+    esp_efuse_block_t block = EFUSE_BLK_KEY_MAX;
+    return findDeviceKey(block) ? DeviceKeyState::present : DeviceKeyState::absent;
+}
+
+String deviceTokenForRequest() {
+    esp_efuse_block_t block = EFUSE_BLK_KEY_MAX;
+    if (!findDeviceKey(block)) return String();
+    uint8_t digest[SECRET_BYTES];
+    const char* label = lockbox::security::DEVICE_TOKEN_LABEL;
+    if (!hmacWithDeviceKey(block, label, strlen(label), digest)) {
+        ESP_LOGW(IDENTITY_TAG, "Could not derive the device token");
+        return String();
+    }
+    const std::string text = lockbox::security::deviceTokenText(digest);
+    mbedtls_platform_zeroize(digest, sizeof(digest));
+    return String(text.c_str());
+}
+
+bool deviceKeySlotAvailable() {
+    esp_efuse_block_t block = EFUSE_BLK_KEY_MAX;
+    return !findDeviceKey(block) && freeKeyBlock() != EFUSE_BLK_KEY_MAX;
+}
+
+lockbox::security::DeviceKeyFailure burnDeviceKey(
+    const uint8_t (&key)[lockbox::security::DEVICE_KEY_BYTES]) {
+    using lockbox::security::DeviceKeyFailure;
+    if (!EFUSE_BURN_ALLOWED) return DeviceKeyFailure::burnRefused;
+
+    std::lock_guard<std::mutex> lock(identityMutex);
+    esp_efuse_block_t existing = EFUSE_BLK_KEY_MAX;
+    if (findDeviceKey(existing)) return DeviceKeyFailure::verifyFailed;
+    const esp_efuse_block_t block = freeKeyBlock();
+    if (block == EFUSE_BLK_KEY_MAX) return DeviceKeyFailure::noFreeBlock;
+
+    // One batch writes the key, its purpose, and read and write protection.
+    ESP_LOGI(IDENTITY_TAG, "Burning the device key into eFuse block %d",
+             static_cast<int>(block));
+    if (esp_efuse_write_key(block, ESP_EFUSE_KEY_PURPOSE_HMAC_UP, key,
+                            sizeof(key)) != ESP_OK) {
+        return DeviceKeyFailure::writeFailed;
+    }
+
+    esp_efuse_block_t found = EFUSE_BLK_KEY_MAX;
+    if (!findDeviceKey(found) || found != block ||
+        !esp_efuse_get_key_dis_read(block) || !esp_efuse_get_key_dis_write(block)) {
+        return DeviceKeyFailure::verifyFailed;
+    }
+    const char* label = lockbox::security::DEVICE_KEY_CHECK_LABEL;
+    uint8_t expected[SECRET_BYTES];
+    uint8_t actual[SECRET_BYTES];
+    const bool matches =
+        lockbox::security::hmacSha256(key, sizeof(key),
+                                      reinterpret_cast<const uint8_t*>(label),
+                                      strlen(label), expected) &&
+        hmacWithDeviceKey(block, label, strlen(label), actual) &&
+        lockbox::security::constantTimeEqual(expected, actual, sizeof(actual));
+    mbedtls_platform_zeroize(expected, sizeof(expected));
+    mbedtls_platform_zeroize(actual, sizeof(actual));
+    if (!matches) return DeviceKeyFailure::verifyFailed;
+    ESP_LOGI(IDENTITY_TAG, "Device key burned and verified");
+    return DeviceKeyFailure::none;
+}
+
+bool signedInWithV2() { return v2SignIn.load(std::memory_order_acquire); }
+
+void noteSignIn(bool viaV2) { v2SignIn.store(viaV2, std::memory_order_release); }
