@@ -25,12 +25,18 @@ namespace {
 using lockbox::security::DeviceKeyFailure;
 using lockbox::security::ProvisionAnswer;
 
-constexpr int PROVISION_TIMEOUT_MS = 8000;
+// The deadline also covers time queued behind other boot requests, the TLS
+// handshake and a cold dashboard function. A reply lost after the dashboard
+// issued the key can never be asked for again, so allow far more than it needs.
+constexpr int PROVISION_TIMEOUT_MS = 20000;
 // eFuse programming needs a steady supply: USB power, or a battery well above
 // the brown-out range. Same threshold the BLE OTA safety check uses.
 constexpr float MIN_BURN_BATTERY_VOLTS = 3.5f;
 
-bool attemptedThisBoot = false;
+// A boot asks once, or a second time right after the v1 sign-in that a 428
+// asked for.
+enum class BootRequest { none, afterSignIn, done };
+BootRequest bootRequest = BootRequest::none;
 
 struct KeyRequestRecord {
     bool refused = false;
@@ -92,7 +98,7 @@ void failWith(DeviceKeyFailure failure) {
 
 DeviceKeyOutcome prepareDeviceKey() {
     if (deviceKeyState() == DeviceKeyState::present) return DeviceKeyOutcome::ready;
-    if (attemptedThisBoot || WiFiClass::status() != WL_CONNECTED) {
+    if (bootRequest == BootRequest::done || WiFiClass::status() != WL_CONNECTED) {
         return DeviceKeyOutcome::unavailable;
     }
 
@@ -109,7 +115,8 @@ DeviceKeyOutcome prepareDeviceKey() {
         ESP_LOGI(IDENTITY_TAG, "Device key request deferred to a later boot");
         return DeviceKeyOutcome::unavailable;
     }
-    attemptedThisBoot = true;
+    const bool askedBeforeSignIn = bootRequest == BootRequest::afterSignIn;
+    bootRequest = BootRequest::done;
 
     JsonDocument request;
     request[Str::Json::MAC] = getMacAddresss();
@@ -139,6 +146,14 @@ DeviceKeyOutcome prepareDeviceKey() {
                     preferences.putULong64(Keys::Identity::keyRequestRetryAt, retryAt);
                 });
             }
+            return DeviceKeyOutcome::unavailable;
+        case ProvisionAnswer::afterSignIn:
+            if (!askedBeforeSignIn) {
+                ESP_LOGI(IDENTITY_TAG, "Device key follows this box's first sign-in");
+                bootRequest = BootRequest::afterSignIn;
+                return DeviceKeyOutcome::afterSignIn;
+            }
+            ESP_LOGI(IDENTITY_TAG, "No device key this boot (%d)", status);
             return DeviceKeyOutcome::unavailable;
         case ProvisionAnswer::nextBoot:
             ESP_LOGI(IDENTITY_TAG, "No device key this boot (%d)", status);

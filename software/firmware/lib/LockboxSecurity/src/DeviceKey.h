@@ -86,6 +86,9 @@ enum class ProvisionAnswer {
     neverAgain,
     // 429: wait out the window before asking.
     retryLater,
+    // 428: the dashboard has no secret for this box yet. Sign in with v1,
+    // which enrolls it, then ask once more in the same boot.
+    afterSignIn,
     // Anything else (an older dashboard without v2, a network failure): try
     // again on a later boot, signing in with v1 meanwhile.
     nextBoot,
@@ -95,12 +98,13 @@ inline ProvisionAnswer provisionAnswer(int status) {
     if (status == 201) return ProvisionAnswer::burn;
     if (status == 409 || status == 403) return ProvisionAnswer::neverAgain;
     if (status == 429) return ProvisionAnswer::retryLater;
+    if (status == 428) return ProvisionAnswer::afterSignIn;
     return ProvisionAnswer::nextBoot;
 }
 
-// A key request costs one of the dashboard's per-address allowance, which is
-// one a day by default, so a refused request waits the whole window.
-constexpr std::uint64_t PROVISION_RETRY_MS = 24ULL * 60 * 60 * 1000;
+// The dashboard counts key requests per address per hour. A refused request
+// waits out that window, so a box on a busy bench still asks again that day.
+constexpr std::uint64_t PROVISION_RETRY_MS = 60ULL * 60 * 1000;
 
 /** Whether this boot may ask the dashboard for a key. */
 inline bool mayRequestDeviceKey(bool refused, std::uint64_t retryAtMs,

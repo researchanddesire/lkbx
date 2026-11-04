@@ -205,7 +205,9 @@ static AuthResponse requestSignIn(const String& url, const JsonDocument& doc,
 // chip with a burned key signs in with its token. Only a dashboard without v2
 // (404) or without this key (401 unknown_device) sends it to v1 for this boot;
 // any other failure is retried on v2, so an outage cannot turn signing off.
-static AuthResponse getAuthToken(int timeoutMs = 5000) {
+// The deadline covers queue time, the TLS handshake and the dashboard's reply,
+// which took 3.5 s on staging from Asia (2026-11-04); 5 s timed sign-ins out.
+static AuthResponse getAuthToken(int timeoutMs = 15000) {
     const String token = deviceTokenForRequest();
     if (token.length() > 0) {
         JsonDocument doc;
