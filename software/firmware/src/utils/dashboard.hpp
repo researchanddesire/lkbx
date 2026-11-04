@@ -6,6 +6,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "CloudInput.h"
+#include "DeviceKey.h"
 
 #include "constants/LogTags.h"
 #include "constants/Version.h"
@@ -28,8 +29,11 @@ struct AuthResponse {
     bool pairingStatusKnown = false;
     bool valid = false;
     String commandKey = "";
+    String deviceId = "";
     bool rejected = false;
     bool rateLimited = false;
+    // A v2 sign-in found no v2 for this key here (404, or 401 unknown_device).
+    bool v2Unavailable = false;
 };
 
 static PairingStatus getPairingStatus(int timeoutMs = 5000) {
@@ -53,10 +57,17 @@ static PairingStatus getPairingStatus(int timeoutMs = 5000) {
     if (status != PairingStatus::Paired)
         return status;
 
-    // A paired response only counts when it names this device.
+    // A paired response only counts when it names this device: by its device
+    // id after a v2 sign-in, or by its MAC from a dashboard that sends none.
     JsonDocument response;
+    if (deserializeJson(response, payload)) return PairingStatus::Unknown;
+    if (token.length() > 0 && !response["deviceId"].isNull()) {
+        return response["deviceId"].is<const char*>() &&
+                       deviceIdForRequest() == response["deviceId"].as<const char*>()
+                   ? PairingStatus::Paired
+                   : PairingStatus::Unknown;
+    }
     const bool namesThisDevice =
-        !deserializeJson(response, payload) &&
         lockbox::security::boundedString(response["macAddress"], 17, 17) &&
         response["macAddress"].as<String>().equalsIgnoreCase(deviceId);
     return namesThisDevice ? PairingStatus::Paired : PairingStatus::Unknown;
@@ -116,6 +127,18 @@ static AuthResponse requestSignIn(const String& url, const JsonDocument& doc,
 
     ESP_LOGD(UTILS_TAG, "HTTP Response code: %d", httpResponseCode);
 
+    JsonDocument errorBody;
+    const bool v2Unavailable =
+        (httpResponseCode == 404 || httpResponseCode == 401) &&
+        !deserializeJson(errorBody, payload) &&
+        lockbox::security::v2SignInFallsBackToV1(httpResponseCode,
+                                                 errorBody.as<JsonVariantConst>());
+    if (httpResponseCode == 404) {
+        AuthResponse missing;
+        missing.v2Unavailable = true;
+        return missing;
+    }
+
     // if the error code is 403 then send the 'unpaired' event and return
     // nothing.
     if (httpResponseCode == 403) {
@@ -130,6 +153,7 @@ static AuthResponse requestSignIn(const String& url, const JsonDocument& doc,
         ESP_LOGW(UTILS_TAG, "Server rejected this device's identity");
         AuthResponse rejected;
         rejected.rejected = true;
+        rejected.v2Unavailable = v2Unavailable;
         return rejected;
     }
 
@@ -173,12 +197,14 @@ static AuthResponse requestSignIn(const String& url, const JsonDocument& doc,
             .isPaired = response[Str::Json::IS_PAIRED] | false,
             .pairingStatusKnown = response[Str::Json::IS_PAIRED].is<bool>(),
             .valid = true,
-            .commandKey = response[Str::Json::COMMAND_KEY] | ""};
+            .commandKey = response[Str::Json::COMMAND_KEY] | "",
+            .deviceId = response["deviceId"] | ""};
 }
 
 // Request device-scoped runtime broker credentials from the configured API. A
-// chip with a burned key signs in with its token. An older dashboard (404), an
-// unknown token (401) or an outage falls back to v1 for this boot.
+// chip with a burned key signs in with its token. Only a dashboard without v2
+// (404) or without this key (401 unknown_device) sends it to v1 for this boot;
+// any other failure is retried on v2, so an outage cannot turn signing off.
 static AuthResponse getAuthToken(int timeoutMs = 5000) {
     const String token = deviceTokenForRequest();
     if (token.length() > 0) {
@@ -186,11 +212,23 @@ static AuthResponse getAuthToken(int timeoutMs = 5000) {
         populateV2AuthRequest(doc, token);
         AuthResponse signedIn = requestSignIn(
             String(RAD_SERVER) + Str::Api::LOCKBOX_V2_AUTH, doc, timeoutMs);
-        if (signedIn.valid || signedIn.rateLimited) {
-            noteSignIn(signedIn.valid);
+        if (signedIn.valid) {
+            // The answer must name this chip's device id and keep signing on.
+            const String deviceId = deviceIdForRequest();
+            if (deviceId.length() == 0 || signedIn.deviceId != deviceId ||
+                signedIn.commandKey.length() == 0) {
+                ESP_LOGW(UTILS_TAG, "v2 sign-in did not name this device");
+                noteSignIn(false);
+                return {};
+            }
+            noteSignIn(true);
             return signedIn;
         }
-        ESP_LOGW(UTILS_TAG, "v2 sign-in unavailable, signing in with v1");
+        if (!signedIn.v2Unavailable) {
+            noteSignIn(false);
+            return signedIn;
+        }
+        ESP_LOGW(UTILS_TAG, "Dashboard has no v2 identity for this key, signing in with v1");
     }
     noteSignIn(false);
     JsonDocument doc;

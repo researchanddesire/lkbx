@@ -50,7 +50,8 @@ const char* root_ca =
     "-----END CERTIFICATE-----";
 #endif
 
-static char mqttTopic[18] = "";
+// "AA:BB:CC:DD:EE:FF" after a v1 sign-in, "v2/<32 hex device id>" after v2.
+static char mqttTopic[40] = "";
 static lockbox::security::MqttFrame<> mqttFrame;
 
 void mqtt_event_handler(void* handler_args, esp_event_base_t base,
@@ -65,7 +66,7 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
         case MQTT_EVENT_CONNECTED:
             hardwareHealthMqttConnected(mqtt_server);
             Serial.println(Str::Protocol::MQTT_CONNECTED);
-            strncpy(mqttTopic, getMacAddresss().c_str(), sizeof(mqttTopic) - 1);
+            strncpy(mqttTopic, cloudTopic().c_str(), sizeof(mqttTopic) - 1);
             esp_mqtt_client_subscribe(mqttClient, mqttTopic, 2);
             mqttConnected = true;
             // An unconfirmed LOCKED report gets a fresh retry budget.

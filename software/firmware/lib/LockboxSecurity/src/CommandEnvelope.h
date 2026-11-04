@@ -25,16 +25,38 @@ constexpr std::uint64_t COMMAND_REORDER_WINDOW_MS = 30000;
 constexpr std::size_t COMMAND_REPLAY_RING = 8;
 constexpr std::size_t COMMAND_REPLAY_PREFIX = 8;
 constexpr std::uint64_t COMMAND_MAX_TIMESTAMP = 9007199254740991ULL;
+// Commands arrive within seconds; the broker keeps no queue for the box. Once
+// the clock is server-verified, anything older than this is a recording.
+constexpr std::uint64_t COMMAND_MAX_AGE_MS = 10ULL * 60 * 1000;
+// What survives a reboot: the high-water timestamp (8 bytes, little-endian),
+// the ring's fill count and next slot, then the ring itself.
+constexpr std::size_t COMMAND_REPLAY_STATE_BYTES =
+    8 + 2 + COMMAND_REPLAY_RING * COMMAND_REPLAY_PREFIX;
+constexpr std::size_t REPORT_NONCE_BYTES = 16;
 
 enum class CommandGateResult {
     plain,          // No key is held: the frame is today's plain JSON.
-    opened,         // A verified and decrypted v2 envelope.
+    opened,         // A verified and decrypted envelope.
     malformed,
     badSignature,
     stale,
     replayed,
     decryptFailed,
+    unsignedRefused,  // A box with a burned key never takes plain JSON.
 };
+
+// Who an envelope is for. A v1 sign-in binds v2 envelopes and r2 reports to
+// the upper-case MAC; a v2 sign-in binds v3 envelopes and r3 reports to the
+// eFuse device id, used verbatim.
+enum class EnvelopeBinding { mac, deviceId };
+
+// A sealed report names its kind, so a log can never be replayed as a state
+// report or the other way round.
+enum class ReportKind { state, log };
+
+inline const char* reportKindText(ReportKind kind) {
+    return kind == ReportKind::log ? "log" : "state";
+}
 
 inline bool commandGateAccepted(CommandGateResult result) {
     return result == CommandGateResult::plain ||
@@ -50,15 +72,50 @@ inline bool constantTimeEqual(const std::uint8_t* left, const std::uint8_t* righ
     return difference == 0;
 }
 
-// Holding a key means every command must be a valid v2 envelope. Holding none
-// leaves unenrolled behaviour unchanged. The server only hands a key to a device
-// it signs for, and a TLS-authenticated auth response can withdraw it.
+// Holding a key means every command must be a valid envelope. Holding none
+// leaves unenrolled behaviour unchanged, unless signatures are required: a box
+// with a burned eFuse key refuses plain JSON even before it holds a key. The
+// server only hands a key to a device it signs for.
 class CommandGate {
  public:
     bool hasKey() const { return hasKey_; }
     std::uint64_t lastTimestamp() const { return lastTimestamp_; }
     void restoreLastTimestamp(std::uint64_t timestamp) {
         lastTimestamp_ = timestamp;
+    }
+    void requireSignatures(bool required) { signaturesRequired_ = required; }
+    bool signaturesRequired() const { return signaturesRequired_; }
+
+    // The replay ring and high-water timestamp, so a reboot or a new sign-in
+    // cannot make an already accepted command acceptable again.
+    void exportReplayState(std::uint8_t (&out)[COMMAND_REPLAY_STATE_BYTES]) const {
+        for (std::size_t index = 0; index < 8; ++index) {
+            out[index] = static_cast<std::uint8_t>(lastTimestamp_ >> (8 * index));
+        }
+        out[8] = static_cast<std::uint8_t>(ringCount_);
+        out[9] = static_cast<std::uint8_t>(ringNext_);
+        for (std::size_t slot = 0; slot < COMMAND_REPLAY_RING; ++slot) {
+            std::memcpy(out + 10 + slot * COMMAND_REPLAY_PREFIX, ring_[slot].data(),
+                        COMMAND_REPLAY_PREFIX);
+        }
+    }
+
+    bool restoreReplayState(const std::uint8_t* data, std::size_t length) {
+        if (!data || length != COMMAND_REPLAY_STATE_BYTES ||
+            data[8] > COMMAND_REPLAY_RING || data[9] >= COMMAND_REPLAY_RING) return false;
+        std::uint64_t timestamp = 0;
+        for (std::size_t index = 0; index < 8; ++index) {
+            timestamp |= static_cast<std::uint64_t>(data[index]) << (8 * index);
+        }
+        if (timestamp > COMMAND_MAX_TIMESTAMP) return false;
+        lastTimestamp_ = timestamp;
+        ringCount_ = data[8];
+        ringNext_ = data[9];
+        for (std::size_t slot = 0; slot < COMMAND_REPLAY_RING; ++slot) {
+            std::memcpy(ring_[slot].data(), data + 10 + slot * COMMAND_REPLAY_PREFIX,
+                        COMMAND_REPLAY_PREFIX);
+        }
+        return true;
     }
 
     bool setKey(const char* text, std::size_t length) {
@@ -85,9 +142,9 @@ class CommandGate {
         std::memcpy(encKey_, encKey, sizeof(encKey_));
         std::memcpy(reportMacKey_, reportMacKey, sizeof(reportMacKey_));
         std::memcpy(reportEncKey_, reportEncKey, sizeof(reportEncKey_));
+        // The replay ring stays: a sign-in returns the same key, and the
+        // commands it already accepted must stay spent.
         hasKey_ = true;
-        ringCount_ = 0;
-        ringNext_ = 0;
         return true;
     }
 
@@ -97,24 +154,32 @@ class CommandGate {
         std::memset(reportMacKey_, 0, sizeof(reportMacKey_));
         std::memset(reportEncKey_, 0, sizeof(reportEncKey_));
         hasKey_ = false;
-        ringCount_ = 0;
-        ringNext_ = 0;
     }
 
     CommandGateResult open(const char* mac, const char* frame, std::size_t size,
                            std::string& command) {
+        return open(mac, EnvelopeBinding::mac, frame, size, command);
+    }
+
+    // `trustedNowMs` is the server-verified wall clock, or 0 while the clock
+    // is not verified (only the reorder window and the ring apply then).
+    CommandGateResult open(const char* recipient, EnvelopeBinding binding,
+                           const char* frame, std::size_t size, std::string& command,
+                           std::uint64_t trustedNowMs = 0) {
         command.clear();
         if (!hasKey_) {
+            if (signaturesRequired_) return CommandGateResult::unsignedRefused;
             command.assign(frame, size);
             return CommandGateResult::plain;
         }
+        const int version = binding == EnvelopeBinding::mac ? 2 : 3;
         JsonDocument document;
-        if (!mac || deserializeJson(document, frame, size)) {
+        if (!recipient || !*recipient || deserializeJson(document, frame, size)) {
             return CommandGateResult::malformed;
         }
         const JsonObjectConst envelope = document.as<JsonObjectConst>();
         if (envelope.isNull() || envelope.size() != 5 ||
-            !envelope["v"].is<int>() || envelope["v"].as<int>() != 2 ||
+            !envelope["v"].is<int>() || envelope["v"].as<int>() != version ||
             !envelope["ts"].is<std::uint64_t>() ||
             !boundedString(envelope["iv"], 1, COMMAND_MAX_TEXT) ||
             !boundedString(envelope["ct"], 1, COMMAND_MAX_TEXT) ||
@@ -145,12 +210,14 @@ class CommandGate {
         }
 
         // Encrypt-then-MAC: nothing is decrypted until the signature verifies.
-        std::string signedText = "v2.";
+        std::string signedText = version == 2 ? "v2." : "v3.";
         signedText += std::to_string(timestamp);
         signedText += '.';
-        for (const char* cursor = mac; *cursor; ++cursor) {
-            signedText += static_cast<char>(
-                std::toupper(static_cast<unsigned char>(*cursor)));
+        for (const char* cursor = recipient; *cursor; ++cursor) {
+            signedText += binding == EnvelopeBinding::mac
+                              ? static_cast<char>(std::toupper(
+                                    static_cast<unsigned char>(*cursor)))
+                              : *cursor;
         }
         signedText += '.';
         signedText.append(ivText.c_str(), ivText.size());
@@ -164,7 +231,8 @@ class CommandGate {
             return CommandGateResult::badSignature;
         }
 
-        if (timestamp + COMMAND_REORDER_WINDOW_MS < lastTimestamp_) {
+        if (timestamp + COMMAND_REORDER_WINDOW_MS < lastTimestamp_ ||
+            (trustedNowMs != 0 && timestamp + COMMAND_MAX_AGE_MS < trustedNowMs)) {
             return CommandGateResult::stale;
         }
         for (std::size_t index = 0; index < ringCount_; ++index) {
@@ -198,13 +266,27 @@ class CommandGate {
     }
 
     // Seals a report to the dashboard in the command envelope's shape. Its own
-    // keys and an "r2." signature prefix mean a captured report can never be
-    // opened, or replayed, as a command. `iv` must be fresh random bytes.
+    // keys and an "r2."/"r3." signature prefix mean a captured report can never
+    // be opened, or replayed, as a command. `iv` must be fresh random bytes.
     bool seal(const char* mac, const std::string& report, std::uint64_t timestamp,
               const std::uint8_t (&iv)[COMMAND_IV_BYTES], std::string& envelope) const {
+        static const std::uint8_t unused[REPORT_NONCE_BYTES] = {};
+        return seal(mac, EnvelopeBinding::mac, ReportKind::state, report, timestamp,
+                    iv, unused, envelope);
+    }
+
+    // A device-id binding seals v3: the kind and a fresh random `nonce` are
+    // signed too, so the dashboard can refuse a report on the wrong route and
+    // one it has already seen.
+    bool seal(const char* recipient, EnvelopeBinding binding, ReportKind kind,
+              const std::string& report, std::uint64_t timestamp,
+              const std::uint8_t (&iv)[COMMAND_IV_BYTES],
+              const std::uint8_t (&nonce)[REPORT_NONCE_BYTES],
+              std::string& envelope) const {
         envelope.clear();
-        if (!hasKey_ || !mac || report.empty() || report.size() > COMMAND_MAX_TEXT ||
-            timestamp == 0 || timestamp > COMMAND_MAX_TIMESTAMP) return false;
+        if (!hasKey_ || !recipient || !*recipient || report.empty() ||
+            report.size() > COMMAND_MAX_TEXT || timestamp == 0 ||
+            timestamp > COMMAND_MAX_TIMESTAMP) return false;
         const std::size_t padding = COMMAND_AES_BLOCK - report.size() % COMMAND_AES_BLOCK;
         std::vector<std::uint8_t> plain(report.begin(), report.end());
         plain.insert(plain.end(), padding, static_cast<std::uint8_t>(padding));
@@ -213,15 +295,23 @@ class CommandGate {
                               cipher.data())) return false;
         const std::string ivText = base64UrlEncode(iv, sizeof(iv));
         const std::string cipherText = base64UrlEncode(cipher.data(), cipher.size());
-        const std::string message = "r2." + std::to_string(timestamp) + "." + mac +
-                                    "." + ivText + "." + cipherText;
+        const bool v3 = binding == EnvelopeBinding::deviceId;
+        const std::string nonceText = v3 ? base64UrlEncode(nonce, sizeof(nonce)) : "";
+        std::string message = (v3 ? "r3." : "r2.") + std::to_string(timestamp) + "." +
+                              recipient + ".";
+        if (v3) message += std::string(reportKindText(kind)) + "." + nonceText + ".";
+        message += ivText + "." + cipherText;
         std::uint8_t signature[HMAC_SHA256_BYTES];
         if (!hmacSha256(reportMacKey_, sizeof(reportMacKey_),
                         reinterpret_cast<const std::uint8_t*>(message.data()),
                         message.size(), signature)) return false;
         JsonDocument document;
-        document["v"] = 2;
+        document["v"] = v3 ? 3 : 2;
         document["ts"] = timestamp;
+        if (v3) {
+            document["k"] = reportKindText(kind);
+            document["n"] = nonceText;
+        }
         document["iv"] = ivText;
         document["ct"] = cipherText;
         document["sig"] = base64UrlEncode(signature, sizeof(signature));
@@ -235,6 +325,7 @@ class CommandGate {
     std::uint8_t reportMacKey_[HMAC_SHA256_BYTES] = {};
     std::uint8_t reportEncKey_[HMAC_SHA256_BYTES] = {};
     bool hasKey_ = false;
+    bool signaturesRequired_ = false;
     std::uint64_t lastTimestamp_ = 0;
     std::array<std::array<std::uint8_t, COMMAND_REPLAY_PREFIX>, COMMAND_REPLAY_RING> ring_{};
     std::size_t ringCount_ = 0;
