@@ -1050,6 +1050,7 @@ class LKBX {
     static void startPairingCheckTask(void *pvParameters);
     static void pollPairingTask(void *pvParameters);
     static void syncLockStateOnBootTask(void *pvParameters);
+    static void confirmServerClearTask(void *pvParameters);
     static void syncClockOnBootTask(void *pvParameters);
     static void retryClockSyncTask(void *pvParameters);
 
@@ -1058,6 +1059,8 @@ class LKBX {
          esp_mqtt_client_handle_t &client);
 
     void initDelayTask();
+    // A dashboard clear that names no session: re-read the state over HTTPS.
+    void confirmServerClear();
 
     Adafruit_ST7789 &display;
     AiEsp32RotaryEncoder &encoder;

@@ -19,6 +19,7 @@
 #include "structs/Version.h"
 #include "utils/dashboard.hpp"
 #include "utils/lockedReport.h"
+#include "utils/serverClear.h"
 
 // TLS CA certificates for MQTT broker verification
 #ifdef VERSIONDEV
@@ -147,8 +148,23 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                 }
 
                 if (doc[Str::Json::CLEAR].as<bool>()) {
-                    clearState();
-                    lkbx->sm->process_event(Unlock{});
+                    switch (classifyServerClear(doc[Str::Json::SESSION_ID] | "",
+                                                savedSessionId.c_str())) {
+                        case ServerClear::APPLY:
+                            clearState();
+                            lkbx->sm->process_event(Unlock{});
+                            break;
+                        case ServerClear::CONFIRM:
+                            ESP_LOGW(MQTT_TAG,
+                                     "Clear names no session -- asking the "
+                                     "dashboard");
+                            lkbx->confirmServerClear();
+                            break;
+                        case ServerClear::IGNORE:
+                            ESP_LOGW(MQTT_TAG,
+                                     "Ignoring a clear for another session");
+                            break;
+                    }
                     return;
                 }
 
