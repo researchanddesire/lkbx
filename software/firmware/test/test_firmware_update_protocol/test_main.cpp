@@ -29,7 +29,7 @@ const char *VALID_RESPONSE = R"json({
     "artifacts": [
       {
         "role": "bootloader",
-        "url": "https://example.supabase.co/storage/v1/object/public/lkbx-firmware/releases/1.21.16/0123456789abcdef/bootloader.bin",
+        "url": "https://meuaxbjzqrszxdvmacug.supabase.co/storage/v1/object/public/lkbx-firmware/releases/1.21.16/0123456789abcdef/bootloader.bin",
         "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "sizeBytes": 512,
         "installOrder": 0,
@@ -37,7 +37,7 @@ const char *VALID_RESPONSE = R"json({
       },
       {
         "role": "application",
-        "url": "https://example.supabase.co/storage/v1/object/public/lkbx-firmware/releases/1.21.16/0123456789abcdef/firmware.bin",
+        "url": "https://acjajruwevyyatztbkdf.supabase.co/storage/v1/object/public/lkbx-firmware/releases/1.21.16/0123456789abcdef/firmware.bin",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "sizeBytes": 1024,
         "installOrder": 1,
@@ -366,12 +366,32 @@ void test_rejects_wrong_bucket_and_non_https_urls() {
     TEST_ASSERT_FALSE(
         firmware::parseDecision(payload, "lkbx", decision, error));
 
-    payload = VALID_RESPONSE;
-    const auto trustedHost = payload.find("example.supabase.co");
-    payload.replace(trustedHost, std::string("example.supabase.co").size(),
-                    "evil.example");
-    TEST_ASSERT_FALSE(
-        firmware::parseDecision(payload, "lkbx", decision, error));
+    // Only the dashboard's own Storage hosts: no other Supabase project, no
+    // lookalike, port, userinfo or case variant.
+    const std::string trusted = "acjajruwevyyatztbkdf.supabase.co";
+    for (const char *host :
+         {"evil.example", "example.supabase.co", "acjajruwevyyatztbkdf.supabase.co.evil.example",
+          "evil-acjajruwevyyatztbkdf.supabase.co", "acjajruwevyyatztbkdf.supabase.co:443",
+          "ACJAJRUWEVYYATZTBKDF.supabase.co", "user@acjajruwevyyatztbkdf.supabase.co"}) {
+        payload = VALID_RESPONSE;
+        const auto trustedHost = payload.find(trusted);
+        payload.replace(trustedHost, trusted.size(), host);
+        TEST_ASSERT_FALSE_MESSAGE(
+            firmware::parseDecision(payload, "lkbx", decision, error), host);
+    }
+}
+
+void test_trusts_only_the_production_and_staging_storage_hosts() {
+    const std::string path =
+        "/storage/v1/object/public/lkbx-firmware/releases/1.21.16/0123456789abcdef/firmware.bin";
+    TEST_ASSERT_TRUE(firmware::isHttpsArtifactUrl(
+        "https://acjajruwevyyatztbkdf.supabase.co" + path, "lkbx-firmware"));
+    TEST_ASSERT_TRUE(firmware::isHttpsArtifactUrl(
+        "https://meuaxbjzqrszxdvmacug.supabase.co" + path, "lkbx-firmware"));
+    TEST_ASSERT_FALSE(firmware::isHttpsArtifactUrl(
+        "https://example.supabase.co" + path, "lkbx-firmware"));
+    TEST_ASSERT_FALSE(firmware::isHttpsArtifactUrl(
+        "https://supabase.co" + path, "lkbx-firmware"));
 }
 
 void test_rejects_bad_hash_duplicate_order_and_missing_fields() {
@@ -399,6 +419,7 @@ int main(int, char **) {
     RUN_TEST(test_parses_canonical_no_update_and_rejects_update_data);
     RUN_TEST(test_optional_artifacts_are_skipped_but_required_roles_fail);
     RUN_TEST(test_rejects_wrong_bucket_and_non_https_urls);
+    RUN_TEST(test_trusts_only_the_production_and_staging_storage_hosts);
     RUN_TEST(test_rejects_bad_hash_duplicate_order_and_missing_fields);
     return UNITY_END();
 }

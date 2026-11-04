@@ -36,7 +36,7 @@ int esp_http_client_cleanup(esp_http_client_handle_t) { ++http.cleaned; return 0
 firmware::Artifact artifact() {
     http = {}; Update = {};
     firmware::Artifact result;
-    result.url = "https://example.supabase.co/storage/v1/object/public/lkbx-firmware/releases/synthetic/firmware.bin";
+    result.url = "https://acjajruwevyyatztbkdf.supabase.co/storage/v1/object/public/lkbx-firmware/releases/synthetic/firmware.bin";
     result.sizeBytes = 3;
     result.sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     return result;
