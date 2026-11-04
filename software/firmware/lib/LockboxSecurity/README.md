@@ -35,8 +35,8 @@ is an HMAC that the chip computes internally.
 | Step | Request | Outcome |
 |------|---------|---------|
 | Pre-auth, only while no key is burned | `POST /api/lockbox/v2/provision` with `mac`, `chip`, `md5`, `device`, `version`, the v1 `deviceSecret` and any previous `failureCode` | 201 `{deviceKey}`: burn now. 409 or 403: never ask again (stored in `identity/v2Refused`). 429: wait 24 hours (`identity/v2RetryAt`). Anything else: try on a later boot |
-| Sign-in | `POST /api/lockbox/v2/auth` with `deviceToken` = base64url HMAC-SHA256 of `lkbx-device-token-v2` | The v1 response shape. 401 `unknown_device`, a 404 or an outage falls back to `/api/lockbox/auth` for that boot |
-| Pairing status | `POST /api/lockbox/v2/is-paired` with `deviceToken` | 200 paired, 418 not paired |
+| Sign-in | `POST /api/lockbox/v2/auth` with `deviceToken` = base64url HMAC-SHA256 of `lkbx-device-token-v2` | The v1 response shape plus `deviceId`, which must be this chip's, and a required `commandKey`. Only a 404 or a 401 `unknown_device` falls back to `/api/lockbox/auth` for that boot; an outage, a rate limit or any other refusal is retried on v2 |
+| Pairing status | `POST /api/lockbox/v2/is-paired` with `deviceToken` | 200 paired (it must name this chip's `deviceId`, or its MAC when the dashboard sends no `deviceId`), 418 not paired |
 | State | `GET /api/lockbox/v2/state` with header `x-lkbx-device-token` | The v1 state payload |
 
 Every check that could refuse a burn runs before the key is requested: the
@@ -57,22 +57,41 @@ key. The dashboard re-enrolls the device to that secret at its first v2 sign-in
 and marks it hardware-bound, so an older image on the same chip keeps its
 identity and no v1 request can ever replace it.
 
+After a v2 sign-in the box is named by its device id, never its MAC: the
+lowercase hex of the first 16 bytes of HMAC-SHA256 of `lkbx-device-id-v2`,
+computed by the peripheral. It subscribes to `v2/<deviceId>`, reports on
+`v2/<deviceId>` and `v2/<deviceId>/log`, publishes provenance on
+`v2/<deviceId>/firmware`, and speaks the v3 command envelope and sealed report.
+The id is an address, not proof. A v1 sign-in keeps the MAC topics and v2
+formats.
+
 `development-r8-virtual-efuse` runs the whole exchange against simulated eFuses
 kept in the `efuse_em` flash partition; erase that partition to start over.
-`test/test_device_key` holds the vector shared with the dashboard.
+`test/test_device_key` holds the vectors shared with the dashboard (token, v1
+secret, device id).
 
 ## Sealed reports
 
-A device holding a command key seals its state reports and activity logs in
-the same envelope shape as commands, with keys derived from the command key by
-the labels `lkbx-rpt-mac-v2` and `lkbx-rpt-enc-v2`, and a signature over
-`r2.{ts}.{MAC}.{iv}.{ct}`. Other broker clients can neither read nor forge
-them, and a captured report never opens as a command (its signature fails).
-Each LOCKED retry is sealed afresh from the stored plain report. The dashboard
-opens them in Postgres (`lockbox_device_report_open`), accepts plain reports
-from firmware without a key, and refuses plain reports for a hardware-bound
-device, which always seals. The retained `<MAC>/firmware` provenance and the
-last will stay plain; neither carries session data.
+A device holding a command key seals its state reports and activity logs with
+keys derived from the command key by the labels `lkbx-rpt-mac-v2` and
+`lkbx-rpt-enc-v2`. Other broker clients can neither read nor forge them, and a
+captured report never opens as a command (its signature fails).
+
+| Sign-in | Report | Signed text |
+|---------|--------|-------------|
+| v1 | `{"v":2,"ts","iv","ct","sig"}` | `r2.{ts}.{MAC}.{iv}.{ct}` |
+| v2 | `{"v":3,"ts","k","n","iv","ct","sig"}` | `r3.{ts}.{deviceId}.{k}.{n}.{iv}.{ct}` |
+
+In v3, `k` is `state` on the base topic and `log` on `/log`, and `n` is 16
+fresh random bytes (base64url), so the dashboard can refuse a report on the
+wrong route or one it has already seen. Each LOCKED retry is sealed afresh
+from the stored plain report, with a new nonce; the report's own `id` dedupes
+it. The dashboard opens them in Postgres, accepts plain reports from firmware
+without a key, and refuses plain reports for a hardware-bound device. A box
+with a burned key never reports in plain JSON: a report it cannot seal is
+dropped, and a LOCKED report stays pending until it can be sealed. The
+retained `/firmware` provenance and the last will stay plain; neither carries
+session data.
 
 ## Physical access
 
@@ -105,7 +124,7 @@ needs to reflash freely.
 | Response | Device behaviour |
 |----------|------------------|
 | 200 with `commandKey` | Stores the key in NVS (`identity/cmdKey`) and requires signed commands |
-| 200 without `commandKey` | Erases any stored key and accepts plain commands |
+| 200 without `commandKey` | Erases any stored key and accepts plain commands, unless a key is burned: that box keeps its stored key and never accepts plain commands, even with no key at all |
 | 401 | Keeps its state and retries every 60 seconds |
 | Any other failure | Keeps its state and retries as before |
 
@@ -123,7 +142,9 @@ A device holding a key accepts only this envelope on its command topic:
 - `ct` is AES-256-CBC with PKCS#7 padding under `encKey`, using the 16-byte `iv`. Its plaintext is the same JSON command a device without a key receives.
 - `sig` is HMAC-SHA256 under `macKey` of the text `v2.{ts}.{MAC}.{iv}.{ct}`, where `MAC` is uppercase colon-separated and `iv` and `ct` are their base64url text.
 
-The signature is verified in constant time before anything is decrypted. A command is then accepted only if `ts + 30000` is at least the highest timestamp seen (persisted in `identity/cmdLastTs`), and its signature is not among the last 8 accepted. The window allows for messages delivered out of order.
+After a v2 sign-in the box takes only `"v":3`, signed over `v3.{ts}.{deviceId}.{iv}.{ct}` with the device id verbatim (lowercase, never case-folded); the keys and cipher are the same.
+
+The signature is verified in constant time before anything is decrypted. A command is then accepted only if `ts + 30000` is at least the highest timestamp seen, its signature is not among the last 8 accepted, and, once the clock is server-verified, `ts` is no more than 10 minutes old. The window allows for messages delivered out of order. The timestamp and the ring of 8 persist in NVS (`identity/cmdReplay`, and `identity/cmdLastTs` for older images) after every accepted command, and a sign-in does not empty them, so a reboot never makes a recorded command acceptable again.
 
 A device without a key processes plain JSON unchanged.
 

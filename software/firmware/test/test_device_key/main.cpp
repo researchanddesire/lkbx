@@ -14,6 +14,7 @@ namespace {
 constexpr const char* VECTOR_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";  // gitleaks:allow
 constexpr const char* VECTOR_TOKEN = "jlTDfyPZWokCUjnMoagQMl9KzFB7yzit4CiLmJ9QunY";  // gitleaks:allow
 constexpr const char* VECTOR_V1_SECRET = "jNHn_HG_26kKo7YjnUsXjV4a7V94lm28B_7n0Y8BirI";  // gitleaks:allow
+constexpr const char* VECTOR_DEVICE_ID = "78727da905678f5eff040a5e1f42df7f";
 
 void vectorKey(std::uint8_t (&key)[DEVICE_KEY_BYTES]) {
     for (std::size_t index = 0; index < DEVICE_KEY_BYTES; ++index) {
@@ -92,6 +93,63 @@ void test_asks_once_until_answered() {
     TEST_ASSERT_FALSE(mayRequestDeviceKey(false, 2000, 5000, false));
 }
 
+void test_device_id_matches_the_dashboard() {
+    std::uint8_t key[DEVICE_KEY_BYTES];
+    vectorKey(key);
+    std::uint8_t digest[HMAC_SHA256_BYTES];
+    TEST_ASSERT_TRUE(hmacSha256(key, sizeof(key),
+                                reinterpret_cast<const std::uint8_t*>(DEVICE_ID_LABEL),
+                                std::strlen(DEVICE_ID_LABEL), digest));
+    TEST_ASSERT_EQUAL_STRING(VECTOR_DEVICE_ID, deviceIdText(digest).c_str());
+    TEST_ASSERT_TRUE(isDeviceIdText(VECTOR_DEVICE_ID));
+    for (const auto* text : {"", "78727DA905678F5EFF040A5E1F42DF7F",
+                             "78727da905678f5eff040a5e1f42df7", "AA:BB:CC:DD:EE:FF",
+                             "78727da905678f5eff040a5e1f42df7g"}) {
+        TEST_ASSERT_FALSE_MESSAGE(isDeviceIdText(text), text);
+    }
+    TEST_ASSERT_FALSE(isDeviceIdText(nullptr));
+}
+
+bool fallsBack(int status, const char* body) {
+    JsonDocument document;
+    deserializeJson(document, body);
+    return v2SignInFallsBackToV1(status, document.as<JsonVariantConst>());
+}
+
+void test_only_a_dashboard_without_this_key_sends_v1() {
+    TEST_ASSERT_TRUE(fallsBack(404, "<html>not found</html>"));
+    TEST_ASSERT_TRUE(fallsBack(401, R"({"code":"unknown_device"})"));
+    // Outages, firewall answers and rate limits stay on v2.
+    TEST_ASSERT_FALSE(fallsBack(401, R"({"code":"identity_rejected"})"));
+    TEST_ASSERT_FALSE(fallsBack(401, ""));
+    TEST_ASSERT_FALSE(fallsBack(403, R"({"code":"unknown_device"})"));
+    TEST_ASSERT_FALSE(fallsBack(429, R"({"code":"rate_limited"})"));
+    TEST_ASSERT_FALSE(fallsBack(500, R"({"code":"unknown_device"})"));
+    TEST_ASSERT_FALSE(fallsBack(503, R"({"code":"identity_unavailable"})"));
+    TEST_ASSERT_FALSE(fallsBack(-1, ""));
+}
+
+bool namesDevice(const char* body) {
+    JsonDocument document;
+    TEST_ASSERT_FALSE(deserializeJson(document, body));
+    return v2SignInNamesDevice(document.as<JsonVariantConst>(), VECTOR_DEVICE_ID);
+}
+
+void test_a_v2_sign_in_must_name_this_device_and_sign() {
+    TEST_ASSERT_TRUE(namesDevice(
+        R"({"deviceId":"78727da905678f5eff040a5e1f42df7f","commandKey":"k"})"));
+    TEST_ASSERT_FALSE(namesDevice(R"({"commandKey":"k"})"));
+    TEST_ASSERT_FALSE(namesDevice(R"({"deviceId":"78727da905678f5eff040a5e1f42df7f"})"));
+    TEST_ASSERT_FALSE(namesDevice(
+        R"({"deviceId":"00727da905678f5eff040a5e1f42df7f","commandKey":"k"})"));
+    TEST_ASSERT_FALSE(namesDevice(
+        R"({"deviceId":"78727DA905678F5EFF040A5E1F42DF7F","commandKey":"k"})"));
+    JsonDocument document;
+    deserializeJson(document,
+                    R"({"deviceId":"78727da905678f5eff040a5e1f42df7f","commandKey":"k"})");
+    TEST_ASSERT_FALSE(v2SignInNamesDevice(document.as<JsonVariantConst>(), ""));
+}
+
 void test_failure_codes_are_e_lock_999_family() {
     TEST_ASSERT_EQUAL_INT(999, failureCode(DeviceKeyFailure::unknown));
     TEST_ASSERT_EQUAL_INT(995, failureCode(DeviceKeyFailure::writeFailed));
@@ -108,5 +166,8 @@ int main(int, char**) {
     RUN_TEST(test_answers);
     RUN_TEST(test_asks_once_until_answered);
     RUN_TEST(test_failure_codes_are_e_lock_999_family);
+    RUN_TEST(test_device_id_matches_the_dashboard);
+    RUN_TEST(test_only_a_dashboard_without_this_key_sends_v1);
+    RUN_TEST(test_a_v2_sign_in_must_name_this_device_and_sign);
     return UNITY_END();
 }

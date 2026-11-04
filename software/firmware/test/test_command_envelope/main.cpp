@@ -381,6 +381,170 @@ void a_sealed_report_never_opens_as_a_command() {
     TEST_ASSERT_TRUE(command.empty());
 }
 
+// v2 sign-ins bind to the eFuse device id instead of the MAC. Shared with
+// rad-app lib/lockbox-device/__tests__ (deviceIdVector / reportVector).
+const char* DEVICE_ID = "78727da905678f5eff040a5e1f42df7f";
+const char* V3_COMMAND = R"({"type":"reboot"})";
+const char* V3_CT = "FQraH0pn2pB0WUFN8NHim0WWQW5Z_ek5PPFDPnYQHTA";
+const char* V3_SIG = "G12OHImd5Ls5f4qzCSpyZS0HgYoQ_8fqwwtB9wHx0Ek";
+const char* V3_REPORT_NONCE = "8PHy8_T19vf4-fr7_P3-_w";
+const char* V3_REPORT_SIG = "6d8k-qDjeEel3TB7-xDhwkGYF1D-BS-6kgluFSCMBBk";
+
+std::string v3Envelope(std::uint64_t ts, const std::string& ct, const std::string& sig,
+                       int version = 3) {
+    return "{\"v\":" + std::to_string(version) + ",\"ts\":" + std::to_string(ts) +
+           ",\"iv\":\"" + IV + "\",\"ct\":\"" + ct + "\",\"sig\":\"" + sig + "\"}";
+}
+
+CommandGateResult openV3(CommandGate& gate, const std::string& frame, std::string& command,
+                         std::uint64_t nowMs = 0, const char* deviceId = DEVICE_ID) {
+    return gate.open(deviceId, EnvelopeBinding::deviceId, frame.data(), frame.size(),
+                     command, nowMs);
+}
+
+void v3_vector_opens_only_for_this_device_id() {
+    CommandGate gate = keyedGate();
+    std::string command;
+    TEST_ASSERT_EQUAL(CommandGateResult::opened,
+                      openV3(gate, v3Envelope(TS, V3_CT, V3_SIG), command));
+    TEST_ASSERT_EQUAL_STRING(V3_COMMAND, command.c_str());
+
+    CommandGate other = keyedGate();
+    // The device id is never case-folded, and another id never verifies.
+    TEST_ASSERT_EQUAL(CommandGateResult::badSignature,
+                      openV3(other, v3Envelope(TS, V3_CT, V3_SIG), command, 0,
+                             "78727DA905678F5EFF040A5E1F42DF7F"));
+    TEST_ASSERT_EQUAL(CommandGateResult::badSignature,
+                      openV3(other, v3Envelope(TS, V3_CT, V3_SIG), command, 0,
+                             "00727da905678f5eff040a5e1f42df7f"));
+}
+
+void envelope_versions_follow_the_sign_in() {
+    // A v2 sign-in takes only v3, a v1 sign-in only v2; the signed prefixes
+    // differ too, so relabelling the version does not help.
+    CommandGate gate = keyedGate();
+    std::string command;
+    TEST_ASSERT_EQUAL(CommandGateResult::malformed,
+                      openV3(gate, envelope(TS, IV, CT, SIG), command));
+    TEST_ASSERT_EQUAL(CommandGateResult::malformed,
+                      openText(gate, v3Envelope(TS, V3_CT, V3_SIG), command));
+    TEST_ASSERT_EQUAL(CommandGateResult::badSignature,
+                      openText(gate, v3Envelope(TS, V3_CT, V3_SIG, 2), command));
+    TEST_ASSERT_EQUAL(CommandGateResult::badSignature,
+                      openV3(gate, v3Envelope(TS, CT, SIG, 3), command, 0, MAC));
+}
+
+void a_burned_box_refuses_plain_json_without_a_key() {
+    CommandGate gate;
+    gate.requireSignatures(true);
+    std::string command;
+    TEST_ASSERT_EQUAL(CommandGateResult::unsignedRefused,
+                      gate.open(MAC, PLAINTEXT, std::strlen(PLAINTEXT), command));
+    TEST_ASSERT_TRUE(command.empty());
+    TEST_ASSERT_FALSE(commandGateAccepted(CommandGateResult::unsignedRefused));
+    TEST_ASSERT_TRUE(gate.setKey(COMMAND_KEY, std::strlen(COMMAND_KEY)));
+    TEST_ASSERT_EQUAL(CommandGateResult::opened,
+                      openV3(gate, v3Envelope(TS, V3_CT, V3_SIG), command));
+    gate.clearKey();
+    TEST_ASSERT_EQUAL(CommandGateResult::unsignedRefused,
+                      gate.open(MAC, PLAINTEXT, std::strlen(PLAINTEXT), command));
+}
+
+void a_new_sign_in_keeps_spent_commands_spent() {
+    CommandGate gate = keyedGate();
+    std::string command;
+    TEST_ASSERT_EQUAL(CommandGateResult::opened, openText(gate, signedAt(TS), command));
+    // Every sign-in hands the key over again; the ring must survive it.
+    TEST_ASSERT_TRUE(gate.setKey(COMMAND_KEY, std::strlen(COMMAND_KEY)));
+    TEST_ASSERT_EQUAL(CommandGateResult::replayed, openText(gate, signedAt(TS), command));
+    gate.clearKey();
+    TEST_ASSERT_TRUE(gate.setKey(COMMAND_KEY, std::strlen(COMMAND_KEY)));
+    TEST_ASSERT_EQUAL(CommandGateResult::replayed, openText(gate, signedAt(TS), command));
+}
+
+void replay_state_survives_a_reboot() {
+    CommandGate gate = keyedGate();
+    std::string command;
+    for (std::uint64_t step = 0; step < 3; ++step) {
+        TEST_ASSERT_EQUAL(CommandGateResult::opened,
+                          openText(gate, signedAt(TS + step), command));
+    }
+    std::uint8_t state[COMMAND_REPLAY_STATE_BYTES];
+    gate.exportReplayState(state);
+
+    // A fresh gate, as after a reboot, restored from storage.
+    CommandGate rebooted = keyedGate();
+    TEST_ASSERT_TRUE(rebooted.restoreReplayState(state, sizeof(state)));
+    TEST_ASSERT_EQUAL_UINT64(TS + 2, rebooted.lastTimestamp());
+    for (std::uint64_t step = 0; step < 3; ++step) {
+        TEST_ASSERT_EQUAL(CommandGateResult::replayed,
+                          openText(rebooted, signedAt(TS + step), command));
+    }
+    TEST_ASSERT_EQUAL(CommandGateResult::opened, openText(rebooted, signedAt(TS + 3), command));
+
+    // A corrupt record is refused and leaves the gate as it was.
+    CommandGate untouched = keyedGate();
+    std::uint8_t bad[COMMAND_REPLAY_STATE_BYTES];
+    std::memcpy(bad, state, sizeof(bad));
+    bad[8] = COMMAND_REPLAY_RING + 1;
+    TEST_ASSERT_FALSE(untouched.restoreReplayState(bad, sizeof(bad)));
+    std::memcpy(bad, state, sizeof(bad));
+    bad[9] = COMMAND_REPLAY_RING;
+    TEST_ASSERT_FALSE(untouched.restoreReplayState(bad, sizeof(bad)));
+    TEST_ASSERT_FALSE(untouched.restoreReplayState(state, sizeof(state) - 1));
+    TEST_ASSERT_FALSE(untouched.restoreReplayState(nullptr, sizeof(state)));
+    TEST_ASSERT_EQUAL_UINT64(0, untouched.lastTimestamp());
+    TEST_ASSERT_EQUAL(CommandGateResult::opened, openText(untouched, signedAt(TS), command));
+}
+
+void a_verified_clock_refuses_old_recordings() {
+    CommandGate gate = keyedGate();
+    std::string command;
+    const std::uint64_t now = TS + COMMAND_MAX_AGE_MS + 1;
+    TEST_ASSERT_EQUAL(CommandGateResult::stale,
+                      openV3(gate, v3Envelope(TS, V3_CT, V3_SIG), command, now));
+    TEST_ASSERT_TRUE(command.empty());
+    TEST_ASSERT_EQUAL_UINT64(0, gate.lastTimestamp());
+    // Within the window, or with no verified clock, it opens.
+    TEST_ASSERT_EQUAL(CommandGateResult::opened,
+                      openV3(gate, v3Envelope(TS, V3_CT, V3_SIG), command,
+                             TS + COMMAND_MAX_AGE_MS));
+    CommandGate unverified = keyedGate();
+    TEST_ASSERT_EQUAL(CommandGateResult::opened,
+                      openV3(unverified, v3Envelope(TS, V3_CT, V3_SIG), command, 0));
+}
+
+void v3_reports_seal_to_the_shared_vector() {
+    CommandGate gate = keyedGate();
+    std::uint8_t iv[COMMAND_IV_BYTES], nonce[REPORT_NONCE_BYTES];
+    for (std::size_t index = 0; index < sizeof(iv); ++index) {
+        iv[index] = static_cast<std::uint8_t>(index);
+        nonce[index] = static_cast<std::uint8_t>(0xf0 + index);
+    }
+    std::string sealed;
+    TEST_ASSERT_TRUE(gate.seal(DEVICE_ID, EnvelopeBinding::deviceId, ReportKind::state,
+                               REPORT_PLAINTEXT, TS, iv, nonce, sealed));
+    JsonDocument document;
+    TEST_ASSERT_FALSE(deserializeJson(document, sealed));
+    TEST_ASSERT_EQUAL_UINT32(7, document.as<JsonObjectConst>().size());
+    TEST_ASSERT_EQUAL_INT(3, document["v"].as<int>());
+    TEST_ASSERT_TRUE(document["ts"].as<std::uint64_t>() == TS);
+    TEST_ASSERT_EQUAL_STRING("state", document["k"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(V3_REPORT_NONCE, document["n"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(IV, document["iv"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(REPORT_CT, document["ct"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(V3_REPORT_SIG, document["sig"].as<const char*>());
+
+    // The kind is signed: a log seals to a different signature.
+    std::string log;
+    TEST_ASSERT_TRUE(gate.seal(DEVICE_ID, EnvelopeBinding::deviceId, ReportKind::log,
+                               REPORT_PLAINTEXT, TS, iv, nonce, log));
+    JsonDocument logDocument;
+    TEST_ASSERT_FALSE(deserializeJson(logDocument, log));
+    TEST_ASSERT_EQUAL_STRING("log", logDocument["k"].as<const char*>());
+    TEST_ASSERT_TRUE(std::strcmp(V3_REPORT_SIG, logDocument["sig"].as<const char*>()) != 0);
+}
+
 void sealing_needs_a_key_and_a_clock() {
     CommandGate gate;
     std::uint8_t iv[COMMAND_IV_BYTES] = {};
@@ -413,5 +577,12 @@ int main() {
     RUN_TEST(reports_seal_to_the_shared_vector);
     RUN_TEST(a_sealed_report_never_opens_as_a_command);
     RUN_TEST(sealing_needs_a_key_and_a_clock);
+    RUN_TEST(v3_vector_opens_only_for_this_device_id);
+    RUN_TEST(envelope_versions_follow_the_sign_in);
+    RUN_TEST(a_burned_box_refuses_plain_json_without_a_key);
+    RUN_TEST(a_new_sign_in_keeps_spent_commands_spent);
+    RUN_TEST(replay_state_survives_a_reboot);
+    RUN_TEST(a_verified_clock_refuses_old_recordings);
+    RUN_TEST(v3_reports_seal_to_the_shared_vector);
     return UNITY_END();
 }

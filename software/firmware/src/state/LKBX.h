@@ -1105,9 +1105,15 @@ class LKBX {
 
         String msg = createStateMessage(message, true, sessionId);
 
-        String topic = getMacAddresss();
+        const String topic = cloudTopic();
         // The tracker keeps the plain report, so each retry is sealed afresh.
-        const String sealed = sealCloudReport(topic.c_str(), msg);
+        const String sealed = sealCloudReport(
+            topic.c_str(), lockbox::security::ReportKind::state, msg);
+        if (sealed.isEmpty()) {
+            // Never sent in plain JSON; a LOCKED report retries once it seals.
+            if (isLockedReport) lockedReport::tracker.onReport(-1, millis(), msg.c_str());
+            return;
+        }
 
         int result = esp_mqtt_client_enqueue(client, topic.c_str(), sealed.c_str(),
                                              0, 2, false, true);
@@ -1131,15 +1137,14 @@ class LKBX {
             sm->visit_current_states(
                 [&](auto state) { currentState = state.c_str(); });
         }
-        const String mac = getMacAddresss();
-        String msg = sealCloudReport(mac.c_str(),
-                                     createActivityLogMessage(message, currentState));
+        const String topic = cloudTopic();
+        const String msg = sealCloudReport(
+            topic.c_str(), lockbox::security::ReportKind::log,
+            createActivityLogMessage(message, currentState));
+        if (msg.isEmpty()) return;
 
-        char topic[24];
-        snprintf(topic, sizeof(topic), "%s%s", getMacAddresss().c_str(),
-                 Str::Protocol::LOG_TOPIC_SUFFIX);
-
-        int result = esp_mqtt_client_enqueue(client, topic, msg.c_str(), 0, 2,
+        const String logTopic = topic + Str::Protocol::LOG_TOPIC_SUFFIX;
+        int result = esp_mqtt_client_enqueue(client, logTopic.c_str(), msg.c_str(), 0, 2,
                                              false, true);
 
         ESP_LOGD(MQTT_TAG, "Message enqueue result: %d", result);
@@ -1180,8 +1185,13 @@ class LKBX {
         if (payload.empty()) {
             payload = createStateMessage(Str::Protocol::LOCKED, true, "").c_str();
         }
-        String topic = getMacAddresss();
-        const String sealed = sealCloudReport(topic.c_str(), String(payload.c_str()));
+        const String topic = cloudTopic();
+        const String sealed = sealCloudReport(
+            topic.c_str(), lockbox::security::ReportKind::state, String(payload.c_str()));
+        if (sealed.isEmpty()) {
+            lockedReport::tracker.onRetry(-1, millis(), payload);
+            return;
+        }
         int result = esp_mqtt_client_enqueue(client, topic.c_str(),
                                              sealed.c_str(), 0, 2, false, true);
         lockedReport::tracker.onRetry(result, millis(), payload);
