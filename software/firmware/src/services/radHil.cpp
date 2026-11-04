@@ -227,7 +227,9 @@ void radHilStart() {
     WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t) {
         disconnects.fetch_add(1, std::memory_order_relaxed);
     }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-    if (xTaskCreate(observeTask, "radHil", 10240, nullptr, 1, nullptr) != pdPASS) {
+    // Peak use, HTTPS probe included, is about 3.5 KB on hardware. The observer
+    // must not take the internal RAM the firmware under test needs at boot.
+    if (xTaskCreate(observeTask, "radHil", 6144, nullptr, 1, nullptr) != pdPASS) {
         emitHealth( "RAD_HEALTH observer task creation failed\n");
     }
 }

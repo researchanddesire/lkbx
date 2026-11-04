@@ -523,11 +523,18 @@ class LKBX {
             auto syncLockStateOnBoot = [](LKBX &o) {
                 ESP_LOGD(TASKDEBUG_TAG,
                          "Creating sync lock state on boot task");
-                xTaskCreatePinnedToCore(
-                    o.syncLockStateOnBootTask, Tasks::syncLockState.name,
-                    Tasks::syncLockState.stackSize, &o,
-                    Tasks::syncLockState.priority, &TaskHandles::syncLockState,
-                    Tasks::syncLockState.core);
+                if (xTaskCreatePinnedToCore(
+                        o.syncLockStateOnBootTask, Tasks::syncLockState.name,
+                        Tasks::syncLockState.stackSize, &o,
+                        Tasks::syncLockState.priority,
+                        &TaskHandles::syncLockState,
+                        Tasks::syncLockState.core) != pdPASS) {
+                    // No memory for the task: carry on as after a failed pull,
+                    // through the delay task, instead of waiting here forever.
+                    ESP_LOGE(TASKDEBUG_TAG, "Could not start the boot sync");
+                    bootHttpDone = true;
+                    delayTimeout = 1000;
+                }
             };
 
             // Synchronously sync the clock during boot when it's unset and

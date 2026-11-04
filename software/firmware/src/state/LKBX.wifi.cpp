@@ -336,6 +336,8 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     constexpr uint32_t AUTH_RATE_LIMITED_RETRY_MS = 30000;
     constexpr uint32_t MQTT_CONNECT_TIMEOUT_MS = 30000;
     constexpr uint32_t MQTT_POLL_MS = 500;
+    constexpr int MQTT_START_ATTEMPTS = 10;
+    constexpr uint32_t MQTT_START_RETRY_MS = 2000;
 
     bool bootPending = true;
     const bool returningDevice = hasFinishedOnboarding();
@@ -417,17 +419,30 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     mqtt_cfg.lwt_qos = 2;
     mqtt_cfg.lwt_retain = true;
     mqtt_cfg.keepalive = 15;
-    mqtt_cfg.buffer_size = 4096;
+    // Above SPIRAM_MALLOC_ALWAYSINTERNAL (4096), so both message buffers come
+    // from PSRAM and leave internal RAM for the client task stack and TLS.
+    mqtt_cfg.buffer_size = 8 * 1024;
     mqtt_cfg.cert_pem = root_ca;
-    // Commands are opened (signature check, decryption, JSON) on the MQTT
-    // task. The 6 KB default overflowed once a box held a command key.
-    mqtt_cfg.task_stack = 12 * 1024;
+    // Commands are opened (signature check, decryption, JSON) and reports
+    // sealed on the MQTT task: the 6 KB default overflowed once a box held a
+    // command key. The stack comes from internal RAM, which TLS and AES DMA
+    // also need; 12 KB left none at boot on staging hardware.
+    mqtt_cfg.task_stack = 10 * 1024;
 
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
-    if (!mqttClient ||
+    bool mqttStarted = false;
+    if (mqttClient &&
         esp_mqtt_client_register_event(mqttClient, MQTT_EVENT_ANY,
-                                      mqtt_event_handler, nullptr) != ESP_OK ||
-        esp_mqtt_client_start(mqttClient) != ESP_OK) {
+                                       mqtt_event_handler, nullptr) == ESP_OK) {
+        // The client task needs one contiguous block of internal RAM, which
+        // boot-time HTTPS can hold for a few seconds. Wait for it rather than
+        // staying off the broker until the next boot.
+        for (int attempt = 0; attempt < MQTT_START_ATTEMPTS && !mqttStarted; ++attempt) {
+            mqttStarted = esp_mqtt_client_start(mqttClient) == ESP_OK;
+            if (!mqttStarted) vTaskDelay(MQTT_START_RETRY_MS / portTICK_PERIOD_MS);
+        }
+    }
+    if (!mqttStarted) {
         if (mqttClient) esp_mqtt_client_destroy(mqttClient);
         mqttClient = nullptr;
         plkbx->sm->process_event(Error{.error = ErrorT::MQTT_AUTH_FAILED});
