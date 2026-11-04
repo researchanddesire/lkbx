@@ -26,6 +26,7 @@
 - `publish_firmware.yml` runs on firmware-input pushes to `main`: it allocates the next version, commits `AUTO: Version bump main <version>` as `rad-version-control[bot]`, builds R2 and R8, and publishes immutable *validating* candidates with signed provenance. Do not hand-edit `software/firmware/src/constants/Version.h` to release.
 - `finalize_release.yml` (manual, production) tags a main release only after the control plane reports both variants ready with build, unit, integration, artifact and hardware validations passed. Rollout stays a control-plane action.
 - Environments: `firmware-staging` (branch `staging`) and `firmware-production` (branch `main`), each holding `FIRMWARE_PUBLISH_TOKEN` and `FIRMWARE_PROVENANCE_SIGNING_KEY_PEM`. The `rad-version-control` app credentials are organization-level. Never print, log or commit secret values.
+- `.github/scripts/firmware_provenance_test_vector.json` is signed by a throwaway key (kid `rd-fw-test-vector-2026-11-04`, private half destroyed), never a release key. Tests trust its `publicKeyPem` explicitly; the release trust maps in the scripts and `FirmwareProvenance.h` must never list it. To change the claims, sign a new vector with a new throwaway key. Never sign test data with a release key.
 
 ## Supabase
 
