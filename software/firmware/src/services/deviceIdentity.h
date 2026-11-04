@@ -11,9 +11,9 @@
 // Never log the returned value.
 String deviceSecretForRequest();
 
-// Applies the commandKey from a valid /auth 200 response. A response without
-// one withdraws any stored key, so the server can turn command signing off,
-// except on a box with a burned key, which keeps its key and stays signed.
+// Applies the commandKey from a valid /auth 200 response. A new key replaces
+// the stored one. A response without one changes nothing: once a box has held
+// a key (or has a burned one) it never accepts plain commands again.
 void applyAuthCommandKey(const String& commandKey);
 
 // Copies the command received on `topic` into `command`. A "v2/<device id>"
@@ -26,10 +26,10 @@ bool openCloudCommand(const char* topic, const char* frame, size_t size,
 
 // Seals a state report or activity log for `topic` (r3 with its kind and a
 // nonce on a v2 topic, r2 on the MAC topic), so other broker clients can
-// neither read nor forge it. A box without a key and without a burned one
-// sends the report unchanged. Returns empty when a report must not be sent:
-// a box with a burned key never reports in plain JSON. Call only on a
-// trusted clock.
+// neither read nor forge it. A box that never held a key and has no burned
+// one sends the report unchanged. Returns empty when a report must not be
+// sent: a box that signs never reports in plain JSON, and nothing is sent
+// before the stored key has loaded. Call only on a trusted clock.
 String sealCloudReport(const char* topic, lockbox::security::ReportKind kind,
                        const String& report);
 
