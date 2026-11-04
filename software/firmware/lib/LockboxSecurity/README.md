@@ -34,7 +34,7 @@ is an HMAC that the chip computes internally.
 
 | Step | Request | Outcome |
 |------|---------|---------|
-| Pre-auth, only while no key is burned | `POST /api/lockbox/v2/provision` with `mac`, `chip`, `md5`, `device`, `version`, the v1 `deviceSecret` and any previous `failureCode` | 201 `{deviceKey}`: burn now. 409 or 403: never ask again (stored in `identity/v2Refused`). 429: wait 24 hours (`identity/v2RetryAt`). Anything else: try on a later boot |
+| Pre-auth, only while no key is burned | `POST /api/lockbox/v2/provision` with `mac`, `chip`, `md5`, `device`, `version`, the v1 `deviceSecret` and any previous `failureCode` | 201 `{deviceKey}`: burn now. 409 or 403: never ask again (stored in `identity/v2Refused`). 429: wait an hour, the dashboard's window (`identity/v2RetryAt`). 428 (a new box, not enrolled yet): sign in with v1, which enrolls it, then ask once more in the same boot and, once the key is burned, sign in again with v2 before connecting. Anything else: try on a later boot. The request has 20 s, sign-in 15 s |
 | Sign-in | `POST /api/lockbox/v2/auth` with `deviceToken` = base64url HMAC-SHA256 of `lkbx-device-token-v2` | The v1 response shape plus `deviceId`, which must be this chip's, and a required `commandKey`. Only a 404 or a 401 `unknown_device` falls back to `/api/lockbox/auth` for that boot; an outage, a rate limit or any other refusal is retried on v2 |
 | Pairing status | `POST /api/lockbox/v2/is-paired` with `deviceToken` | 200 paired (it must name this chip's `deviceId`, or its MAC when the dashboard sends no `deviceId`), 418 not paired |
 | State | `GET /api/lockbox/v2/state` with header `x-lkbx-device-token` | The v1 state payload |

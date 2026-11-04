@@ -375,7 +375,8 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     // Pre-auth: a chip without its v2 key asks for one and burns it. Any
     // failure leaves the device signing in with v1. Only first setup shows
     // E-LOCK-999; an onboarded device carries on as before.
-    if (prepareDeviceKey() == DeviceKeyOutcome::failed && !returningDevice) {
+    const DeviceKeyOutcome keyOutcome = prepareDeviceKey();
+    if (keyOutcome == DeviceKeyOutcome::failed && !returningDevice) {
         plkbx->sm->process_event(Error{.error = ErrorT::DEVICE_KEY_FAILED});
         TaskHandles::mqttConnect = nullptr;
         vTaskDelete(nullptr);
@@ -422,6 +423,28 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
         // Wait out the dashboard's rate-limit window before trying again.
         if (response.rateLimited) {
             vTaskDelay(AUTH_RATE_LIMITED_RETRY_MS / portTICK_PERIOD_MS);
+        }
+    }
+
+    // A new box is asked to sign in first: that v1 sign-in enrolled its
+    // secret, so it asks once more now and, once the key is burned, signs in
+    // again with v2 before it connects. Any failure keeps the v1 sign-in for
+    // this boot; the next boot signs in with the burned key.
+    if (keyOutcome == DeviceKeyOutcome::afterSignIn) {
+        const DeviceKeyOutcome second = prepareDeviceKey();
+        if (second == DeviceKeyOutcome::ready) {
+            AuthResponse signedIn = getAuthToken();
+            if (signedIn.valid) {
+                response = signedIn;
+            } else {
+                ESP_LOGW(MQTT_CONNECT_TAG,
+                         "v2 sign-in after the key burn failed; v1 for this boot");
+            }
+        } else if (second == DeviceKeyOutcome::failed && !returningDevice) {
+            plkbx->sm->process_event(Error{.error = ErrorT::DEVICE_KEY_FAILED});
+            TaskHandles::mqttConnect = nullptr;
+            vTaskDelete(nullptr);
+            return;
         }
     }
 

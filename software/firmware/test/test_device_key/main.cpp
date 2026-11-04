@@ -77,6 +77,8 @@ void test_answers() {
     TEST_ASSERT_TRUE(provisionAnswer(409) == ProvisionAnswer::neverAgain);
     TEST_ASSERT_TRUE(provisionAnswer(403) == ProvisionAnswer::neverAgain);
     TEST_ASSERT_TRUE(provisionAnswer(429) == ProvisionAnswer::retryLater);
+    // A new box: sign in with v1, which enrolls it, and ask again.
+    TEST_ASSERT_TRUE(provisionAnswer(428) == ProvisionAnswer::afterSignIn);
     // An older dashboard without v2, a server error, or no response at all.
     TEST_ASSERT_TRUE(provisionAnswer(404) == ProvisionAnswer::nextBoot);
     TEST_ASSERT_TRUE(provisionAnswer(503) == ProvisionAnswer::nextBoot);
@@ -91,6 +93,8 @@ void test_asks_once_until_answered() {
     TEST_ASSERT_FALSE(mayRequestDeviceKey(false, 2000, 1999, true));
     TEST_ASSERT_TRUE(mayRequestDeviceKey(false, 2000, 2000, true));
     TEST_ASSERT_FALSE(mayRequestDeviceKey(false, 2000, 5000, false));
+    // The dashboard's window is an hour, not a day.
+    TEST_ASSERT_EQUAL_UINT64(3600000ULL, PROVISION_RETRY_MS);
 }
 
 void test_device_id_matches_the_dashboard() {
