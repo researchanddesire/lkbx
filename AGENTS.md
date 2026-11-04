@@ -212,6 +212,7 @@ On first boot, the motor calibration routine auto-detects:
 - QoS 2, TLS on port 8883 (prod), plain on 1883 (dev)
 - Messages: "locked", "unlocked", "disconnected", "break", "emergency"
 - Commands are `sync` and `reboot` only. Never re-add a command that moves the motor directly.
+- A `sync` with `clear: true` unlocks only when its `sessionId` is the session the device holds (`utils/serverClear.h`); a clear for another session is ignored. A clear without a `sessionId` comes from a dashboard older than rad-app's 2026-11-04 fix: the device pulls its state over HTTPS (`confirmServerClear`) and unlocks only if the dashboard reports no active session. The HTTPS state route's own `clear` stays authoritative.
 
 **Device identity (`software/firmware/lib/LockboxSecurity/README.md`):**
 - `services/deviceIdentity` owns the device secret and command key (NVS namespace `identity`). Never log either value. The secret goes only to the configured RAD server, and is withheld while the running OTA image is pending verification.
