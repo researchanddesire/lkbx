@@ -14,6 +14,7 @@
 #include "../services/serverOnline.h"
 #include "../services/tasks.h"
 #include "../services/wm.h"
+#include "services/deviceIdentity.h"
 #include "../utils/RecusiveMutex.h"
 #include "../utils/StateLogger.h"
 #include "../utils/clockCorrection.h"
@@ -242,6 +243,14 @@ class LKBX {
                              Str::Url::DOCS_SIGN_IN_FAILED_ERROR,
                              Str::Label::HELP, {Str::Action::SKIP},
                              {Str::Action::RETRY});
+            };
+
+            auto drawDeviceKeyFailedQR = [](LKBX &o) {
+                o.drawQRCode(Str::Screen::DEVICE_KEY_FAILED_TITLE,
+                             Str::Screen::DEVICE_KEY_FAILED_DESC,
+                             Str::Url::DOCS_DEVICE_KEY_ERROR,
+                             Str::Label::HELP, {Str::Action::BACK},
+                             {Str::Action::CONTINUE});
             };
 
             auto drawWelcomeQR = [](LKBX &o) {
@@ -514,11 +523,18 @@ class LKBX {
             auto syncLockStateOnBoot = [](LKBX &o) {
                 ESP_LOGD(TASKDEBUG_TAG,
                          "Creating sync lock state on boot task");
-                xTaskCreatePinnedToCore(
-                    o.syncLockStateOnBootTask, Tasks::syncLockState.name,
-                    Tasks::syncLockState.stackSize, &o,
-                    Tasks::syncLockState.priority, &TaskHandles::syncLockState,
-                    Tasks::syncLockState.core);
+                if (xTaskCreatePinnedToCore(
+                        o.syncLockStateOnBootTask, Tasks::syncLockState.name,
+                        Tasks::syncLockState.stackSize, &o,
+                        Tasks::syncLockState.priority,
+                        &TaskHandles::syncLockState,
+                        Tasks::syncLockState.core) != pdPASS) {
+                    // No memory for the task: carry on as after a failed pull,
+                    // through the delay task, instead of waiting here forever.
+                    ESP_LOGE(TASKDEBUG_TAG, "Could not start the boot sync");
+                    bootHttpDone = true;
+                    delayTimeout = 1000;
+                }
             };
 
             // Synchronously sync the clock during boot when it's unset and
@@ -639,6 +655,7 @@ class LKBX {
                 "init.preflight.mqttConnecting"_s + error[hasFinishedOnboarding && isMqttConnectionError] = "init.preflight.pairingCheck"_s,
                 "init.preflight.mqttConnecting"_s + error[isError(ErrorT::AUTH_RATE_LIMITED)] = "init.preflight.authRateLimited"_s,
                 "init.preflight.mqttConnecting"_s + error[isError(ErrorT::DASHBOARD_SIGN_IN_FAILED)] = "init.preflight.signInFailed"_s,
+                "init.preflight.mqttConnecting"_s + error[isError(ErrorT::DEVICE_KEY_FAILED)] = "init.preflight.deviceKeyFailed"_s,
                 "init.preflight.mqttConnecting"_s + error[isMqttConnectionError] = "init.preflight.mqttError"_s,
 
                 "init.preflight.authRateLimited"_s + on_entry<_> / (pauseLoadingAnimation, drawAuthRateLimitedQR),
@@ -648,6 +665,13 @@ class LKBX {
                 "init.preflight.signInFailed"_s + on_entry<_> / (pauseLoadingAnimation, drawSignInFailedQR),
                 "init.preflight.signInFailed"_s + buttonPress = "init.preflight.mqttConnecting"_s,
                 "init.preflight.signInFailed"_s + backPress = "init.preflight.wifiCheck"_s,
+
+                // E-LOCK-999, first setup only: the key could not be stored.
+                // Continuing signs in with v1; the key is not requested again
+                // this boot.
+                "init.preflight.deviceKeyFailed"_s + on_entry<_> / (pauseLoadingAnimation, drawDeviceKeyFailedQR),
+                "init.preflight.deviceKeyFailed"_s + buttonPress = "init.preflight.mqttConnecting"_s,
+                "init.preflight.deviceKeyFailed"_s + backPress = "init.preflight.wifiCheck"_s,
 
                 "init.preflight.mqttError"_s + on_entry<_> / (pauseLoadingAnimation, drawMqttErrorQR),
                 "init.preflight.mqttError"_s + buttonPress = "init.preflight.mqttConnecting"_s,
@@ -1081,11 +1105,11 @@ class LKBX {
 
         String msg = createStateMessage(message, true, sessionId);
 
-
-
         String topic = getMacAddresss();
+        // The tracker keeps the plain report, so each retry is sealed afresh.
+        const String sealed = sealCloudReport(topic.c_str(), msg);
 
-        int result = esp_mqtt_client_enqueue(client, topic.c_str(), msg.c_str(),
+        int result = esp_mqtt_client_enqueue(client, topic.c_str(), sealed.c_str(),
                                              0, 2, false, true);
         if (isLockedReport) {
             lockedReport::tracker.onReport(result, millis(), msg.c_str());
@@ -1107,9 +1131,9 @@ class LKBX {
             sm->visit_current_states(
                 [&](auto state) { currentState = state.c_str(); });
         }
-        String msg = createActivityLogMessage(message, currentState);
-
-
+        const String mac = getMacAddresss();
+        String msg = sealCloudReport(mac.c_str(),
+                                     createActivityLogMessage(message, currentState));
 
         char topic[24];
         snprintf(topic, sizeof(topic), "%s%s", getMacAddresss().c_str(),
@@ -1157,8 +1181,9 @@ class LKBX {
             payload = createStateMessage(Str::Protocol::LOCKED, true, "").c_str();
         }
         String topic = getMacAddresss();
+        const String sealed = sealCloudReport(topic.c_str(), String(payload.c_str()));
         int result = esp_mqtt_client_enqueue(client, topic.c_str(),
-                                             payload.c_str(), 0, 2, false, true);
+                                             sealed.c_str(), 0, 2, false, true);
         lockedReport::tracker.onRetry(result, millis(), payload);
         ESP_LOGW(MQTT_TAG, "LOCKED report unconfirmed, resent (%u/%u), id %d",
                  static_cast<unsigned>(lockedReport::tracker.attemptCount()),

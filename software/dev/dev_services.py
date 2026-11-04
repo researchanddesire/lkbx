@@ -294,7 +294,7 @@ def _configure_locked(root: Path, lan_ip: str | None, device_ids: list[str] | No
 
 
 def should_start_services(profile: str, targets: set[str], ci: bool = False) -> bool:
-    return not ci and profile in {"development-r2", "development-r8"} and bool(targets & {"upload", "test", "__test"})
+    return not ci and profile in {"development-r2", "development-r8", "development-r8-virtual-efuse"} and bool(targets & {"upload", "test", "__test"})
 
 
 def loopback_get(port: int, path: str, timeout: float) -> tuple[int, bytes]:

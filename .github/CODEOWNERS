@@ -1,0 +1,4 @@
+# Workflows and the rig harness run with organization secrets and on the shared
+# Test Rig. Changes to them need a maintainer's review.
+/.github/ @AJ-Koenig
+/software/scripts/hil/ @AJ-Koenig

@@ -319,7 +319,7 @@ class ConfigurationTests(unittest.TestCase):
 
 
     def test_service_start_requires_development_device_target(self):
-        for profile in ("development-r2", "development-r8"):
+        for profile in ("development-r2", "development-r8", "development-r8-virtual-efuse"):
             self.assertFalse(local.should_start_services(profile, set()))
             self.assertFalse(local.should_start_services(profile, {"buildprog"}))
             self.assertTrue(local.should_start_services(profile, {"upload"}))
@@ -432,7 +432,7 @@ class ConfigurationTests(unittest.TestCase):
         parser = configparser.ConfigParser(interpolation=None)
         parser.read(FIRMWARE / "platformio.ini")
         self.assertEqual({section for section in parser.sections() if section.startswith("env:")},
-                         {"env:development-r2", "env:development-r8", "env:production-r2", "env:production-r8", "env:staging-r2", "env:staging-r8", "env:test", "env:test_native"})
+                         {"env:development-r2", "env:development-r8", "env:development-r8-virtual-efuse", "env:production-r2", "env:production-r8", "env:staging-r2", "env:staging-r8", "env:test", "env:test_native"})
         for section in parser.sections():
             self.assertFalse(parser.has_option(section, "targets"))
         self.assertIn(".dev/", (REPOSITORY / ".gitignore").read_text())

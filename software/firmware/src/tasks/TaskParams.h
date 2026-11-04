@@ -37,7 +37,8 @@ namespace Tasks {
 
     constexpr TaskParams activityLog = {
         .name = "activityLogTask",
-        .stackSize = 6 * configMINIMAL_STACK_SIZE,
+        // Sealing a log for a box with a command key peaked at 3.75 KB.
+        .stackSize = 8 * configMINIMAL_STACK_SIZE,
         .priority = 1,
         .core = 0,
     };
@@ -61,7 +62,9 @@ namespace Tasks {
 
     constexpr TaskParams httpWorker = {
         .name = "httpWorker",
-        .stackSize = 16 * configMINIMAL_STACK_SIZE,
+        // Measured peak on staging hardware is about 3 KB. Internal RAM is
+        // short at boot, so keep this close to need.
+        .stackSize = 10 * configMINIMAL_STACK_SIZE,
         .priority = 1,
         .core = 0,
     };
@@ -215,7 +218,7 @@ namespace Tasks {
 
     constexpr TaskParams syncLockState = {
         .name = "syncLockState",
-        .stackSize = 6 * configMINIMAL_STACK_SIZE,
+        .stackSize = 10 * configMINIMAL_STACK_SIZE,  // The v2 state payload parse overflowed 6x.
         .priority = 1,
         .core = 1,
     };
@@ -236,7 +239,7 @@ namespace Tasks {
 
     constexpr TaskParams mqttConnect = {
         .name = "mqttConnect",
-        .stackSize = 8 * configMINIMAL_STACK_SIZE,
+        .stackSize = 10 * configMINIMAL_STACK_SIZE,  // Pre-auth key request and v1/v2 sign-in.
         .priority = 1,
         .core = 0,
     };

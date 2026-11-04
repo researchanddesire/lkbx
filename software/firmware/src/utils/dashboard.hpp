@@ -8,6 +8,7 @@
 #include "CloudInput.h"
 
 #include "constants/LogTags.h"
+#include "constants/Version.h"
 #include "constants/dashboard.h"
 #include "constants/strings.h"
 #include "getEfuseMac.h"
@@ -34,15 +35,20 @@ struct AuthResponse {
 static PairingStatus getPairingStatus(int timeoutMs = 5000) {
     String deviceId = getMacAddresss();
     JsonDocument doc;
-    doc[Str::Json::MAC_ADDRESS] = deviceId;
-    const String deviceSecret = deviceSecretForRequest();
-    if (deviceSecret.length() > 0) doc[Str::Json::DEVICE_SECRET] = deviceSecret;
+    String url = String(RAD_SERVER) + Str::Api::LOCKBOX_IS_PAIRED;
+    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
+    if (token.length() > 0) {
+        doc[Str::Json::DEVICE_TOKEN] = token;
+        url = String(RAD_SERVER) + Str::Api::LOCKBOX_V2_IS_PAIRED;
+    } else {
+        doc[Str::Json::MAC_ADDRESS] = deviceId;
+        const String deviceSecret = deviceSecretForRequest();
+        if (deviceSecret.length() > 0) doc[Str::Json::DEVICE_SECRET] = deviceSecret;
+    }
 
     String payload;
 
-    int httpResponseCode =
-        post(String(RAD_SERVER) + Str::Api::LOCKBOX_IS_PAIRED, doc, &payload,
-             timeoutMs);
+    int httpResponseCode = post(url, doc, &payload, timeoutMs);
     const PairingStatus status = pairingStatusFromHttp(httpResponseCode);
     if (status != PairingStatus::Paired)
         return status;
@@ -72,27 +78,41 @@ static void populateAuthRequest(JsonDocument& doc) {
 // Web must deploy this additive purpose before the firmware rollout. The early
 // branch changes only an existing unowned device's code/expiry: it does not
 // register firmware, count boots or allocate/reconfigure broker credentials.
+// The v2 sign-in names the device only by its eFuse token, never its MAC.
+static void populateV2AuthRequest(JsonDocument& doc, const String& token) {
+    doc[Str::Json::DEVICE_TOKEN] = token;
+    doc[Str::Json::CHIP] = ESP.getChipModel();
+    doc[Str::Json::MD5] = ESP.getSketchMD5();
+    doc[Str::Json::DEVICE] = Str::Api::DEVICE_NAME;
+    doc[Str::Json::VERSION_KEY] = VERSION;
+}
+
 static lockbox::security::PairingRefreshResponse getPairingCodeRefresh(int timeoutMs = 3000) {
     JsonDocument request;
-    populateAuthRequest(request);
+    String url = RAD_AUTH;
+    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
+    if (token.length() > 0) {
+        populateV2AuthRequest(request, token);
+        url = String(RAD_SERVER) + Str::Api::LOCKBOX_V2_AUTH;
+    } else {
+        populateAuthRequest(request);
+    }
     request["purpose"] = "pairing_refresh";
     String payload;
-    if (post(RAD_AUTH, request, &payload, timeoutMs) != 200) return {};
+    if (post(url, request, &payload, timeoutMs) != 200) return {};
     JsonDocument response;
     if (deserializeJson(response, payload)) return {};
     return lockbox::security::pairingRefreshResponse(response.as<JsonVariantConst>());
 }
 
-// Request device-scoped runtime broker credentials from the configured API.
-static AuthResponse getAuthToken(int timeoutMs = 5000) {
-    JsonDocument doc;
-    populateAuthRequest(doc);
-
+// Sends one sign-in request. v1 and v2 answer with the same response shape.
+static AuthResponse requestSignIn(const String& url, const JsonDocument& doc,
+                                  int timeoutMs) {
     String requestBody;
     serializeJson(doc, requestBody);
 
     String payload;
-    int httpResponseCode = post(RAD_AUTH, requestBody, &payload, timeoutMs);
+    int httpResponseCode = post(url, requestBody, &payload, timeoutMs);
 
     ESP_LOGD(UTILS_TAG, "HTTP Response code: %d", httpResponseCode);
 
@@ -154,6 +174,28 @@ static AuthResponse getAuthToken(int timeoutMs = 5000) {
             .pairingStatusKnown = response[Str::Json::IS_PAIRED].is<bool>(),
             .valid = true,
             .commandKey = response[Str::Json::COMMAND_KEY] | ""};
+}
+
+// Request device-scoped runtime broker credentials from the configured API. A
+// chip with a burned key signs in with its token. An older dashboard (404), an
+// unknown token (401) or an outage falls back to v1 for this boot.
+static AuthResponse getAuthToken(int timeoutMs = 5000) {
+    const String token = deviceTokenForRequest();
+    if (token.length() > 0) {
+        JsonDocument doc;
+        populateV2AuthRequest(doc, token);
+        AuthResponse signedIn = requestSignIn(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_V2_AUTH, doc, timeoutMs);
+        if (signedIn.valid || signedIn.rateLimited) {
+            noteSignIn(signedIn.valid);
+            return signedIn;
+        }
+        ESP_LOGW(UTILS_TAG, "v2 sign-in unavailable, signing in with v1");
+    }
+    noteSignIn(false);
+    JsonDocument doc;
+    populateAuthRequest(doc);
+    return requestSignIn(RAD_AUTH, doc, timeoutMs);
 }
 
 #endif  // LOCKBOX_DASHBOARD_HPP
