@@ -223,6 +223,13 @@ namespace Tasks {
         .core = 1,
     };
 
+    constexpr TaskParams confirmClear = {
+        .name = "confirmClear",
+        .stackSize = 10 * configMINIMAL_STACK_SIZE,  // Same state pull as syncLockState.
+        .priority = 1,
+        .core = 1,
+    };
+
     constexpr TaskParams syncClock = {
         .name = "syncClock",
         .stackSize = 6 * configMINIMAL_STACK_SIZE,
@@ -292,6 +299,7 @@ namespace TaskHandles {
     extern TaskHandle_t pairingCheck;
     extern TaskHandle_t pairingPoll;
     extern TaskHandle_t syncLockState;
+    extern TaskHandle_t confirmClear;
     extern TaskHandle_t syncClock;
     extern TaskHandle_t wifiConnect;
     extern TaskHandle_t mqttConnect;

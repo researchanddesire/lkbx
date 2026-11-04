@@ -44,6 +44,36 @@ namespace {
         xSemaphoreGive(preferencesMutex);
     }
 
+    // Apply what a state pull changed. Reconciliation is idempotent: an
+    // unchanged session comes back as NONE/TIMER_META and emits nothing, so a
+    // flapping link can never replay the locking sequence.
+    void applyReconciledEffect(LKBX *plkbx, SyncEffect effect) {
+        switch (effect) {
+            case SyncEffect::OFFER:
+                plkbx->sm->process_event(LockOffered{});
+                break;
+            case SyncEffect::TIMER_META:
+                plkbx->sm->process_event(FreezeChange{});
+                break;
+            case SyncEffect::MOTOR_LOCK:
+                // A genuine new session resumed after a reconnect still
+                // re-runs preflight; an already accepted lock never gets
+                // here (it is classified NONE/TIMER_META).
+                if (isLockedTimer()) plkbx->sm->process_event(LockTimer{});
+                else plkbx->sm->process_event(Lock{});
+                break;
+            case SyncEffect::MOTOR_UNLOCK:
+                plkbx->sm->process_event(Unlock{});
+                break;
+            case SyncEffect::BREAK:
+                plkbx->sm->process_event(Break{});
+                break;
+            case SyncEffect::NONE:
+            default:
+                break;
+        }
+    }
+
 }  // namespace
 
 void LKBX::checkWifiTask(void *pvParameters) {
@@ -475,33 +505,7 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
             ESP_LOGI(MQTT_CONNECT_TAG, "Reconciled: result=%d effect=%d",
                      static_cast<int>(reconciled),
                      static_cast<int>(outcome.effect));
-            // Reconnect reconciliation is idempotent: an unchanged session comes
-            // back as NONE/TIMER_META and emits nothing, so a flapping link can
-            // never replay the locking sequence.
-            switch (outcome.effect) {
-                case SyncEffect::OFFER:
-                    plkbx->sm->process_event(LockOffered{});
-                    break;
-                case SyncEffect::TIMER_META:
-                    plkbx->sm->process_event(FreezeChange{});
-                    break;
-                case SyncEffect::MOTOR_LOCK:
-                    // A genuine new session resumed after a reconnect still
-                    // re-runs preflight; an already accepted lock never gets
-                    // here (it is classified NONE/TIMER_META).
-                    if (isLockedTimer()) plkbx->sm->process_event(LockTimer{});
-                    else plkbx->sm->process_event(Lock{});
-                    break;
-                case SyncEffect::MOTOR_UNLOCK:
-                    plkbx->sm->process_event(Unlock{});
-                    break;
-                case SyncEffect::BREAK:
-                    plkbx->sm->process_event(Break{});
-                    break;
-                case SyncEffect::NONE:
-                default:
-                    break;
-            }
+            applyReconciledEffect(plkbx, outcome.effect);
             // The server never recorded the lock this box holds: its accept
             // report was lost. Repeat it; the report carries the box's dates.
             if (outcome.serverMissedLock && isLocked()) {
@@ -525,6 +529,38 @@ void LKBX::startMqttConnection() {
                             Tasks::mqttConnect.stackSize, this,
                             Tasks::mqttConnect.priority,
                             &TaskHandles::mqttConnect, Tasks::mqttConnect.core);
+}
+
+// A clear without a session id comes from a dashboard older than this
+// firmware. Unlock only if the dashboard's own state says the box has no
+// active session; any other answer keeps the session the box holds.
+void LKBX::confirmServerClearTask(void *pvParameters) {
+    LKBX *plkbx = static_cast<LKBX *>(pvParameters);
+
+    SyncOutcome outcome;
+    const SyncResult result = syncState(&outcome);
+    if (outcome.freezeChanged) bumpFreezeDisplayVersion();
+    ESP_LOGI(MQTT_TAG, "Confirmed clear: result=%d effect=%d",
+             static_cast<int>(result), static_cast<int>(outcome.effect));
+    applyReconciledEffect(plkbx, outcome.effect);
+
+    TaskHandles::confirmClear = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void LKBX::confirmServerClear() {
+    // One pull answers every clear that arrived while it runs.
+    if (TaskHandles::confirmClear != nullptr) return;
+    if (xTaskCreatePinnedToCore(confirmServerClearTask, Tasks::confirmClear.name,
+                                Tasks::confirmClear.stackSize, this,
+                                Tasks::confirmClear.priority,
+                                &TaskHandles::confirmClear,
+                                Tasks::confirmClear.core) != pdPASS) {
+        // Without memory for the pull the box keeps its session; the next
+        // reconnect or boot reconciles it.
+        TaskHandles::confirmClear = nullptr;
+        ESP_LOGW(MQTT_TAG, "Could not start the clear confirmation");
+    }
 }
 
 // update methods
