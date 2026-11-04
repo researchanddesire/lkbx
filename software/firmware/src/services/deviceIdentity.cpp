@@ -16,6 +16,7 @@
 #include "Base64Url.h"
 #include "CommandEnvelope.h"
 #include "DeviceKey.h"
+#include "SigningPolicy.h"
 #include "constants/LogTags.h"
 #include "constants/PerferenceKeys.h"
 #include "services/serverOnline.h"
@@ -33,6 +34,8 @@ String cachedSecret;
 String cachedDeviceId;
 lockbox::security::CommandGate commandGate;
 bool commandGateLoaded = false;
+// This box has held a command key, so it never accepts plain commands again.
+bool everSigned = false;
 
 bool validSecretText(const String& text) {
     return text.length() == SECRET_TEXT_LENGTH &&
@@ -137,21 +140,28 @@ bool hasBurnedKey() {
     return findDeviceKey(block);
 }
 
-void loadCommandGate() {
+// Returns whether the gate holds the stored key and replay ring. Until it
+// does, no command is opened and no report is sent: a gate marked loaded with
+// an empty ring would accept a recorded command again.
+bool loadCommandGate() {
     {
         std::lock_guard<std::mutex> lock(identityMutex);
-        if (commandGateLoaded) return;
+        if (commandGateLoaded) return true;
     }
     const bool burned = hasBurnedKey();
     String key;
+    bool signedBefore = false;
     uint64_t lastTimestamp = 0;
     uint8_t replay[lockbox::security::COMMAND_REPLAY_STATE_BYTES] = {};
     size_t replayLength = 0;
-    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) != pdTRUE) return;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) != pdTRUE) return false;
     preferences.begin(Keys::identity, false);
     if (preferences.isKey(Keys::Identity::commandKey)) {
         key = preferences.getString(Keys::Identity::commandKey, "");
+        // A key stored by an image before the ratchet counts as signed too.
+        signedBefore = true;
     }
+    if (preferences.getBool(Keys::Identity::signingRequired, false)) signedBefore = true;
     lastTimestamp = preferences.getULong64(Keys::Identity::commandLastTimestamp, 0);
     if (preferences.isKey(Keys::Identity::commandReplay)) {
         replayLength = preferences.getBytes(Keys::Identity::commandReplay, replay,
@@ -161,16 +171,26 @@ void loadCommandGate() {
     xSemaphoreGive(preferencesMutex);
 
     std::lock_guard<std::mutex> lock(identityMutex);
-    if (commandGateLoaded) return;
+    if (commandGateLoaded) return true;
     // Images before the stored ring kept only the timestamp.
     if (!commandGate.restoreReplayState(replay, replayLength)) {
         commandGate.restoreLastTimestamp(lastTimestamp);
     }
-    commandGate.requireSignatures(burned);
+    everSigned = signedBefore;
+    commandGate.requireSignatures(lockbox::security::signaturesRequired(burned, everSigned));
     // A corrupt stored key is treated as no key until the next authentication
-    // replaces it, matching a device the server has not yet enrolled.
+    // replaces it; a box that signed before still refuses plain JSON meanwhile.
     if (key.length() > 0) commandGate.setKey(key.c_str(), key.length());
     commandGateLoaded = true;
+    return true;
+}
+
+// The sign-in task can wait for a busy preferences mutex; the MQTT task cannot.
+bool loadCommandGateForSignIn() {
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (loadCommandGate()) return true;
+    }
+    return false;
 }
 
 // Every accepted command is spent for good: a reboot or a new sign-in restores
@@ -226,34 +246,39 @@ String deviceSecretForRequest() {
 }
 
 void applyAuthCommandKey(const String& commandKey) {
-    loadCommandGate();
-    const bool burned = hasBurnedKey();
-    // A box with a burned key never turns signing off: a reply without a key
-    // (an older route, an outage of the server's master key) leaves the
-    // stored one in place.
-    if (commandKey.length() == 0 && burned) return;
+    // The stored ring must be in the gate before a key goes in, or commands it
+    // already spent would open again. The next sign-in delivers the key anew.
+    if (!loadCommandGateForSignIn()) {
+        ESP_LOGW(IDENTITY_TAG, "Could not load the command gate; commands stay refused");
+        return;
+    }
+    // A reply without a key (an older route, an outage of the server's master
+    // key) leaves the stored one in place: signing never turns off.
+    if (lockbox::security::authKeyAction(commandKey.length() > 0) ==
+        lockbox::security::AuthKeyAction::keep) {
+        return;
+    }
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
         preferences.begin(Keys::identity, false);
-        const bool stored = preferences.isKey(Keys::Identity::commandKey);
-        if (commandKey.length() == 0) {
-            if (stored) preferences.remove(Keys::Identity::commandKey);
-        } else if (!stored ||
-                   preferences.getString(Keys::Identity::commandKey, "") != commandKey) {
+        if (!preferences.isKey(Keys::Identity::commandKey) ||
+            preferences.getString(Keys::Identity::commandKey, "") != commandKey) {
             preferences.putString(Keys::Identity::commandKey, commandKey);
+        }
+        if (!preferences.getBool(Keys::Identity::signingRequired, false)) {
+            preferences.putBool(Keys::Identity::signingRequired, true);
         }
         preferences.end();
         xSemaphoreGive(preferencesMutex);
     }
 
+    const bool burned = hasBurnedKey();
     std::lock_guard<std::mutex> lock(identityMutex);
-    commandGate.requireSignatures(burned);
-    if (commandKey.length() == 0) {
-        commandGate.clearKey();
-    } else if (!commandGate.setKey(commandKey.c_str(), commandKey.length())) {
+    everSigned = true;
+    commandGate.requireSignatures(lockbox::security::signaturesRequired(burned, everSigned));
+    if (!commandGate.setKey(commandKey.c_str(), commandKey.length())) {
         // authResponse validated this already; fail closed if that ever differs.
         commandGate.clearKey();
     }
-    commandGateLoaded = true;
 }
 
 namespace {
@@ -277,7 +302,7 @@ bool cloudBinding(const char* topic, const char*& recipient,
 
 bool openCloudCommand(const char* topic, const char* frame, size_t size,
                       String& command) {
-    loadCommandGate();
+    if (!loadCommandGate()) return false;
     std::string opened;
     lockbox::security::CommandGateResult result =
         lockbox::security::CommandGateResult::malformed;
@@ -341,8 +366,12 @@ String sealCloudReport(const char* topic, lockbox::security::ReportKind kind,
                              iv, nonce, sealed)) {
             return String(sealed.c_str());
         }
-        // Only a box that has never had a burned key may report in plain JSON.
-        if (!burned && (!commandGateLoaded || !commandGate.hasKey())) return report;
+        // Only a box that never signed and has no burned key reports in plain
+        // JSON, and only once it is known to hold no key.
+        if (lockbox::security::mayReportPlain(commandGateLoaded, burned, everSigned,
+                                              commandGate.hasKey())) {
+            return report;
+        }
     }
     ESP_LOGW(IDENTITY_TAG, "Could not seal a report; not sending it");
     return String();

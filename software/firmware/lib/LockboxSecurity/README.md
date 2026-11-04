@@ -88,8 +88,9 @@ wrong route or one it has already seen. Each LOCKED retry is sealed afresh
 from the stored plain report, with a new nonce; the report's own `id` dedupes
 it. The dashboard opens them in Postgres, accepts plain reports from firmware
 without a key, and refuses plain reports for a hardware-bound device. A box
-with a burned key never reports in plain JSON: a report it cannot seal is
-dropped, and a LOCKED report stays pending until it can be sealed. The
+that has ever held a command key, or has a burned key, never reports in plain
+JSON: a report it cannot seal is dropped, and so is any report sent before the
+stored key has loaded, and a LOCKED report stays pending until it can be sealed. The
 retained `/firmware` provenance and the last will stay plain; neither carries
 session data.
 
@@ -123,8 +124,8 @@ needs to reflash freely.
 
 | Response | Device behaviour |
 |----------|------------------|
-| 200 with `commandKey` | Stores the key in NVS (`identity/cmdKey`) and requires signed commands |
-| 200 without `commandKey` | Erases any stored key and accepts plain commands, unless a key is burned: that box keeps its stored key and never accepts plain commands, even with no key at all |
+| 200 with `commandKey` | Stores the key in NVS (`identity/cmdKey`), records that the box signs (`identity/cmdSigned`) and requires signed commands from then on |
+| 200 without `commandKey` | Changes nothing. A box that has ever held a key, or has a burned one, keeps its stored key and never accepts plain commands again (`SigningPolicy.h`); only erasing NVS resets this. A box that never held one keeps accepting plain JSON |
 | 401 | Keeps its state and retries every 60 seconds |
 | Any other failure | Keeps its state and retries as before |
 
@@ -146,6 +147,6 @@ After a v2 sign-in the box takes only `"v":3`, signed over `v3.{ts}.{deviceId}.{
 
 The signature is verified in constant time before anything is decrypted. A command is then accepted only if `ts + 30000` is at least the highest timestamp seen, its signature is not among the last 8 accepted, and, once the clock is server-verified, `ts` is no more than 10 minutes old. The window allows for messages delivered out of order. The timestamp and the ring of 8 persist in NVS (`identity/cmdReplay`, and `identity/cmdLastTs` for older images) after every accepted command, and a sign-in does not empty them, so a reboot never makes a recorded command acceptable again.
 
-A device without a key processes plain JSON unchanged.
+A device that has never held a key, and has no burned one, processes plain JSON unchanged. Until the stored key and replay ring have loaded from NVS, no command is accepted at all.
 
 Devices drop retained messages on the command topic in both modes. The only commands are `sync` and `reboot`.

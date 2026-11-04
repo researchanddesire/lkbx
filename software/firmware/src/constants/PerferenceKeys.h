@@ -17,6 +17,8 @@ namespace Keys {
         constexpr char commandLastTimestamp[] = "cmdLastTs";
         // The command replay ring and timestamp (CommandGate replay state).
         constexpr char commandReplay[] = "cmdReplay";
+        // Set once a command key was stored: signing never turns off again.
+        constexpr char signingRequired[] = "cmdSigned";
         // The dashboard's answer to the one-time v2 key request: it will
         // never send a key (refused), or the earliest time to ask again.
         constexpr char keyRequestRefused[] = "v2Refused";

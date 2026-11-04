@@ -128,10 +128,26 @@ inline bool isDecisionReason(const std::string &reason) {
            reason == "incompatible-device";
 }
 
+// The Supabase Storage hosts the dashboard serves firmware from: production
+// (main releases) and staging (staging releases). Both are trusted on every
+// build, because the control plane can move a box to the other track and then
+// offers that track's releases. Any other host, including any other
+// *.supabase.co project, is refused.
+inline constexpr const char *TRUSTED_ARTIFACT_HOSTS[] = {
+    "acjajruwevyyatztbkdf.supabase.co",
+    "meuaxbjzqrszxdvmacug.supabase.co",
+};
+
+inline bool isTrustedArtifactHost(const std::string &host) {
+    for (const char *trusted : TRUSTED_ARTIFACT_HOSTS) {
+        if (host == trusted) return true;
+    }
+    return false;
+}
+
 inline bool isHttpsArtifactUrl(const std::string &url,
                                const std::string &expectedBucket) {
     const std::string prefix = "https://";
-    const std::string hostSuffix = ".supabase.co";
     const std::string storagePath =
         "/storage/v1/object/public/" + expectedBucket +
         "/releases/";
@@ -142,12 +158,7 @@ inline bool isHttpsArtifactUrl(const std::string &url,
     const auto hostEnd = url.find('/', prefix.size());
     if (hostEnd == std::string::npos) return false;
     const std::string host = url.substr(prefix.size(), hostEnd - prefix.size());
-    if (host.size() <= hostSuffix.size() ||
-        host.compare(host.size() - hostSuffix.size(), hostSuffix.size(),
-                     hostSuffix) != 0 ||
-        host.find(':') != std::string::npos) {
-        return false;
-    }
+    if (!isTrustedArtifactHost(host)) return false;
     return url.compare(hostEnd, storagePath.size(), storagePath) == 0;
 }
 

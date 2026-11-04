@@ -212,7 +212,8 @@ void no_key_passes_plain_json_through_unchanged() {
     TEST_ASSERT_TRUE(gate.setKey(COMMAND_KEY, std::strlen(COMMAND_KEY)));
     TEST_ASSERT_EQUAL(CommandGateResult::malformed,
                       gate.open(MAC, PLAINTEXT, std::strlen(PLAINTEXT), command));
-    // The server can withdraw the key over its TLS-authenticated auth response.
+    // A cleared gate that does not require signatures is plain again. The
+    // firmware never clears a key it was given (SigningPolicy.h).
     gate.clearKey();
     TEST_ASSERT_EQUAL(CommandGateResult::plain,
                       gate.open(MAC, PLAINTEXT, std::strlen(PLAINTEXT), command));

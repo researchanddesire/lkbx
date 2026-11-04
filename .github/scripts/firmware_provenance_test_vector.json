@@ -1,7 +1,8 @@
 {
-  "description": "Non-secret fixed ES256 vector shared across publisher, control-plane, and firmware tests.",
-  "keyId": "rd-fw-staging-2026-08-01",
-  "publicKeyFingerprintSha256": "35fb9c22de8d69e3a1bb999c69f110b53b4879cd884af10b92cc137013b1c2cc",
+  "description": "Non-secret fixed ES256 vector for publisher and firmware tests. It is signed by a throwaway key made only for this vector (private half destroyed), never by a release key: tests trust publicKeyPem explicitly.",
+  "keyId": "rd-fw-test-vector-2026-11-04",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtTHyEi7aC9KucY/TPEtnGw92gZsG\nUzfy8jIVDNSNDX8ptd+b1ko6XWvj6tM0QQ3Gaoa9hS18bzgYT7RalvE+Gw==\n-----END PUBLIC KEY-----\n",
+  "publicKeyFingerprintSha256": "bbaa32c0e7e6e142f3b64a48a1a2a6c2d6ec5b779881282ccaae8a2eed96ecf3",
   "claims": {
     "schema": "rad.firmware.provenance.v1",
     "issuer": "research-and-desire",
@@ -17,5 +18,5 @@
     "applicationSizeBytes": 123456,
     "issuedAt": "2026-08-17T00:00:00Z"
   },
-  "compactJws": "eyJhbGciOiJFUzI1NiIsImtpZCI6InJkLWZ3LXN0YWdpbmctMjAyNi0wOC0wMSIsInR5cCI6InJhZC1mdy1wcm92K2p3cyJ9.eyJhcHBsaWNhdGlvblNoYTI1NiI6IjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJhcHBsaWNhdGlvblNpemVCeXRlcyI6MTIzNDU2LCJidWlsZFNoYSI6IjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1NjciLCJkZXZpY2VUeXBlIjoib3NzbSIsImhhcmR3YXJlVmFyaWFudCI6ImRlZmF1bHQiLCJpc3N1ZWRBdCI6IjIwMjYtMDgtMTdUMDA6MDA6MDBaIiwiaXNzdWVyIjoicmVzZWFyY2gtYW5kLWRlc2lyZSIsImtpbmQiOiJmaXJtd2FyZSIsIm1hbmlmZXN0U2hhMjU2IjoiMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInJ1bnRpbWVJbWFnZVNoYTI1NiI6IjMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMiLCJzY2hlbWEiOiJyYWQuZmlybXdhcmUucHJvdmVuYW5jZS52MSIsInRyYWNrIjoic3RhZ2luZyIsInZlcnNpb24iOiI5LjguNyJ9.A4g5XsBzMzZNftjRTKR79HcnkTWYlL_FEV7hZ6hF4k_Pls3BaLa7SN-J1wjuMdKlmdEUWDF4PUqaUwQP1nxm5g"
+  "compactJws": "eyJhbGciOiJFUzI1NiIsImtpZCI6InJkLWZ3LXRlc3QtdmVjdG9yLTIwMjYtMTEtMDQiLCJ0eXAiOiJyYWQtZnctcHJvditqd3MifQ.eyJhcHBsaWNhdGlvblNoYTI1NiI6IjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJhcHBsaWNhdGlvblNpemVCeXRlcyI6MTIzNDU2LCJidWlsZFNoYSI6IjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1NjciLCJkZXZpY2VUeXBlIjoib3NzbSIsImhhcmR3YXJlVmFyaWFudCI6ImRlZmF1bHQiLCJpc3N1ZWRBdCI6IjIwMjYtMDgtMTdUMDA6MDA6MDBaIiwiaXNzdWVyIjoicmVzZWFyY2gtYW5kLWRlc2lyZSIsImtpbmQiOiJmaXJtd2FyZSIsIm1hbmlmZXN0U2hhMjU2IjoiMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInJ1bnRpbWVJbWFnZVNoYTI1NiI6IjMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMiLCJzY2hlbWEiOiJyYWQuZmlybXdhcmUucHJvdmVuYW5jZS52MSIsInRyYWNrIjoic3RhZ2luZyIsInZlcnNpb24iOiI5LjguNyJ9.73jzOtfYGBp9QccPT8sGQ5ToheUmDnwsEzZ0pVs_EaPZ82dScrrUw8QMX-TpeMsn3Gy9zIdERzxvjFnNrfd5Bg"
 }

@@ -18,6 +18,7 @@
 #include "state/LKBX.h"
 #include "structs/Version.h"
 #include "utils/dashboard.hpp"
+#include "utils/heldSession.h"
 #include "utils/lockedReport.h"
 #include "utils/serverClear.h"
 
@@ -128,18 +129,24 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
             if (message.type == MessageType::SYNC) {
                 auto isLocalPlay = false;
                 String savedSessionId;
+                String savedLockState;
 
                 if (xSemaphoreTake(preferencesMutex,
-                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
-                    preferences.begin(Keys::base);
-                    isLocalPlay =
-                        preferences.getBool(Keys::Base::isLocalPlay, false);
-                    preferences.end();
-                    preferences.begin(Keys::session);
-                    savedSessionId = preferences.getString(Keys::Session::sessionId, "");
-                    preferences.end();
-                    xSemaphoreGive(preferencesMutex);
+                                   portTICK_PERIOD_MS * 1000) != pdTRUE) {
+                    // Without the held session the sync cannot be checked
+                    // against it, so the state is read from the dashboard.
+                    ESP_LOGW(MQTT_TAG, "Could not read the held session -- asking the dashboard");
+                    lkbx->confirmServerClear();
+                    return;
                 }
+                preferences.begin(Keys::base);
+                isLocalPlay = preferences.getBool(Keys::Base::isLocalPlay, false);
+                preferences.end();
+                preferences.begin(Keys::session);
+                savedSessionId = preferences.getString(Keys::Session::sessionId, "");
+                savedLockState = preferences.getString(Keys::Session::lockState, "");
+                preferences.end();
+                xSemaphoreGive(preferencesMutex);
 
                 const String incomingSessionId = doc[Str::Json::SESSION_ID].as<String>();
                 if (isLocalPlay && (incomingSessionId.isEmpty() || incomingSessionId == savedSessionId)) {
@@ -165,6 +172,20 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                                      "Ignoring a clear for another session");
                             break;
                     }
+                    return;
+                }
+
+                // A locked session only ends through its own messages. A sync
+                // for any other session is checked with the dashboard first.
+                if (!isLocalPlay &&
+                    classifyHeldSessionSync(doc[Str::Json::SESSION_ID] | "",
+                                            savedSessionId.c_str(),
+                                            savedLockState.c_str()) ==
+                        HeldSessionSync::CONFIRM) {
+                    ESP_LOGW(MQTT_TAG,
+                             "Sync names another session while one is locked "
+                             "-- asking the dashboard");
+                    lkbx->confirmServerClear();
                     return;
                 }
 

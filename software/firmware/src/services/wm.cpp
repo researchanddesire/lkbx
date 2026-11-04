@@ -5,6 +5,7 @@
 #include <esp_netif_sta_list.h>
 
 #include "PortalPeer.h"
+#include "PortalRoutes.h"
 #include "portal_guard.h"
 
 #include "constants/strings.h"
@@ -99,11 +100,15 @@ void initWM() {
     // selects the first matching handler, including multipart upload callbacks.
     wm.setWebServerCallback([]() {
         wm.server->addHandler(new PortalRequestGuard(*wm.server, isSetupClient));
-        auto denied = []() {
-            wm.server->send(403, "text/plain", "Use the verified firmware updater");
+        // Firmware installs only through the verified updater, and the reset,
+        // erase and info pages are not part of setup (PortalRoutes.h).
+        auto refused = []() {
+            wm.server->sendHeader("Connection", "close");
+            wm.server->send(404, "text/plain", "Not available");
         };
-        wm.server->on("/update", HTTP_ANY, denied, []() {});
-        wm.server->on("/u", HTTP_ANY, denied, []() {});
+        for (const char *route : lockbox::security::PORTAL_REFUSED_ROUTES) {
+            wm.server->on(route, HTTP_ANY, refused, []() {});
+        }
     });
     wm.setAPStaticIPConfig(kPortalApIp, kPortalGateway, kPortalSubnet);
     wm.setCaptivePortalEnable(true);
