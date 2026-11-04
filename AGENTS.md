@@ -234,7 +234,7 @@ On first boot, the motor calibration routine auto-detects:
 - TLS in production (DigiCert root CA), insecure in dev
 
 **WiFi:**
-- WiFiManager captive portal: AP name "Lockbox Setup"
+- WiFiManager captive portal: AP name "Lockbox Setup". The setup network is open, so the portal serves only the root page, the network form, its save and exit; WiFiManager's other routes (`/erase`, `/restart`, `/info`, `/param`, `/paramsave`, `/close`, `/status`, `/update`, `/u`) answer 404 (`lib/LockboxSecurity/src/PortalRoutes.h`).
 - Power saving: `WIFI_PS_MAX_MODEM`
 
 ### NVS Preferences
