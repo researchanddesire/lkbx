@@ -158,14 +158,35 @@ sketches; each is fully constrained with distances from the body origin.
 
 ## Printing
 
+Ready-to-slice Bambu Studio projects for a 0.4 mm nozzle are in `bambu/`,
+one pair per printer (`p1s`, `x1c`, `a1`, `a1mini`):
+
+| Project | Part | Filament | Plate | Settings | Estimate (P1S) |
+| --- | --- | --- | --- | --- | --- |
+| `lkbx-top-housing-snap-fit-<printer>-0.4mm.3mf` | housing, front face down | Bambu PLA Basic | smooth PEI (High Temp) | 0.20 mm Standard, no supports, auto brim | 1 h 35 min, 50 g |
+| `lkbx-screen-keeper-<printer>-0.4mm.3mf` | keeper, smooth face down | Bambu PETG HF | smooth PEI (High Temp) | 0.20 mm, 4 walls, 100 % infill, gap closing 0, no brim | 12 min, 2.3 g |
+
+Open the project in Bambu Studio, keep the embedded presets when it asks,
+confirm the printer and the 0.4 mm nozzle, swap the filament preset if the
+spool is a different brand (any PLA for the housing, any PETG for the keeper),
+slice and print. The A1 variants put the same parts on the 180 mm or 256 mm
+bed; the H2 series can open the X1C project and switch the printer preset.
+
 Housing: as today, face down on smooth PEI, no supports. Check the slicer
 preview at 7.3 mm from the bed: the five lip undersides should print as
 short overhangs, not need support.
 
 Keeper: smooth (top) face on the bed, 0.2 mm layers, PETG, 4 walls or 100 %
 infill. Every feature grows upward from that face, so no supports and no
-bridges. Keep the 0.5 mm slots open: set gap closing / hole compensation to
-zero (Bambu Studio: "gap closing radius" 0.05). Weigh it: about 2.3 g.
+bridges. Keep the 0.5 mm slots open: the project sets the gap closing radius
+to zero. Weigh it: about 2.3 g.
+
+The projects embed the full printer, filament and process profiles and are
+regenerated from the STL exports of `build_freecad.py` by
+`bambu/make_projects.sh`; the two `lkbx-*-process.json` files there hold the
+only settings that differ from Bambu's stock 0.20 mm Standard profile. Bambu
+Studio's command line does not resolve preset inheritance, so the script
+flattens each preset first (`bambu/flatten_preset.py`).
 
 Tuning, in order:
 

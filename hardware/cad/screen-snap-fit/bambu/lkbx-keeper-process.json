@@ -1,0 +1,19 @@
+{
+    "type": "process",
+    "name": "0.20mm LKBX screen keeper (PETG, 4 walls, solid)",
+    "inherits": "0.20mm Standard @BBL X1C",
+    "from": "User",
+    "wall_loops": "4",
+    "sparse_infill_density": "100%",
+    "sparse_infill_pattern": "zig-zag",
+    "top_shell_layers": "5",
+    "bottom_shell_layers": "5",
+    "enable_support": "0",
+    "brim_type": "no_brim",
+    "slice_closing_radius": "0",
+    "resolution": "0.01",
+    "wall_generator": "arachne",
+    "seam_position": "aligned",
+    "elefant_foot_compensation": "0.1",
+    "curr_bed_type": "High Temp Plate"
+}

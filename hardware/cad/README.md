@@ -33,5 +33,8 @@ This directory contains STEP exports from the Lockbox Onshape document. Each fil
   keeper frame that snaps under those lips and spring-loads the screen, and a
   `Params` spreadsheet that drives both. The STEP exports
   (`top-housing-snap-fit.step`, `screen-keeper.step`,
-  `screen-keeper-print.step`) are not tracked; see
+  `screen-keeper-print.step`) and the print STLs
+  (`top-housing-snap-fit.stl`, `screen-keeper-print.stl`) are not tracked;
+  `build_freecad.py` regenerates them. Ready-to-slice Bambu Studio projects
+  for the test print live in `screen-snap-fit/bambu/`; see
   `screen-snap-fit/README.md`. Not yet carried into Onshape.

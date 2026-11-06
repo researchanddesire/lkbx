@@ -1,0 +1,10 @@
+{
+    "type": "process",
+    "name": "0.20mm LKBX top housing (PLA, face down, no supports)",
+    "inherits": "0.20mm Standard @BBL X1C",
+    "from": "User",
+    "enable_support": "0",
+    "brim_type": "auto_brim",
+    "resolution": "0.01",
+    "curr_bed_type": "High Temp Plate"
+}

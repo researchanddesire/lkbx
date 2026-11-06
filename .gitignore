@@ -36,3 +36,6 @@ captures/
 hardware/cad/top-housing-snap-fit.step
 hardware/cad/screen-keeper.step
 hardware/cad/screen-keeper-print.step
+hardware/cad/top-housing-snap-fit.stl
+hardware/cad/screen-keeper-print.stl
+*.FCBak

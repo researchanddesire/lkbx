@@ -5,12 +5,16 @@ Run headless with FreeCAD 1.0 (0.21 should also work):
     freecadcmd build_freecad.py
 
 Creates ``screen-snap-fit.FCStd`` next to this script and exports three STEP
-files into ``hardware/cad/`` (all three STEPs are gitignored; regenerate them
-from the FCStd):
+files and two print-ready STL meshes into ``hardware/cad/`` (all gitignored;
+regenerate them from the FCStd):
 
     top-housing-snap-fit.step   housing with the rigid lips
     screen-keeper.step          keeper frame seated, housing coordinates
     screen-keeper-print.step    keeper flat on Z = 0, top face down
+    top-housing-snap-fit.stl    housing mesh, front face on Z = 0 (print face down)
+    screen-keeper-print.stl     keeper mesh, top face on Z = 0
+
+``bambu/make_projects.sh`` turns the two STL files into Bambu Studio projects.
 
 Document contents:
 
@@ -34,6 +38,8 @@ import sys
 from pathlib import Path
 
 import FreeCAD as App
+import Mesh  # noqa: F401  (registers the STL writer)
+import MeshPart
 import Part
 import Sketcher
 
@@ -48,6 +54,11 @@ DOC_OUT = HERE / "screen-snap-fit.FCStd"
 HOUSING_OUT = CAD_DIR / "top-housing-snap-fit.step"
 KEEPER_OUT = CAD_DIR / "screen-keeper.step"
 KEEPER_PRINT_OUT = CAD_DIR / "screen-keeper-print.step"
+HOUSING_STL = CAD_DIR / "top-housing-snap-fit.stl"
+KEEPER_PRINT_STL = CAD_DIR / "screen-keeper-print.stl"
+# Mesh tolerances for the STL exports: 0.01 mm chord error, 0.1 rad angular.
+STL_LINEAR_DEFLECTION = 0.01
+STL_ANGULAR_DEFLECTION = 0.1
 
 V = App.Vector
 
@@ -601,6 +612,18 @@ def compare(label, shape, ref):
 # --------------------------------------------------------------------------
 
 
+def export_stl(shape, path):
+    """Write a binary STL of ``shape`` for slicing (same tolerances as the STEP exports' checks)."""
+    mesh = MeshPart.meshFromShape(
+        Shape=shape,
+        LinearDeflection=STL_LINEAR_DEFLECTION,
+        AngularDeflection=STL_ANGULAR_DEFLECTION,
+        Relative=False,
+    )
+    mesh.write(str(path))
+    print("%s: %d facets, volume %.3f mm3" % (path.name, mesh.CountFacets, mesh.Volume))
+
+
 def main():
     doc = App.newDocument("screen_snap_fit")
     doc.Label = "screen-snap-fit"
@@ -625,8 +648,11 @@ def main():
     m = App.Matrix()
     m.rotateX(math.pi)
     m.move(V(0, 0, P["FRAME_TOP_Z"]))
-    keeper.Shape.transformGeometry(m).exportStep(str(KEEPER_PRINT_OUT))
-    for out in (DOC_OUT, HOUSING_OUT, KEEPER_OUT, KEEPER_PRINT_OUT):
+    keeper_print = keeper.Shape.transformGeometry(m)
+    keeper_print.exportStep(str(KEEPER_PRINT_OUT))
+    export_stl(housing.Shape, HOUSING_STL)
+    export_stl(keeper_print, KEEPER_PRINT_STL)
+    for out in (DOC_OUT, HOUSING_OUT, KEEPER_OUT, KEEPER_PRINT_OUT, HOUSING_STL, KEEPER_PRINT_STL):
         print("wrote %s (%.1f kB)" % (out.relative_to(CAD_DIR.parent.parent), out.stat().st_size / 1024))
 
 
