@@ -34,3 +34,8 @@ hardware-bundle/
 
 # Local development display captures
 captures/
+
+# CAD exports regenerated from the FreeCAD documents (STEP/STL are LFS patterns)
+hardware/cad/plug-lockout.step
+hardware/cad/plug-lockout-print.stl
+*.FCBak
