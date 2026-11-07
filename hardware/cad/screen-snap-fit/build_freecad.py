@@ -1,35 +1,37 @@
-"""Parametric FreeCAD model of the glue-free screen retention.
+"""Parametric FreeCAD model of the glue-free screen retention (sprung walls).
 
 Run headless with FreeCAD 1.0 (0.21 should also work):
 
     freecadcmd build_freecad.py
 
-Creates ``screen-snap-fit.FCStd`` next to this script and exports three STEP
-files and two print-ready STL meshes into ``hardware/cad/`` (all gitignored;
-regenerate them from the FCStd):
+Creates ``screen-snap-fit.FCStd`` next to this script and exports, into
+``hardware/cad/`` (gitignored; regenerate them from the FCStd):
 
-    top-housing-snap-fit.step   housing with the rigid lips
-    screen-keeper.step          keeper frame seated, housing coordinates
-    screen-keeper-print.step    keeper flat on Z = 0, top face down
-    top-housing-snap-fit.stl    housing mesh, front face on Z = 0 (print face down)
-    screen-keeper-print.stl     keeper mesh, top face on Z = 0
+    top-housing-snap-fit.step   the housing with the screen retention
+    top-housing-snap-fit.stl    the same as a mesh, front face on Z = 0 (print face down)
 
-``bambu/make_projects.sh`` turns the two STL files into Bambu Studio projects.
+``bambu/make_projects.sh`` turns the STL into Bambu Studio projects and
+printer-ready files.
 
 Document contents:
 
-    Params        spreadsheet of the tunable dimensions; they drive the features
-    TopHousing    PartDesign body: the Onshape export as base feature, the raised
-                  locating rib, the three top lips (one pad plus a lead-in
-                  chamfer) and the two bottom lipped blocks (profile pads)
-    ScreenKeeper  PartDesign body: plate, through pockets for the window and the
-                  slots, pockets that thin the lip strips and the finger leaves,
-                  pads for the finger pillars, feet and pusher tabs, and lead-in
-                  chamfers on the hook tabs
+    Params        spreadsheet of the tunable dimensions; the features read them
+                  by expression, so a cell change and a recompute rebuilds the part
+    TopHousing    PartDesign body: the Onshape export as base feature, then
+                  CutTopRib / CutRightRib (the old locating ribs go), BottomBlock
+                  and BottomCatch (the rigid 45 degree catch under the screen's
+                  bottom edge), LeftRibs with a lead-in chamfer (the X datum),
+                  SideWall + SidePosts + SideBump + lead-in (the sprung side wall
+                  that presses the screen against the left ribs), TopWall and
+                  HookLeft / HookRight (the sprung top wall whose two hooks click
+                  over the screen's top edge)
     References    the screen at its datum and the battery envelope
 
 Coordinates are the top-housing STEP frame: Z is depth from the front face,
 Y runs along the housing length and X across its width, in millimetres.
+The housing prints front face down, so every feature grows away from Z = 0;
+the two sprung walls float WALL_GAP above the skin and are bridged between
+their anchors, the catch and hook undersides are 45 and 35 degree overhangs.
 """
 
 import math
@@ -52,11 +54,8 @@ SOURCE = CAD_DIR / "top-housing.step"
 ASSEMBLY = CAD_DIR / "lockbox-assembly.step"
 DOC_OUT = HERE / "screen-snap-fit.FCStd"
 HOUSING_OUT = CAD_DIR / "top-housing-snap-fit.step"
-KEEPER_OUT = CAD_DIR / "screen-keeper.step"
-KEEPER_PRINT_OUT = CAD_DIR / "screen-keeper-print.step"
 HOUSING_STL = CAD_DIR / "top-housing-snap-fit.stl"
-KEEPER_PRINT_STL = CAD_DIR / "screen-keeper-print.stl"
-# Mesh tolerances for the STL exports: 0.01 mm chord error, 0.1 rad angular.
+# Mesh tolerances for the STL export: 0.01 mm chord error, 0.1 rad angular.
 STL_LINEAR_DEFLECTION = 0.01
 STL_ANGULAR_DEFLECTION = 0.1
 
@@ -65,156 +64,115 @@ V = App.Vector
 # --------------------------------------------------------------------------
 # Parameters. Every row becomes a spreadsheet cell with an alias of the same
 # name; features reference them by expression so they can be tuned in FreeCAD.
+# A string value is a spreadsheet formula over earlier aliases.
 # --------------------------------------------------------------------------
 PARAMS = [
-    # (alias, value in mm or '=formula', note)
-    ("SCREEN_BACK_Z", 3.90, "Rear face of the screen's metal frame when it sits on the skin"),
+    # (alias, value in mm / deg or '=formula', note)
     ("SKIN_Z", 1.80, "Inner face of the front skin"),
-    ("SCREEN_X0", -25.35, "Screen left edge, seated against the right rib"),
-    ("SCREEN_Y0", 8.05, "Screen bottom edge, seated against the top rib"),
-    ("RIB_Y", 42.65, "Screen-side face of the top locating rib"),
-    ("FRAME_TOP_Z", 7.40, "Lip undersides; the keeper floats up to here (37 layers of 0.2 mm from the front face)"),
-    ("FRAME_T", 3.00, "Keeper plate thickness"),
-    ("TAB_T", 1.40, "Strips that go under the lips, thinned from below"),
-    ("FINGER_T", 1.40, "Leaf finger thickness, thinned from below"),
-    ("PRELOAD", 0.30, "Finger pillar interference against the screen"),
-    ("BACKSTOP", 0.10, "Gap between the rigid feet and the screen"),
-    ("PUSHER_TIP_Z", 2.60, "How far the pusher tabs reach down beside the screen edge"),
-    ("PUSH_X", 0.20, "X pusher interference against the seated screen"),
-    ("PUSH_Y", 0.20, "Y pusher interference against the seated screen"),
-    ("LIP_OVERLAP", 1.60, "Top lip reach over the pocket"),
-    ("LIP_CHAMFER", 1.20, "Lead-in chamfer height on the lips"),
-    ("FEATURE_TOP_Z", 9.40, "Top of the rib, lips and bottom blocks"),
-    ("BOTTOM_LIP_TIP_Y", 8.60, "Bottom lip tip; the block face is at Y 7.0, so 1.6 mm of reach"),
-    ("HOOK_CHAMFER", 0.50, "Lead-in chamfer on the keeper's hook tabs"),
-    ("FRAME_BOT_Z", "=FRAME_TOP_Z - FRAME_T", "Keeper plate underside"),
-    ("FINGER_BOT_Z", "=FRAME_TOP_Z - FINGER_T", "Finger leaf underside"),
-    ("BUMP_TIP_Z", "=SCREEN_BACK_Z - PRELOAD", "Relaxed finger pillar tip"),
-    ("FOOT_Z", "=SCREEN_BACK_Z + BACKSTOP", "Foot underside"),
+    ("SCREEN_BACK_Z", 3.90, "Back face of the screen glass when it sits on the skin"),
+    ("SCREEN_X0", -25.35, "Screen left edge, against the left ribs"),
+    ("SCREEN_X1", 22.45, "Screen right edge"),
+    ("SCREEN_Y0", 8.05, "Screen bottom edge, its back corner in the bottom catch"),
+    ("SCREEN_Y1", 42.65, "Screen top edge, under the hooks of the top wall"),
+    ("WALL_T", 1.26, "Sprung wall thickness, three 0.42 mm perimeters"),
+    ("WALL_GAP", 1.60, "Air under the sprung walls so they can flex; bridged when printing"),
+    ("TOP_WALL_TOP_Z", 11.40, "Top of the sprung top wall"),
+    ("SIDE_WALL_TOP_Z", 9.00, "Top of the sprung side wall and its posts"),
+    ("HOOK_REACH", 0.60, "How far each hook reaches over the glass once seated"),
+    ("HOOK_PRELOAD", 0.30, "Top wall deflection with the screen seated"),
+    ("HOOK_RELIEF", 0.15, "Gap between the seated glass edge and the top wall face"),
+    ("HOOK_ANGLE", 35.0, "Hook retention face, degrees from horizontal (overhang when printing)"),
+    ("RAMP_ANGLE", 35.0, "Hook insertion ramp, degrees from vertical"),
+    ("HOOK_TIP", 0.30, "Flat on the hook tip between the retention face and the ramp"),
+    ("CATCH_REACH", 1.00, "Bottom catch reach over the glass"),
+    ("CATCH_RELIEF", 0.30, "Gap between the glass bottom edge and the catch block face"),
+    ("CATCH_TOP_Z", 6.00, "Top of the bottom block and its catch"),
+    ("SIDE_CLEAR", 0.20, "Gap between the glass right edge and the side wall face"),
+    ("SIDE_PRELOAD", 0.25, "Side bump interference with the glass right edge"),
+    ("SIDE_BUMP_CHAMFER", 0.40, "Lead-in on the side bump"),
+    ("LEFT_RIB_T", 1.50, "Left datum rib thickness"),
+    ("LEFT_RIB_TOP_Z", 7.00, "Top of the left datum ribs"),
+    ("LEFT_RIB_CHAMFER", 0.60, "Lead-in on the left datum ribs"),
+    ("RIB_CUT_Z", 4.35, "Height to which the old locating ribs are removed"),
+    ("WALL_BOT_Z", "=SKIN_Z + WALL_GAP", "Underside of both sprung walls"),
+    ("TOP_WALL_Y0", "=SCREEN_Y1 + HOOK_RELIEF - HOOK_PRELOAD", "Free-state face of the top wall"),
+    ("HOOK_TIP_Y", "=SCREEN_Y1 - HOOK_PRELOAD - HOOK_REACH", "Free-state hook tip"),
+    ("CATCH_FACE_Y", "=SCREEN_Y0 - CATCH_RELIEF", "Catch block face"),
+    ("CATCH_TIP_Y", "=SCREEN_Y0 + CATCH_REACH", "Catch tip"),
+    ("CATCH_TIP_Z", "=SCREEN_BACK_Z + CATCH_REACH", "Catch tip underside (45 degree slope)"),
+    ("SIDE_WALL_X0", "=SCREEN_X1 + SIDE_CLEAR", "Side wall face"),
+    ("SIDE_BUMP_X", "=SCREEN_X1 - SIDE_PRELOAD", "Side bump face"),
+    ("LEFT_RIB_X0", "=SCREEN_X0 - LEFT_RIB_T", "Outer face of the left ribs"),
 ]
+ANGLES = {"HOOK_ANGLE", "RAMP_ANGLE"}
 P = {}
 for _name, _value, _note in PARAMS:
     if isinstance(_value, str):
         _expr = _value[1:]
-        for _k, _v in P.items():
-            _expr = _expr.replace(_k, repr(_v))
+        for _k in sorted(P, key=len, reverse=True):
+            _expr = _expr.replace(_k, repr(P[_k]))
         P[_name] = eval(_expr)  # noqa: S307 - formulas above are our own
     else:
         P[_name] = _value
 
-# Keeper layout (plate footprints, housing frame). The plate is FRAME_T thick
-# between FRAME_BOT_Z and FRAME_TOP_Z; every gap between these rectangles is a
-# slot cut through the plate.
-FRAME_X = (-26.8, 22.3)
-FRAME_Y = (8.2, 42.45)
-WINDOW_X = (-21.0, 18.0)
-WINDOW_Y = (14.5, 35.5)
-FPC_CUTOUT_Y = (19.5, 30.5)
-x0, x1 = FRAME_X
-y0, y1 = FRAME_Y
-wx0, wx1 = WINDOW_X
-wy0, wy1 = WINDOW_Y
+# Layout (housing frame).
+OUTER_X = (-27.3, 27.3)  # reaches 0.3 mm into the outer walls (inner faces at +-27.0)
+HOOK_X = ((-15.0, -9.0), (9.0, 15.0))
+SIDE_POST_Y = ((6.9, 9.3), (40.6, 42.1))
+SIDE_WALL_Y = (SIDE_POST_Y[0][1] - 0.3, SIDE_POST_Y[1][0] + 0.3)  # overlaps the posts
+SIDE_POST_X1 = 25.0
+SIDE_BUMP_Y = (21.4, 29.4)
+LEFT_RIB_Y = ((7.7, 20.5), (30.2, 42.0))
+BOTTOM_BLOCK_Y0 = 6.9  # overlaps the existing cross rib (face at Y 7.0)
+CATCH_X = (-26.85, 22.67)  # merges into the left ribs and the right posts
+TOP_RIB_CUT = ((-20.5, 20.5), (42.6, 45.7))
+RIGHT_RIB_CUT = ((22.4, 24.9), (10.1, 40.2))
+EPS = 0.02  # profile overlap into the wall they attach to
 
-FULL = [  # full plate thickness
-    ((x0, x1), (39.45, 40.65)),  # top rail
-    ((-7.5, 1.5), (wy1, 39.45)),  # top centre block, roots of fingers A and B
-    ((15.5, x1), (wy1, 39.45)),  # top right block
-    ((-23.5, -8.0), (y0, 9.2)),  # left hook beam, rooted in the corner block
-    ((-7.5, -7.0), (7.6, 9.7)),  # Y pusher root
-    ((-7.2, 2.0), (7.6, 8.4)),  # Y pusher leaf
-    ((2.5, 3.5), (y0, 9.7)),  # stop post between the pusher and the right beam
-    ((4.0, 20.3), (y0, 9.2)),  # right hook beam, rooted in the corner post
-    ((20.3, x1), (y0, 9.7)),  # bottom right corner post
-    ((wx0, x1), (9.7, 11.2)),  # spine
-    ((-7.5, 1.5), (11.2, wy0)),  # bottom centre block, roots of fingers C and D
-    ((15.5, x1), (11.2, wy0)),  # bottom right block
-    ((x0, -23.5), (y0, 9.9)),  # bottom left corner block, roots the X pusher and the left beam
-    ((-26.4, -25.6), (9.0, 19.4)),  # X pusher leaf
-    ((-25.1, wx0), (9.7, FPC_CUTOUT_Y[0])),  # left rail below the ribbon cutout
-    ((x0, wx0), (FPC_CUTOUT_Y[1], 39.45)),  # left rail above the ribbon cutout
-    ((wx1, x1), (9.7, y1)),  # right rail
-]
-THIN = [  # TAB_T thick, kept at the top face
-    ((x0, x1), (40.65, y1)),  # strip under the top lips
-    ((-12.0, -8.0), (7.2, y0)),  # left hook tab
-    ((4.0, 8.0), (7.2, y0)),  # right hook tab
-]
-LEAVES = [  # FINGER_T thick, kept at the top face
-    ((-20.5, -7.0), (35.95, 38.95)),  # finger A, free end at X -20.5
-    ((1.0, 15.0), (35.95, 38.95)),  # finger B, free end at X 15
-    ((-20.5, -7.0), (11.7, wy0)),  # finger C
-    ((1.0, 15.0), (11.7, wy0)),  # finger D
-]
-PILLARS = [((-20.5, -18.5), (36.0, 38.0)), ((13.0, 15.0), (36.0, 38.0)),
-           ((-20.5, -18.5), (12.0, 14.0)), ((13.0, 15.0), (12.0, 14.0))]
-FEET = [((-25.0, -23.5), (10.0, 12.0)), ((19.0, 21.0), (10.0, 12.0)),
-        ((-25.0, -23.5), (36.0, 38.0)), ((19.0, 21.0), (36.0, 38.0))]
-Y_TAB = ((0.0, 2.0), (7.6, P["SCREEN_Y0"] + P["PUSH_Y"]))
-X_TAB = ((-26.4, P["SCREEN_X0"] + P["PUSH_X"]), (16.0, 19.0))
-HOOK_TAB_X = ((-12.0, -8.0), (4.0, 8.0))
-PLATE_X = FRAME_X
-PLATE_Y = (7.2, y1)
-BANDS = [  # name, y range: the through pockets are grouped by band
-    ("WindowCutout", (wy0, wy1)),
-    ("TopSlots", (wy1, PLATE_Y[1])),
-    ("BottomSlots", (PLATE_Y[0], wy0)),
-]
 
-# Housing additions.
-TOP_RIB_X = (-20.0, 20.0)
-TOP_RIB_Y = (42.65, 45.65)
-TOP_LIP_X = ((-17.0, -11.0), (-3.0, 3.0), (11.0, 17.0))
-CROSS_WALL_Y = 5.50
-BOTTOM_BLOCK_X = ((-12.0, -8.0), (4.0, 8.0))
-BLOCK_Y = (CROSS_WALL_Y - 0.01, 7.0)
-BOTTOM_LIP_TIP_Y = P["BOTTOM_LIP_TIP_Y"]
+def hook_profile():
+    """Hook cross-section (housing Y, Z) in the free state, attached to the top wall face."""
+    tan_hook = math.tan(math.radians(P["HOOK_ANGLE"]))
+    tan_ramp = math.tan(math.radians(P["RAMP_ANGLE"]))
+    root_y = P["TOP_WALL_Y0"] + EPS
+    tip_y = P["HOOK_TIP_Y"]
+    root_z = P["SCREEN_BACK_Z"] - (P["HOOK_RELIEF"] + EPS) * tan_hook
+    tip_z = P["SCREEN_BACK_Z"] + P["HOOK_REACH"] * tan_hook
+    flat_z = tip_z + P["HOOK_TIP"]
+    ramp_z = flat_z + (P["HOOK_REACH"] + P["HOOK_PRELOAD"] + EPS) / tan_ramp
+    return [(root_y, root_z), (tip_y, tip_z), (tip_y, flat_z), (root_y, ramp_z)]
+
+
+HOOK_EXPR = {
+    0: {"y1": ("HookRootZ", "Params.SCREEN_BACK_Z - (Params.HOOK_RELIEF + %g mm) * tan(Params.HOOK_ANGLE)" % EPS),
+        "y2": ("HookTipZ", "Params.SCREEN_BACK_Z + Params.HOOK_REACH * tan(Params.HOOK_ANGLE)")},
+    1: ("HookTipY", "Params.HOOK_TIP_Y"),
+    2: {"y1": ("HookFlatZ", "Params.SCREEN_BACK_Z + Params.HOOK_REACH * tan(Params.HOOK_ANGLE) + Params.HOOK_TIP"),
+        "y2": ("HookRampZ", "Params.SCREEN_BACK_Z + Params.HOOK_REACH * tan(Params.HOOK_ANGLE) + Params.HOOK_TIP"
+                            " + (Params.HOOK_REACH + Params.HOOK_PRELOAD + %g mm) / tan(Params.RAMP_ANGLE)" % EPS)},
+    3: ("HookRootY", "Params.TOP_WALL_Y0 + %g mm" % EPS),
+}
+
+
+def catch_profile():
+    """Bottom catch cross-section (housing Y, Z): 45 degree underside through the glass back corner."""
+    face_y = P["CATCH_FACE_Y"] - 0.05
+    face_z = P["SCREEN_BACK_Z"] - P["CATCH_RELIEF"] - 0.05
+    return [(face_y, face_z), (P["CATCH_TIP_Y"], P["CATCH_TIP_Z"]), (P["CATCH_TIP_Y"], P["CATCH_TOP_Z"]),
+            (face_y, P["CATCH_TOP_Z"])]
+
+
+CATCH_EXPR = {
+    0: {"y1": ("CatchFaceZ", "Params.SCREEN_BACK_Z - Params.CATCH_RELIEF - 0.05 mm"),
+        "y2": ("CatchTipZ", "Params.CATCH_TIP_Z")},
+    1: ("CatchTipY", "Params.CATCH_TIP_Y"),
+    2: ("CatchTop", "Params.CATCH_TOP_Z"),
+    3: ("CatchFaceY", "Params.CATCH_FACE_Y - 0.05 mm"),
+}
 
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
-
-
-def rect_face(x, y):
-    pts = [V(x[0], y[0], 0), V(x[1], y[0], 0), V(x[1], y[1], 0), V(x[0], y[1], 0), V(x[0], y[0], 0)]
-    return Part.Face(Part.makePolygon(pts))
-
-
-def union_faces(rects):
-    faces = [rect_face(*r) for r in rects]
-    shape = faces[0] if len(faces) == 1 else faces[0].fuse(faces[1:])
-    return shape.removeSplitter()
-
-
-def simplify(pts):
-    """Drop repeated and collinear vertices of a closed polygon."""
-    pts = [(round(x, 6), round(y, 6)) for x, y in pts]
-    changed = True
-    while changed and len(pts) > 3:
-        changed = False
-        for i in range(len(pts)):
-            a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
-            cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
-            if b == a or abs(cross) < 1e-9:
-                del pts[i]
-                changed = True
-                break
-    return pts
-
-
-def polygons(shape):
-    """Closed polygons (vertex lists) of every face of a planar shape."""
-    out = []
-    for f in shape.Faces:
-        if len(f.Wires) != 1:
-            raise RuntimeError("unexpected hole in a footprint region")
-        out.append(simplify([(v.X, v.Y) for v in f.OuterWire.OrderedVertexes]))
-    return out
-
-
-def regions(minuend, subtrahend):
-    """Polygons of (union of minuend rects) minus (union of subtrahend rects)."""
-    shape = union_faces(minuend).cut(union_faces(subtrahend)).removeSplitter()
-    return polygons(shape)
 
 
 def rect_pts(x, y):
@@ -248,7 +206,9 @@ def polygon(sk, pts, named=None):
     Horizontal and vertical edges get a horizontal/vertical constraint and a
     distance from the origin for their start point; a diagonal edge gets the
     coordinates its neighbours leave free. ``named`` maps an edge index to
-    (constraint name, expression) for the position constraint of that edge.
+    (constraint name, expression) for the position constraint of a horizontal
+    or vertical edge, or to a dict with keys among x1, y1, x2, y2 for the
+    endpoint constraints of a diagonal edge.
     """
     n = len(pts)
     geo = [sk.addGeometry(Part.LineSegment(V(pts[i][0], pts[i][1], 0),
@@ -259,24 +219,27 @@ def polygon(sk, pts, named=None):
     kinds = [edge_kind(pts[i], pts[(i + 1) % n]) for i in range(n)]
     for i in range(n):
         a = pts[i]
-        name, expr = (named or {}).get(i, (None, None))
+        spec = (named or {}).get(i)
         if kinds[i] == "H":
+            name, expr = spec or (None, None)
             sk.addConstraint(Sketcher.Constraint("Horizontal", geo[i]))
             distance_constraint(sk, "DistanceY", geo[i], 1, a[1], name, expr)
         elif kinds[i] == "V":
+            name, expr = spec or (None, None)
             sk.addConstraint(Sketcher.Constraint("Vertical", geo[i]))
             distance_constraint(sk, "DistanceX", geo[i], 1, a[0], name, expr)
         else:
+            spec = spec or {}
             prev_kind, next_kind = kinds[i - 1], kinds[(i + 1) % n]
             b = pts[(i + 1) % n]
             if prev_kind != "V":
-                distance_constraint(sk, "DistanceX", geo[i], 1, a[0])
+                distance_constraint(sk, "DistanceX", geo[i], 1, a[0], *spec.get("x1", (None, None)))
             if prev_kind != "H":
-                distance_constraint(sk, "DistanceY", geo[i], 1, a[1])
+                distance_constraint(sk, "DistanceY", geo[i], 1, a[1], *spec.get("y1", (None, None)))
             if next_kind != "V":
-                distance_constraint(sk, "DistanceX", geo[i], 2, b[0])
+                distance_constraint(sk, "DistanceX", geo[i], 2, b[0], *spec.get("x2", (None, None)))
             if next_kind != "H":
-                distance_constraint(sk, "DistanceY", geo[i], 2, b[1])
+                distance_constraint(sk, "DistanceY", geo[i], 2, b[1], *spec.get("y2", (None, None)))
     return geo
 
 
@@ -318,33 +281,30 @@ def pad(body, sk, name, length=None, length_expr=None, reversed_=False):
     return f
 
 
-def pocket(body, sk, name, length=None, length_expr=None, reversed_=False, through=False):
+def pocket(body, sk, name, length=None, length_expr=None, reversed_=False):
     f = body.newObject("PartDesign::Pocket", name)
     f.Refine = True
     f.Profile = sk
-    if through:
-        f.Type = "ThroughAll"
-    else:
-        f.Type = "Length"
-        if length is not None:
-            f.Length = length
-        if length_expr:
-            f.setExpression("Length", length_expr)
+    f.Type = "Length"
+    if length is not None:
+        f.Length = length
+    if length_expr:
+        f.setExpression("Length", length_expr)
     f.Reversed = reversed_
     return f
 
 
-def edges_along_x(shape, y, z, x_ranges, min_length=1.0):
-    """Names of the straight edges of ``shape`` that run along X on the line (y, z)."""
+def edges_along_y(shape, x, z, y_ranges, min_length=1.0):
+    """Names of the straight edges of ``shape`` that run along Y on the line (x, z)."""
     names = []
     for i, e in enumerate(shape.Edges):
         a, b = e.Vertexes[0].Point, e.Vertexes[-1].Point
-        on_line = all(abs(p.y - y) < 1e-6 and abs(p.z - z) < 1e-6 for p in (a, b))
-        inside = any(xr[0] - 1e-6 <= a.x <= xr[1] + 1e-6 and xr[0] - 1e-6 <= b.x <= xr[1] + 1e-6 for xr in x_ranges)
-        if on_line and inside and abs(a.x - b.x) >= min_length:
+        on_line = all(abs(p.x - x) < 1e-6 and abs(p.z - z) < 1e-6 for p in (a, b))
+        inside = any(yr[0] - 1e-6 <= a.y <= yr[1] + 1e-6 and yr[0] - 1e-6 <= b.y <= yr[1] + 1e-6 for yr in y_ranges)
+        if on_line and inside and abs(a.y - b.y) >= min_length:
             names.append("Edge%d" % (i + 1))
-    if len(names) != len(x_ranges):
-        raise RuntimeError("expected %d edges on y %.2f z %.2f, found %s" % (len(x_ranges), y, z, names))
+    if len(names) != len(y_ranges):
+        raise RuntimeError("expected %d edges on x %.2f z %.2f, found %s" % (len(y_ranges), x, z, names))
     return names
 
 
@@ -361,12 +321,22 @@ def recompute(doc, *objs):
     for o in objs:
         if "Invalid" in o.State or "Touched" in o.State:
             raise RuntimeError("%s did not recompute cleanly: %s" % (o.Name, o.State))
+        if getattr(o, "isValid", None) and not o.isValid():
+            raise RuntimeError("%s is not valid after recompute: %s" % (o.Name, o.State))
 
 
-def report(label, shape):
+_last_volume = [None]
+
+
+def report(label, shape, must_change=True):
     bb = shape.BoundBox
-    print("  %-22s solids %d valid %s vol %9.3f  z %.2f..%.2f" % (
+    print("  %-18s solids %d valid %s vol %9.3f  z %.2f..%.2f" % (
         label, len(shape.Solids), shape.isValid(), shape.Volume, bb.ZMin, bb.ZMax))
+    if len(shape.Solids) != 1 or not shape.isValid():
+        raise RuntimeError("%s left the body with %d solids (valid %s)" % (label, len(shape.Solids), shape.isValid()))
+    if must_change and _last_volume[0] is not None and abs(shape.Volume - _last_volume[0]) < 1e-6:
+        raise RuntimeError("%s did not change the body; a floating pad must overlap existing material" % label)
+    _last_volume[0] = shape.Volume
 
 
 # --------------------------------------------------------------------------
@@ -381,7 +351,10 @@ def build_params(doc):
     sheet.set("C1", "Note")
     for row, (name, value, note) in enumerate(PARAMS, start=2):
         sheet.set("A%d" % row, name)
-        sheet.set("B%d" % row, value if isinstance(value, str) else "=%g mm" % value)
+        if isinstance(value, str):
+            sheet.set("B%d" % row, value)
+        else:
+            sheet.set("B%d" % row, "=%g %s" % (value, "deg" if name in ANGLES else "mm"))
         sheet.setAlias("B%d" % row, name)
         sheet.set("C%d" % row, note)
     doc.recompute()
@@ -397,6 +370,18 @@ def build_params(doc):
 # --------------------------------------------------------------------------
 
 
+def xy_rect_pad(body, doc, name, rects, z0_expr, z1_expr, named=None):
+    """Pad rectangles sketched on the XY plane at Params.<z0> up to Params.<z1>."""
+    sk = sketch(body, name + "Sketch", "XY_Plane", P[z0_expr], "Params." + z0_expr)
+    for i, r in enumerate(rects):
+        polygon(sk, rect_pts(*r), named=(named or {}).get(i))
+    finish_sketch(sk)
+    f = pad(body, sk, name, length_expr="Params.%s - Params.%s" % (z1_expr, z0_expr))
+    recompute(doc, sk, f)
+    report(name, body.Shape)
+    return f
+
+
 def build_housing(doc):
     print("housing")
     solid = Part.read(str(SOURCE))
@@ -408,139 +393,72 @@ def build_housing(doc):
     body = doc.addObject("PartDesign::Body", "TopHousing")
     body.BaseFeature = base
     recompute(doc, body)
-    report("base", body.Shape)
+    report("base", body.Shape, must_change=False)
 
-    # Raise the locating rib to the lip height.
-    sk = sketch(body, "TopRibSketch", "XY_Plane", P["SKIN_Z"], "Params.SKIN_Z")
-    polygon(sk, rect_pts(TOP_RIB_X, TOP_RIB_Y))
-    finish_sketch(sk)
-    rib = pad(body, sk, "RaiseTopRib", length_expr="Params.FEATURE_TOP_Z - Params.SKIN_Z")
-    recompute(doc, sk, rib)
-    report("RaiseTopRib", body.Shape)
-
-    # Three top lips: one sketch on the lip-underside plane, padded up to the
-    # feature top, then a 45 degree lead-in chamfer on their inner top edges.
-    inner = P["RIB_Y"] - P["LIP_OVERLAP"]
-    sk = sketch(body, "TopLipsSketch", "XY_Plane", P["FRAME_TOP_Z"], "Params.FRAME_TOP_Z")
-    for i, xr in enumerate(TOP_LIP_X, start=1):
-        polygon(sk, rect_pts(xr, (inner, P["RIB_Y"])), named={
-            0: ("LipReach%d" % i, "Params.RIB_Y - Params.LIP_OVERLAP"),
-            2: ("RibFace%d" % i, "Params.RIB_Y"),
-        })
-    finish_sketch(sk)
-    lips = pad(body, sk, "TopLips", length_expr="Params.FEATURE_TOP_Z - Params.FRAME_TOP_Z")
-    recompute(doc, sk, lips)
-    report("TopLips", body.Shape)
-    names = edges_along_x(lips.Shape, inner, P["FEATURE_TOP_Z"], TOP_LIP_X)
-    ch = chamfer(body, lips, names, "TopLipLeadIn", "Params.LIP_CHAMFER")
-    recompute(doc, ch)
-    report("TopLipLeadIn", body.Shape)
-
-    # Two bottom blocks with their lips, each a profile in the YZ plane
-    # (sketch X = housing Y, sketch Y = housing Z) padded across X.
-    profile = [
-        (BLOCK_Y[0], P["SKIN_Z"]),
-        (BLOCK_Y[1], P["SKIN_Z"]),
-        (BLOCK_Y[1], P["FRAME_TOP_Z"]),
-        (BOTTOM_LIP_TIP_Y, P["FRAME_TOP_Z"]),
-        (BOTTOM_LIP_TIP_Y, P["FEATURE_TOP_Z"] - P["LIP_CHAMFER"]),
-        (BLOCK_Y[1], P["FEATURE_TOP_Z"]),
-        (BLOCK_Y[0], P["FEATURE_TOP_Z"]),
-    ]
-    for side, xr in zip(("Left", "Right"), BOTTOM_BLOCK_X):
-        sk = sketch(body, "BottomBlock%sProfile" % side, "YZ_Plane", xr[0])
-        polygon(sk, profile, named={
-            0: ("Skin", "Params.SKIN_Z"),
-            2: ("LipUnderside", "Params.FRAME_TOP_Z"),
-            3: ("LipTip", "Params.BOTTOM_LIP_TIP_Y"),
-            5: ("BlockTop", "Params.FEATURE_TOP_Z"),
-        })
+    # The old locating ribs sit where the sprung walls go: remove them.
+    for name, (xr, yr) in (("CutTopRib", TOP_RIB_CUT), ("CutRightRib", RIGHT_RIB_CUT)):
+        sk = sketch(body, name + "Sketch", "XY_Plane", P["SKIN_Z"], "Params.SKIN_Z")
+        polygon(sk, rect_pts(xr, yr))
         finish_sketch(sk)
-        block = pad(body, sk, "BottomBlock%s" % side, length=xr[1] - xr[0])
-        recompute(doc, sk, block)
-        report("BottomBlock%s" % side, body.Shape)
-    return body, base
-
-
-# --------------------------------------------------------------------------
-# Keeper body
-# --------------------------------------------------------------------------
-
-
-def build_keeper(doc):
-    print("keeper")
-    body = doc.addObject("PartDesign::Body", "ScreenKeeper")
-    plate_parts = FULL + THIN + LEAVES
-
-    sk = sketch(body, "PlateOutline", "XY_Plane", P["FRAME_BOT_Z"], "Params.FRAME_BOT_Z")
-    polygon(sk, rect_pts(PLATE_X, PLATE_Y))
-    finish_sketch(sk)
-    plate = pad(body, sk, "Plate", length_expr="Params.FRAME_T")
-    recompute(doc, sk, plate)
-    report("Plate", body.Shape)
-
-    # Through pockets: everything inside the plate outline that is not a part.
-    for name, band_y in BANDS:
-        polys = regions([(PLATE_X, band_y)], plate_parts)
-        sk = sketch(body, name + "Sketch", "XY_Plane", P["FRAME_TOP_Z"], "Params.FRAME_TOP_Z")
-        for poly in polys:
-            polygon(sk, poly)
-        finish_sketch(sk)
-        f = pocket(body, sk, name, through=True)
+        f = pocket(body, sk, name, length_expr="Params.RIB_CUT_Z - Params.SKIN_Z", reversed_=True)
         recompute(doc, sk, f)
         report(name, body.Shape)
 
-    # Thin the lip strips and hook tabs from below.
-    sk = sketch(body, "ThinStripsSketch", "XY_Plane", P["FRAME_BOT_Z"], "Params.FRAME_BOT_Z")
-    for poly in regions(THIN, FULL):
-        polygon(sk, poly)
+    # Rigid bottom block (merges with the cross rib and the two bosses) and its
+    # 45 degree catch over the glass's bottom edge.
+    xy_rect_pad(body, doc, "BottomBlock", [(OUTER_X, (BOTTOM_BLOCK_Y0, P["CATCH_FACE_Y"]))],
+                "SKIN_Z", "CATCH_TOP_Z", named={0: {2: ("CatchFace", "Params.CATCH_FACE_Y")}})
+    sk = sketch(body, "BottomCatchProfile", "YZ_Plane", CATCH_X[0])
+    polygon(sk, catch_profile(), named=CATCH_EXPR)
     finish_sketch(sk)
-    f = pocket(body, sk, "ThinStrips", length_expr="Params.FRAME_T - Params.TAB_T", reversed_=True)
+    f = pad(body, sk, "BottomCatch", length=CATCH_X[1] - CATCH_X[0])
     recompute(doc, sk, f)
-    report("ThinStrips", body.Shape)
+    report("BottomCatch", body.Shape)
 
-    # Thin the four finger leaves from below.
-    sk = sketch(body, "FingerLeavesSketch", "XY_Plane", P["FRAME_BOT_Z"], "Params.FRAME_BOT_Z")
-    for poly in regions(LEAVES, FULL):
-        polygon(sk, poly)
-    finish_sketch(sk)
-    f = pocket(body, sk, "FingerLeaves", length_expr="Params.FRAME_T - Params.FINGER_T", reversed_=True)
-    recompute(doc, sk, f)
-    report("FingerLeaves", body.Shape)
-
-    # Pillars under the finger tips, down to the preloaded tip height.
-    sk = sketch(body, "FingerPillarsSketch", "XY_Plane", P["FINGER_BOT_Z"], "Params.FINGER_BOT_Z")
-    for r in PILLARS:
-        polygon(sk, rect_pts(*r))
-    finish_sketch(sk)
-    f = pad(body, sk, "FingerPillars", length_expr="Params.FINGER_BOT_Z - Params.BUMP_TIP_Z", reversed_=True)
-    recompute(doc, sk, f)
-    report("FingerPillars", body.Shape)
-
-    # Rigid feet, the backstop above the screen.
-    sk = sketch(body, "FeetSketch", "XY_Plane", P["FRAME_BOT_Z"], "Params.FRAME_BOT_Z")
-    for r in FEET:
-        polygon(sk, rect_pts(*r))
-    finish_sketch(sk)
-    f = pad(body, sk, "Feet", length_expr="Params.FRAME_BOT_Z - Params.FOOT_Z", reversed_=True)
-    recompute(doc, sk, f)
-    report("Feet", body.Shape)
-
-    # Pusher tabs reaching down beside the screen edges.
-    sk = sketch(body, "PusherTabsSketch", "XY_Plane", P["FRAME_BOT_Z"], "Params.FRAME_BOT_Z")
-    polygon(sk, rect_pts(*Y_TAB), named={2: ("PushYFace", "Params.SCREEN_Y0 + Params.PUSH_Y")})
-    polygon(sk, rect_pts(*X_TAB), named={1: ("PushXFace", "Params.SCREEN_X0 + Params.PUSH_X")})
-    finish_sketch(sk)
-    tabs = pad(body, sk, "PusherTabs", length_expr="Params.FRAME_BOT_Z - Params.PUSHER_TIP_Z", reversed_=True)
-    recompute(doc, sk, tabs)
-    report("PusherTabs", body.Shape)
-
-    # Lead-in chamfers on the outer bottom edges of the hook tabs.
-    names = edges_along_x(tabs.Shape, PLATE_Y[0], P["FRAME_TOP_Z"] - P["TAB_T"], HOOK_TAB_X)
-    ch = chamfer(body, tabs, names, "HookLeadIn", "Params.HOOK_CHAMFER")
+    # Left datum ribs either side of the ribbon cable, with a lead-in chamfer.
+    ribs = xy_rect_pad(body, doc, "LeftRibs", [((P["LEFT_RIB_X0"], P["SCREEN_X0"]), yr) for yr in LEFT_RIB_Y],
+                       "SKIN_Z", "LEFT_RIB_TOP_Z",
+                       named={i: {1: ("RibFace%d" % (i + 1), "Params.SCREEN_X0"),
+                                  3: ("RibBack%d" % (i + 1), "Params.LEFT_RIB_X0")} for i in range(2)})
+    names = edges_along_y(ribs.Shape, P["SCREEN_X0"], P["LEFT_RIB_TOP_Z"], LEFT_RIB_Y)
+    ch = chamfer(body, ribs, names, "LeftRibLeadIn", "Params.LEFT_RIB_CHAMFER")
     recompute(doc, ch)
-    report("HookLeadIn", body.Shape)
-    return body
+    report("LeftRibLeadIn", body.Shape)
+
+    # Sprung side wall: two rigid posts on the skin, then the wall floating
+    # WALL_GAP above the skin between them (a floating pad must overlap existing
+    # material, so the posts come first), then the central bump that presses
+    # the glass against the left ribs.
+    xy_rect_pad(body, doc, "SidePosts", [((P["SIDE_WALL_X0"], SIDE_POST_X1), yr) for yr in SIDE_POST_Y],
+                "SKIN_Z", "SIDE_WALL_TOP_Z",
+                named={i: {3: ("PostFace%d" % (i + 1), "Params.SIDE_WALL_X0")} for i in range(2)})
+    xy_rect_pad(body, doc, "SideWall", [((P["SIDE_WALL_X0"], P["SIDE_WALL_X0"] + P["WALL_T"]), SIDE_WALL_Y)],
+                "WALL_BOT_Z", "SIDE_WALL_TOP_Z",
+                named={0: {1: ("SideWallBack", "Params.SIDE_WALL_X0 + Params.WALL_T"),
+                           3: ("SideWallFace", "Params.SIDE_WALL_X0")}})
+    bump = xy_rect_pad(body, doc, "SideBump", [((P["SIDE_BUMP_X"], P["SIDE_WALL_X0"] + EPS), SIDE_BUMP_Y)],
+                       "WALL_BOT_Z", "SIDE_WALL_TOP_Z",
+                       named={0: {1: ("BumpBack", "Params.SIDE_WALL_X0 + %g mm" % EPS),
+                                  3: ("BumpFace", "Params.SIDE_BUMP_X")}})
+    names = edges_along_y(bump.Shape, P["SIDE_BUMP_X"], P["SIDE_WALL_TOP_Z"], [SIDE_BUMP_Y])
+    ch = chamfer(body, bump, names, "SideBumpLeadIn", "Params.SIDE_BUMP_CHAMFER")
+    recompute(doc, ch)
+    report("SideBumpLeadIn", body.Shape)
+
+    # Sprung top wall: floats WALL_GAP above the skin from outer wall to outer
+    # wall; two hooks click over the glass's top edge.
+    xy_rect_pad(body, doc, "TopWall", [(OUTER_X, (P["TOP_WALL_Y0"], P["TOP_WALL_Y0"] + P["WALL_T"]))],
+                "WALL_BOT_Z", "TOP_WALL_TOP_Z",
+                named={0: {0: ("TopWallFace", "Params.TOP_WALL_Y0"),
+                           2: ("TopWallBack", "Params.TOP_WALL_Y0 + Params.WALL_T")}})
+    for side, xr in zip(("Left", "Right"), HOOK_X):
+        sk = sketch(body, "Hook%sProfile" % side, "YZ_Plane", xr[0])
+        polygon(sk, hook_profile(), named=HOOK_EXPR)
+        finish_sketch(sk)
+        f = pad(body, sk, "Hook%s" % side, length=xr[1] - xr[0])
+        recompute(doc, sk, f)
+        report("Hook%s" % side, body.Shape)
+    return body, base
 
 
 # --------------------------------------------------------------------------
@@ -575,39 +493,56 @@ def yz_prism(x, profile):
     return face.extrude(V(x[1] - x[0], 0, 0))
 
 
-def reference_keeper():
-    """The same keeper as a plain union of boxes, independent of PartDesign."""
-    zb, zt = P["FRAME_BOT_Z"], P["FRAME_TOP_Z"]
-    parts = [box(x, y, (zb, zt)) for x, y in FULL]
-    parts += [box(x, y, (zt - P["TAB_T"], zt)) for x, y in THIN]
-    parts += [box(x, y, (P["FINGER_BOT_Z"], zt)) for x, y in LEAVES]
-    parts += [box(x, y, (P["BUMP_TIP_Z"], P["FINGER_BOT_Z"])) for x, y in PILLARS]
-    parts += [box(x, y, (P["FOOT_Z"], zb)) for x, y in FEET]
-    parts += [box(x, y, (P["PUSHER_TIP_Z"], zb)) for x, y in (Y_TAB, X_TAB)]
-    shape = parts[0].fuse(parts[1:]).removeSplitter()
-    c = P["HOOK_CHAMFER"]
-    tz = zt - P["TAB_T"]
-    for xr in HOOK_TAB_X:
-        shape = shape.cut(yz_prism((xr[0] - 0.01, xr[1] + 0.01), [(PLATE_Y[0], tz), (PLATE_Y[0] + c, tz), (PLATE_Y[0], tz + c)]))
-    return shape
+def xz_prism(y, profile):
+    face = Part.Face(Part.makePolygon([V(x, y[0], z) for x, z in profile] + [V(profile[0][0], y[0], profile[0][1])]))
+    return face.extrude(V(0, y[1] - y[0], 0))
 
 
 def reference_housing(base_shape):
-    zt, ft = P["FRAME_TOP_Z"], P["FEATURE_TOP_Z"]
-    inner = P["RIB_Y"] - P["LIP_OVERLAP"]
-    parts = [box(TOP_RIB_X, TOP_RIB_Y, (P["SKIN_Z"], ft))]
-    for xr in TOP_LIP_X:
-        parts.append(yz_prism(xr, [(P["RIB_Y"], zt), (inner, zt), (inner, ft - P["LIP_CHAMFER"]), (inner + P["LIP_CHAMFER"], ft), (P["RIB_Y"], ft)]))
-    for xr in BOTTOM_BLOCK_X:
-        parts.append(yz_prism(xr, [(BLOCK_Y[0], P["SKIN_Z"]), (BLOCK_Y[1], P["SKIN_Z"]), (BLOCK_Y[1], zt), (BOTTOM_LIP_TIP_Y, zt), (BOTTOM_LIP_TIP_Y, ft - P["LIP_CHAMFER"]), (BLOCK_Y[1], ft), (BLOCK_Y[0], ft)]))
-    return base_shape.fuse(parts)
+    """The same housing from plain Part primitives, independent of PartDesign."""
+    skin, wb = P["SKIN_Z"], P["WALL_BOT_Z"]
+    shape = base_shape
+    for xr, yr in (TOP_RIB_CUT, RIGHT_RIB_CUT):
+        shape = shape.cut(box(xr, yr, (skin, P["RIB_CUT_Z"])))
+    parts = [
+        box(OUTER_X, (BOTTOM_BLOCK_Y0, P["CATCH_FACE_Y"]), (skin, P["CATCH_TOP_Z"])),
+        yz_prism(CATCH_X, catch_profile()),
+        box((P["SIDE_WALL_X0"], P["SIDE_WALL_X0"] + P["WALL_T"]), SIDE_WALL_Y, (wb, P["SIDE_WALL_TOP_Z"])),
+        box((P["SIDE_BUMP_X"], P["SIDE_WALL_X0"] + EPS), SIDE_BUMP_Y, (wb, P["SIDE_WALL_TOP_Z"])),
+        box(OUTER_X, (P["TOP_WALL_Y0"], P["TOP_WALL_Y0"] + P["WALL_T"]), (wb, P["TOP_WALL_TOP_Z"])),
+    ]
+    parts += [box((P["LEFT_RIB_X0"], P["SCREEN_X0"]), yr, (skin, P["LEFT_RIB_TOP_Z"])) for yr in LEFT_RIB_Y]
+    parts += [box((P["SIDE_WALL_X0"], SIDE_POST_X1), yr, (skin, P["SIDE_WALL_TOP_Z"])) for yr in SIDE_POST_Y]
+    parts += [yz_prism(xr, hook_profile()) for xr in HOOK_X]
+    shape = shape.fuse(parts)
+    for yr in LEFT_RIB_Y:
+        shape = shape.cut(chamfer_prism(yr, P["SCREEN_X0"], P["LEFT_RIB_TOP_Z"], P["LEFT_RIB_CHAMFER"], -1))
+    shape = shape.cut(chamfer_prism(SIDE_BUMP_Y, P["SIDE_BUMP_X"], P["SIDE_WALL_TOP_Z"], P["SIDE_BUMP_CHAMFER"], +1))
+    return shape.removeSplitter()
 
 
-def compare(label, shape, ref):
-    extra = shape.cut(ref).Volume
-    missing = ref.cut(shape).Volume
-    print("  %s vs reference: extra %.4f mm3, missing %.4f mm3" % (label, extra, missing))
-    if extra > 0.001 or missing > 0.001:
+def chamfer_prism(y, x, z, c, into):
+    """What an equal-distance chamfer of size ``c`` removes along the Y edge at (x, z).
+
+    ``into`` is +1 when the material lies toward +X of the edge, -1 toward -X;
+    the material is below the edge in Z. The free corner is pushed out a little
+    so the cut does not leave a skin, the hypotenuse is exact.
+    """
+    e = 0.01 * into
+    return xz_prism((y[0] - 0.01, y[1] + 0.01),
+                    [(x + into * c, z), (x + into * c, z + 0.01), (x - e, z + 0.01), (x - e, z - c), (x, z - c)])
+
+
+def compare(label, shape, ref, tolerance=0.001):
+    extra, missing = shape.cut(ref), ref.cut(shape)
+    print("  %s vs reference: extra %.4f mm3, missing %.4f mm3" % (label, extra.Volume, missing.Volume))
+    for what, diff in (("extra", extra), ("missing", missing)):
+        for s in diff.Solids:
+            if s.Volume > 1e-6:
+                bb = s.BoundBox
+                print("    %s %.4f mm3 at x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f" % (
+                    what, s.Volume, bb.XMin, bb.XMax, bb.YMin, bb.YMax, bb.ZMin, bb.ZMax))
+    if extra.Volume > tolerance or missing.Volume > tolerance:
         raise RuntimeError("%s differs from its reference" % label)
 
 
@@ -615,7 +550,7 @@ def compare(label, shape, ref):
 
 
 def export_stl(shape, path):
-    """Write a binary STL of ``shape`` for slicing (same tolerances as the STEP exports' checks)."""
+    """Write a binary STL of ``shape`` for slicing."""
     mesh = MeshPart.meshFromShape(
         Shape=shape,
         LinearDeflection=STL_LINEAR_DEFLECTION,
@@ -631,7 +566,6 @@ def main():
     doc.Label = "screen-snap-fit"
     build_params(doc)
     housing, base = build_housing(doc)
-    keeper = build_keeper(doc)
     build_references(doc)
     doc.recompute()
 
@@ -641,20 +575,12 @@ def main():
 
     if os.environ.get("SNAPFIT_SKIP_VERIFY") != "1":
         print("verify")
-        compare("keeper", keeper.Shape, reference_keeper())
         compare("housing", housing.Shape, reference_housing(base.Shape))
 
     doc.saveAs(str(DOC_OUT))
     housing.Shape.exportStep(str(HOUSING_OUT))
-    keeper.Shape.exportStep(str(KEEPER_OUT))
-    m = App.Matrix()
-    m.rotateX(math.pi)
-    m.move(V(0, 0, P["FRAME_TOP_Z"]))
-    keeper_print = keeper.Shape.transformGeometry(m)
-    keeper_print.exportStep(str(KEEPER_PRINT_OUT))
     export_stl(housing.Shape, HOUSING_STL)
-    export_stl(keeper_print, KEEPER_PRINT_STL)
-    for out in (DOC_OUT, HOUSING_OUT, KEEPER_OUT, KEEPER_PRINT_OUT, HOUSING_STL, KEEPER_PRINT_STL):
+    for out in (DOC_OUT, HOUSING_OUT, HOUSING_STL):
         print("wrote %s (%.1f kB)" % (out.relative_to(CAD_DIR.parent.parent), out.stat().st_size / 1024))
 
 
