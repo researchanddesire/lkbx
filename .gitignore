@@ -34,3 +34,10 @@ hardware-bundle/
 
 # Local development display captures
 captures/
+
+# CAD exports regenerated from the FreeCAD documents (STEP/STL are LFS patterns)
+hardware/cad/cuff-dock.step
+hardware/cad/cuff-plate.step
+hardware/cad/cuff-dock-print.stl
+hardware/cad/cuff-plate-print.stl
+*.FCBak
