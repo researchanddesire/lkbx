@@ -24,3 +24,7 @@ This directory contains STEP exports from the Lockbox Onshape document. Each fil
 - `pcb.step`
 - `screen.step`
 - `top-housing.step`
+
+## Variants
+
+- `plug-lockout/`: bottom housing that locks away an appliance's wall plug, its cord leaving through a slot too narrow for the plug (FreeCAD source, see its README).
