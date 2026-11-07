@@ -34,3 +34,7 @@ hardware-bundle/
 
 # Local development display captures
 captures/
+hardware/cad/top-housing-snap-fit.step
+hardware/cad/top-housing-snap-fit.stl
+*.FCBak
+hardware/cad/screen-snap-fit/bambu/sliced/
