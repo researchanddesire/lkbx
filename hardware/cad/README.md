@@ -24,3 +24,7 @@ This directory contains STEP exports from the Lockbox Onshape document. Each fil
 - `pcb.step`
 - `screen.step`
 - `top-housing.step`
+
+## Variants
+
+- `wrist-restraints/`: cuff dock and strap plate that turn the lockbox into a hub locking two soft wrist cuffs, with a screw-out emergency release (FreeCAD source, see its README).
