@@ -73,18 +73,19 @@ PARAMS = [
     ("SCREEN_X0", -25.35, "Screen left edge, seated against the right rib"),
     ("SCREEN_Y0", 8.05, "Screen bottom edge, seated against the top rib"),
     ("RIB_Y", 42.65, "Screen-side face of the top locating rib"),
-    ("FRAME_TOP_Z", 7.30, "Lip undersides; the keeper floats up to here"),
+    ("FRAME_TOP_Z", 7.40, "Lip undersides; the keeper floats up to here (37 layers of 0.2 mm from the front face)"),
     ("FRAME_T", 3.00, "Keeper plate thickness"),
-    ("TAB_T", 1.00, "Strips that go under the lips, thinned from below"),
+    ("TAB_T", 1.40, "Strips that go under the lips, thinned from below"),
     ("FINGER_T", 1.40, "Leaf finger thickness, thinned from below"),
-    ("PRELOAD", 0.35, "Finger pillar interference against the screen"),
-    ("BACKSTOP", 0.15, "Gap between the rigid feet and the screen"),
+    ("PRELOAD", 0.30, "Finger pillar interference against the screen"),
+    ("BACKSTOP", 0.10, "Gap between the rigid feet and the screen"),
     ("PUSHER_TIP_Z", 2.60, "How far the pusher tabs reach down beside the screen edge"),
     ("PUSH_X", 0.20, "X pusher interference against the seated screen"),
     ("PUSH_Y", 0.20, "Y pusher interference against the seated screen"),
-    ("LIP_OVERLAP", 1.00, "Top lip reach over the pocket"),
-    ("LIP_CHAMFER", 0.80, "45 degree lead-in on the lips"),
-    ("FEATURE_TOP_Z", 8.85, "Top of the rib, lips and bottom blocks"),
+    ("LIP_OVERLAP", 1.60, "Top lip reach over the pocket"),
+    ("LIP_CHAMFER", 1.20, "Lead-in chamfer height on the lips"),
+    ("FEATURE_TOP_Z", 9.40, "Top of the rib, lips and bottom blocks"),
+    ("BOTTOM_LIP_TIP_Y", 8.60, "Bottom lip tip; the block face is at Y 7.0, so 1.6 mm of reach"),
     ("HOOK_CHAMFER", 0.50, "Lead-in chamfer on the keeper's hook tabs"),
     ("FRAME_BOT_Z", "=FRAME_TOP_Z - FRAME_T", "Keeper plate underside"),
     ("FINGER_BOT_Z", "=FRAME_TOP_Z - FINGER_T", "Finger leaf underside"),
@@ -115,36 +116,36 @@ wx0, wx1 = WINDOW_X
 wy0, wy1 = WINDOW_Y
 
 FULL = [  # full plate thickness
-    ((x0, x1), (39.95, 41.45)),  # top rail
-    ((-7.5, 1.5), (wy1, 39.95)),  # top centre block, roots of fingers A and B
-    ((15.5, x1), (wy1, 39.95)),  # top right block
-    ((-21.5, -8.0), (y0, 9.2)),  # left hook beam, rooted in the corner block
+    ((x0, x1), (39.45, 40.65)),  # top rail
+    ((-7.5, 1.5), (wy1, 39.45)),  # top centre block, roots of fingers A and B
+    ((15.5, x1), (wy1, 39.45)),  # top right block
+    ((-23.5, -8.0), (y0, 9.2)),  # left hook beam, rooted in the corner block
     ((-7.5, -7.0), (7.6, 9.7)),  # Y pusher root
     ((-7.2, 2.0), (7.6, 8.4)),  # Y pusher leaf
     ((2.5, 3.5), (y0, 9.7)),  # stop post between the pusher and the right beam
-    ((4.0, 18.5), (y0, 9.2)),  # right hook beam, rooted in the right rail
-    ((wx1, x1), (y0, 9.7)),  # bottom right corner
+    ((4.0, 20.3), (y0, 9.2)),  # right hook beam, rooted in the corner post
+    ((20.3, x1), (y0, 9.7)),  # bottom right corner post
     ((wx0, x1), (9.7, 11.2)),  # spine
     ((-7.5, 1.5), (11.2, wy0)),  # bottom centre block, roots of fingers C and D
     ((15.5, x1), (11.2, wy0)),  # bottom right block
-    ((x0, wx0), (y0, 9.5)),  # bottom left corner block
+    ((x0, -23.5), (y0, 9.9)),  # bottom left corner block, roots the X pusher and the left beam
     ((-26.4, -25.6), (9.0, 19.4)),  # X pusher leaf
-    ((-25.1, wx0), (9.0, FPC_CUTOUT_Y[0])),  # left rail below the ribbon cutout
-    ((x0, wx0), (FPC_CUTOUT_Y[1], 39.95)),  # left rail above the ribbon cutout
-    ((wx1, x1), (y0, y1)),  # right rail
+    ((-25.1, wx0), (9.7, FPC_CUTOUT_Y[0])),  # left rail below the ribbon cutout
+    ((x0, wx0), (FPC_CUTOUT_Y[1], 39.45)),  # left rail above the ribbon cutout
+    ((wx1, x1), (9.7, y1)),  # right rail
 ]
 THIN = [  # TAB_T thick, kept at the top face
-    ((x0, x1), (41.45, y1)),  # strip under the top lips
+    ((x0, x1), (40.65, y1)),  # strip under the top lips
     ((-12.0, -8.0), (7.2, y0)),  # left hook tab
     ((4.0, 8.0), (7.2, y0)),  # right hook tab
 ]
 LEAVES = [  # FINGER_T thick, kept at the top face
-    ((-20.5, -7.0), (36.45, 39.45)),  # finger A, free end at X -20.5
-    ((1.0, 15.0), (36.45, 39.45)),  # finger B, free end at X 15
+    ((-20.5, -7.0), (35.95, 38.95)),  # finger A, free end at X -20.5
+    ((1.0, 15.0), (35.95, 38.95)),  # finger B, free end at X 15
     ((-20.5, -7.0), (11.7, wy0)),  # finger C
     ((1.0, 15.0), (11.7, wy0)),  # finger D
 ]
-PILLARS = [((-20.5, -18.5), (36.5, 38.5)), ((13.0, 15.0), (36.5, 38.5)),
+PILLARS = [((-20.5, -18.5), (36.0, 38.0)), ((13.0, 15.0), (36.0, 38.0)),
            ((-20.5, -18.5), (12.0, 14.0)), ((13.0, 15.0), (12.0, 14.0))]
 FEET = [((-25.0, -23.5), (10.0, 12.0)), ((19.0, 21.0), (10.0, 12.0)),
         ((-25.0, -23.5), (36.0, 38.0)), ((19.0, 21.0), (36.0, 38.0))]
@@ -166,7 +167,7 @@ TOP_LIP_X = ((-17.0, -11.0), (-3.0, 3.0), (11.0, 17.0))
 CROSS_WALL_Y = 5.50
 BOTTOM_BLOCK_X = ((-12.0, -8.0), (4.0, 8.0))
 BLOCK_Y = (CROSS_WALL_Y - 0.01, 7.0)
-BOTTOM_LIP_TIP_Y = 7.8
+BOTTOM_LIP_TIP_Y = P["BOTTOM_LIP_TIP_Y"]
 
 # --------------------------------------------------------------------------
 # Helpers
@@ -451,6 +452,7 @@ def build_housing(doc):
         polygon(sk, profile, named={
             0: ("Skin", "Params.SKIN_Z"),
             2: ("LipUnderside", "Params.FRAME_TOP_Z"),
+            3: ("LipTip", "Params.BOTTOM_LIP_TIP_Y"),
             5: ("BlockTop", "Params.FEATURE_TOP_Z"),
         })
         finish_sketch(sk)
