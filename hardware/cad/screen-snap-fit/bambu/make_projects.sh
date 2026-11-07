@@ -13,7 +13,14 @@
 #   lkbx-screen-keeper-<key>-0.4mm.3mf          keeper, PETG, smooth face down, 4 walls, solid
 #
 # with the printer, filament and process presets embedded, then slices a copy of each to
-# print the time and filament estimates. The process presets are lkbx-*-process.json
+# print the time and filament estimates and packages the slices as printer-ready files in
+# sliced/ (not tracked), which Bambu Handy and the printer accept as they are:
+#
+#   sliced/lkbx-top-housing-snap-fit-<key>-0.4mm.gcode.3mf
+#   sliced/lkbx-screen-keeper-<key>-0.4mm.gcode.3mf
+#
+# The plate previews inside them come from render_thumbnails.py (matplotlib); without it
+# the files are packaged without pictures. The process presets are lkbx-*-process.json
 # flattened over the stock 0.20 mm Standard profile for that printer (see flatten_preset.py).
 set -euo pipefail
 
@@ -41,6 +48,12 @@ presets_for() {  # presets_for <key>: sets MACHINE, PROC_BASE, PLA, PETG
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+SLICED="$HERE/sliced"; mkdir -p "$SLICED"
+mkdir -p "$WORK/thumbs"
+for part in housing:"$HOUSING_STL" keeper:"$KEEPER_STL"; do
+  python3 "$HERE/render_thumbnails.py" "${part#*:}" "$WORK/thumbs/${part%%:*}" \
+    || echo "  previews for ${part%%:*} skipped (render_thumbnails.py needs numpy and matplotlib)"
+done
 RUNNER=()
 if [ -z "${DISPLAY:-}" ] && command -v xvfb-run >/dev/null; then RUNNER=(xvfb-run -a -s "-screen 0 1280x1024x24"); fi
 export LD_LIBRARY_PATH="$BAMBU_STUDIO_DIR/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" LC_ALL=C
@@ -88,5 +101,16 @@ for KEY in "${KEYS[@]}"; do
   slicer "$W/housing-sliced" "$W/housing-process.json" "$W/filament-pla.json"  "$HOUSING_STL" housing-sliced.3mf --slice 0
   echo "  keeper slice check"
   slicer "$W/keeper-sliced"  "$W/keeper-process.json"  "$W/filament-petg.json" "$KEEPER_STL"  keeper-sliced.3mf --slice 0
+  echo "  printer-ready files"
+  MODEL_ID=$(python3 - "$W/machine.json" "$PROFILES" <<'PY'
+import json, sys
+machine = json.load(open(sys.argv[1]))
+print(json.load(open("%s/machine/%s.json" % (sys.argv[2], machine["printer_model"])))["model_id"])
+PY
+)
+  python3 "$HERE/package_sliced.py" "$W/housing-sliced/housing-sliced.3mf" "$SLICED/lkbx-top-housing-snap-fit-$KEY-0.4mm.gcode.3mf" \
+    --thumbnails "$WORK/thumbs/housing" --printer-model-id "$MODEL_ID"
+  python3 "$HERE/package_sliced.py" "$W/keeper-sliced/keeper-sliced.3mf" "$SLICED/lkbx-screen-keeper-$KEY-0.4mm.gcode.3mf" \
+    --thumbnails "$WORK/thumbs/keeper" --printer-model-id "$MODEL_ID"
 done
-ls -la "$HERE"/*.3mf
+ls -la "$HERE"/*.3mf "$SLICED"

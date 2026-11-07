@@ -209,6 +209,15 @@ only settings that differ from Bambu's stock 0.20 mm Standard profile. Bambu
 Studio's command line does not resolve preset inheritance, so the script
 flattens each preset first (`bambu/flatten_preset.py`).
 
+Printing from a phone: Bambu Handy cannot slice, so `make_projects.sh` also
+writes already sliced `bambu/sliced/lkbx-*-<printer>-0.4mm.gcode.3mf` files
+(`bambu/package_sliced.py` adds the plate previews from
+`bambu/render_thumbnails.py` and the printer model id the command line
+leaves out). Those are not tracked; share one to the phone, open it with
+Handy, pick the printer and the AMS slot holding the filament, and print.
+Each one is specific to its printer and the 0.4 mm nozzle, with the Bambu
+PLA Basic or PETG HF profile baked in.
+
 Tuning, in order:
 
 - Screen still moves: raise `PRELOAD` by 0.1.
