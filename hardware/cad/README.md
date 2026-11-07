@@ -24,3 +24,7 @@ This directory contains STEP exports from the Lockbox Onshape document. Each fil
 - `pcb.step`
 - `screen.step`
 - `top-housing.step`
+
+## Variants
+
+- `phone-vault/`: tall barred bottom housing that holds a phone or a cigarette pack (FreeCAD source, see its README).
