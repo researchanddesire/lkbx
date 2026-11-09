@@ -29,7 +29,7 @@ Document contents:
                 (chamfer loft plus pad), fills for the two features the old
                 part opened through its underside, the top-entry back magnet
                 pocket, the opening, the 45 degree transition loft, the cavity,
-                and the side and end bar windows
+                and the side and end honeycomb windows
     References  phone and cigarette pack envelopes in the cavity
 
 Coordinates are the top-housing STEP frame: Z is depth from the screen face
@@ -71,7 +71,7 @@ V = App.Vector
 # Parameters. Every row becomes a spreadsheet cell with an alias of the same
 # name; features reference them by expression so they can be tuned in FreeCAD.
 # The window layout (slot count) is generated from the same values by this
-# script; rerun it after changing BAR_SLOT_W, BAR_W, N_SIDE or N_END.
+# script; rerun it after changing HEX_W, HEX_SIDE, WEB or the window limits.
 # --------------------------------------------------------------------------
 PARAMS = [
     ("TOP_FACE_Z", 28.70, "Floor of the slide channel, where the old key tray started"),
@@ -89,11 +89,12 @@ PARAMS = [
     ("FOOT_W", 12.00, "How far the base foot reaches out past the walls"),
     ("FOOT_EDGE", 3.00, "Vertical edge of the base foot"),
     ("TRANSITION_EXTRA", 2.00, "Extra height that keeps the transition corners under 45 degrees"),
-    ("WIN_TOP_Z", 64.00, "Upper end of the bar windows' straight sides"),
-    ("WIN_BOT_Z", 182.00, "Lower end of the bar windows"),
-    ("BAR_SLOT_W", 6.00, "Window slot width (a cigarette is 7.8 mm, so none passes)"),
-    ("BAR_W", 5.00, "Bar width between slots"),
-    ("ROOF_ANGLE", "=60", "Window roof angle from horizontal, degrees (45 is the limit)"),
+    ("WIN_TOP_Z", 58.00, "No honeycomb cell reaches above this (below the transition)"),
+    ("WIN_BOT_Z", 182.00, "No honeycomb cell reaches below this (above the foot chamfer)"),
+    ("HEX_W", 7.00, "Honeycomb cell width across its vertical sides (a cigarette is 7.8 mm)"),
+    ("HEX_SIDE", 3.00, "Length of a cell's vertical sides"),
+    ("WEB", 3.50, "Web thickness between cells, vertical and slanted alike"),
+    ("ROOF_ANGLE", "=60", "Cell roof and floor angle from horizontal, degrees (45 is the limit)"),
     ("MAG_X", -20.70, "Back magnet centre, from bottom-housing.step"),
     ("MAG_Y", 51.85, "Back magnet centre, from bottom-housing.step"),
     ("MAG_R", 2.175, "Back magnet pocket radius, the same as the front magnet pocket"),
@@ -105,10 +106,10 @@ PARAMS = [
     ("FLOOR_Z", "=TOP_FACE_Z + CAVITY_DEPTH", "Cavity floor"),
     ("BASE_Z", "=FLOOR_Z + FLOOR_T", "Underside of the base, on the print bed"),
     ("FOOT_TOP_Z", "=BASE_Z - FOOT_EDGE - FOOT_W", "Where the 45 degree foot chamfer leaves the wall"),
-    ("ROOF_RISE", "=BAR_SLOT_W / 2 * tan(ROOF_ANGLE)", "Height of a window's pointed roof"),
+    ("ROOF_RISE", "=HEX_W / 2 * tan(ROOF_ANGLE)", "Height of a cell's pointed roof"),
 ]
-N_SIDE = 9  # slots in each long wall
-N_END = 4  # slots in each end wall
+SIDE_U_LIMIT = 50.0  # cells stay within +-this along Y on the long walls (flat wall ends at 55.5)
+END_U_LIMIT = 21.0  # cells stay within +-this along X on the end walls (flat wall ends at 25)
 P = {}
 for _name, _value, _note in PARAMS:
     if _name == "ROOF_RISE":
@@ -120,7 +121,7 @@ for _name, _value, _note in PARAMS:
         P[_name] = float(eval(_expr))  # noqa: S307 - formulas above are our own
     else:
         P[_name] = _value
-P["ROOF_RISE"] = P["BAR_SLOT_W"] / 2 * math.tan(math.radians(P["ROOF_ANGLE"]))
+P["ROOF_RISE"] = P["HEX_W"] / 2 * math.tan(math.radians(P["ROOF_ANGLE"]))
 
 # Features of the original part that opened through its underside; below
 # CUT_Z the vault closes them, so they are filled instead of left as voids.
@@ -361,6 +362,36 @@ def build_interface(doc):
     return imp, common
 
 
+def honeycomb_cells(u_limit):
+    """Cell outlines (u, z) for one wall: rows alternate by half a pitch."""
+    a = P["HEX_W"] / 2
+    half_side = P["HEX_SIDE"] / 2
+    rise = P["ROOF_RISE"]
+    web = P["WEB"]
+    pitch = P["HEX_W"] + web
+    # Row spacing that makes the slanted webs exactly WEB thick.
+    slant = math.hypot(a, rise)
+    row = (web * slant - (pitch / 2 - a) * rise) / a + 2 * half_side + rise
+    half_h = half_side + rise
+    cells = []
+    z = P["WIN_TOP_Z"] + half_h
+    k = 0
+    while z + half_h <= P["WIN_BOT_Z"] + 1e-9:
+        offset = 0.0 if k % 2 == 0 else pitch / 2
+        j = -int(u_limit // pitch) - 1
+        while True:
+            u = j * pitch + offset
+            if u - a > u_limit:
+                break
+            if abs(u) + a <= u_limit + 1e-9:
+                cells.append([(u - a, z - half_side), (u, z - half_h), (u + a, z - half_side),
+                              (u + a, z + half_side), (u, z + half_h), (u - a, z + half_side)])
+            j += 1
+        z += row
+        k += 1
+    return cells
+
+
 def build_vault(doc, interface):
     print("vault")
     body = doc.addObject("PartDesign::Body", "PhoneVault")
@@ -454,26 +485,17 @@ def build_vault(doc, interface):
     recompute(doc, sk, cavity)
     report("Cavity", body.Shape)
 
-    # Bar windows: vertical slots with pointed roofs (ROOF_ANGLE from
-    # horizontal) at their upper end, so nothing overhangs in print.
-    def slots(n):
-        pitch = P["BAR_SLOT_W"] + P["BAR_W"]
-        span = n * P["BAR_SLOT_W"] + (n - 1) * P["BAR_W"]
-        out = []
-        for i in range(n):
-            u0 = -span / 2 + i * pitch
-            u1 = u0 + P["BAR_SLOT_W"]
-            uc = (u0 + u1) / 2
-            zt, zb = P["WIN_TOP_Z"], P["WIN_BOT_Z"]
-            out.append([(u0, zb), (u1, zb), (u1, zt), (uc, zt - P["ROOF_RISE"]), (u0, zt)])
-        return out
-
+    # Honeycomb windows: hexagonal cells with vertical sides and pointed
+    # roofs at ROOF_ANGLE from horizontal, so nothing overhangs in print.
+    # Every web, vertical or slanted, is WEB thick, so the wall is a rigid
+    # lattice instead of long bars that snap by hand.
     feats = []
-    for name, plane, n in (("SideBars", "YZ_Plane", N_SIDE), ("EndBars", "XZ_Plane", N_END)):
+    for name, plane, limit in (("SideHoneycomb", "YZ_Plane", SIDE_U_LIMIT),
+                               ("EndHoneycomb", "XZ_Plane", END_U_LIMIT)):
         sk = sketch(body, name + "Sketch", plane)
-        for pts in slots(n):
-            # Sketch v is global Z here; a plane whose v runs along -Z is
-            # caught by the window bound check below.
+        for pts in honeycomb_cells(limit):
+            # Sketch v is global Z on both planes; the layout is symmetric
+            # in u, so the sign of the plane's u axis does not matter.
             polygon(sk, pts)
         finish_sketch(sk)
         f = pocket(body, sk, name, through_symmetric=True)
