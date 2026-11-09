@@ -38,4 +38,5 @@ captures/
 # CAD exports regenerated from the FreeCAD documents (STEP/STL are LFS patterns)
 hardware/cad/phone-vault.step
 hardware/cad/phone-vault-print.stl
+hardware/cad/phone-vault-escape-test-print.stl
 *.FCBak

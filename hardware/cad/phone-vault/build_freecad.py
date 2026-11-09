@@ -1,8 +1,8 @@
 """Parametric FreeCAD model of the phone vault: a tall bottom housing.
 
-The phone vault replaces the key tray of ``bottom-housing.step`` with a barred
-tower deep enough for a large phone (standing on end) or a king-size cigarette
-pack. The top of the part is the original bottom housing, unchanged, so the
+The phone vault replaces the key tray of ``bottom-housing.step`` with a
+honeycomb-windowed tower deep enough for a large phone (standing on end) or a
+king-size cigarette pack. The top of the part is the original bottom housing, unchanged, so the
 stock top housing slides on, latches and detects it exactly as before.
 
 Run headless with FreeCAD 1.0:
@@ -18,6 +18,9 @@ Creates ``phone-vault.FCStd`` next to this script and writes, into
 
     phone-vault.step        the vault in the housing frame (mates with top-housing.step)
     phone-vault-print.stl   the vault in print orientation, base on Z = 0
+    phone-vault-escape-test-print.stl
+                            the latch end only (shaft, rod and punch-out), to
+                            test the print-in-place escape rod before the vault
 
 Document contents:
 
@@ -29,8 +32,21 @@ Document contents:
                 (chamfer loft plus pad), fills for the two features the old
                 part opened through its underside, the top-entry back magnet
                 pocket, the opening, the 45 degree transition loft, the cavity,
-                and the side and end honeycomb windows
+                the side and end honeycomb windows, and the emergency bypass:
+                a shaft down the latch end with a rod printed in place inside
+                it, breakaway tabs, the base punch-out and its marking
+    EscapeTestPiece
+                the latch end of the vault, cut out for a test print
     References  phone and cigarette pack envelopes in the cavity
+
+The emergency bypass keeps the escape of the original bottom housing. The
+original has a plug in the floor under the latch, cut free by 0.3 mm slits and
+held only by the first printed layer: pushing it in lifts the latch on the
+side away from its pivot, so it swings out of the slot. Here the plug is in
+the base, and a rod printed in place in a sealed shaft carries the push 165 mm
+up to the latch. The rod clears its shaft by ESC_CLEAR on every side and is
+held centred by one-layer breakaway tabs, so it prints standing and does not
+rattle; the push snaps the tabs and the skin together.
 
 Coordinates are the top-housing STEP frame: Z is depth from the screen face
 (it grows toward the print bed), Y runs along the housing length and X across
@@ -62,6 +78,7 @@ ASSEMBLY = CAD_DIR / "lockbox-assembly.step"
 DOC_OUT = HERE / "phone-vault.FCStd"
 VAULT_OUT = OUT_DIR / "phone-vault.step"
 VAULT_STL = OUT_DIR / "phone-vault-print.stl"
+TEST_STL = OUT_DIR / "phone-vault-escape-test-print.stl"
 STL_LINEAR_DEFLECTION = 0.01
 STL_ANGULAR_DEFLECTION = 0.1
 
@@ -99,6 +116,25 @@ PARAMS = [
     ("MAG_Y", 51.85, "Back magnet centre, from bottom-housing.step"),
     ("MAG_R", 2.175, "Back magnet pocket radius, the same as the front magnet pocket"),
     ("MAG_FLOOR_Z", 34.75, "Back magnet pocket floor, the same depth as the front magnet pocket"),
+    ("ESC_X", -4.50, "Escape rod centre across the width: under the latch, right of its pivot (X -15.25)"),
+    ("ESC_TIP_W", 6.00, "Rod tip width (X) where it passes the slot floor and pushes the latch"),
+    ("ESC_TIP_T", 5.00, "Rod tip thickness (Y); the latch slot is 7 mm"),
+    ("ESC_TIP_Y", -51.00, "Rod tip centre along the length, the middle of the latch slot"),
+    ("ESC_TIP_TOP_Z", 33.50, "Rod top at rest, 1.2 mm under the latch (its tip is at Z 32.3)"),
+    ("ESC_BODY_W", 10.00, "Rod body width (X) below the slot floor, stiff enough to print standing"),
+    ("ESC_BODY_T", 8.00, "Rod body thickness (Y)"),
+    ("ESC_BODY_TOP_Z", 54.00, "Top of the rod body; a 45 degree shoulder narrows it to the tip and stops it on the shaft ceiling"),
+    ("ESC_HOLE_Z", 43.00, "Bottom of the tip hole under the slot floor; a 45 degree ceiling widens it to the shaft"),
+    ("ESC_CLEAR", 1.00, "Gap between the rod and its shaft on every side"),
+    ("ESC_WALL", 1.60, "Shaft wall thickness inside the cavity"),
+    ("ESC_SLIT", 0.30, "Slit around the punch-out in the base, as on the original plug"),
+    ("ESC_SKIN", 0.20, "First-layer skin that holds the punch-out, as on the original plug"),
+    ("ESC_TIE_W", 0.50, "Breakaway tab width; the tabs hold the rod centred so it prints straight and does not rattle"),
+    ("ESC_TIE_H", 0.40, "Breakaway tab height (two 0.2 mm layers)"),
+    ("ESC_TRAVEL", 9.00, "Rod travel the build checks is free and has turned the latch out of its slot; the shoulder stops the rod within 2 mm more"),
+    ("MARK_DEPTH", 0.60, "Depth of the emergency bypass marking in the base"),
+    ("MARK_GAP", 2.00, "Gap between the punch-out slit and the marking frame"),
+    ("MARK_LINE", 0.80, "Width of the marking frame groove"),
     ("INNER_X", "=OUTER_X - WALL", "Half width of the cavity"),
     ("INNER_Y", "=OUTER_Y - WALL", "Half length of the cavity"),
     ("INNER_R", "=OUTER_R - WALL", "Cavity corner radius, concentric with the outline"),
@@ -107,6 +143,8 @@ PARAMS = [
     ("BASE_Z", "=FLOOR_Z + FLOOR_T", "Underside of the base, on the print bed"),
     ("FOOT_TOP_Z", "=BASE_Z - FOOT_EDGE - FOOT_W", "Where the 45 degree foot chamfer leaves the wall"),
     ("ROOF_RISE", "=HEX_W / 2 * tan(ROOF_ANGLE)", "Height of a cell's pointed roof"),
+    ("ESC_BODY_Y", "=-INNER_Y + ESC_CLEAR + ESC_BODY_T / 2", "Rod body centre: its back face is ESC_CLEAR off the end wall"),
+    ("ESC_SHOULDER", "=(ESC_BODY_W - ESC_TIP_W) / 2", "Height of the 45 degree rod shoulder and shaft ceiling"),
 ]
 SIDE_U_LIMIT = 50.0  # cells stay within +-this along Y on the long walls (flat wall ends at 55.5)
 END_U_LIMIT = 21.0  # cells stay within +-this along X on the end walls (flat wall ends at 25)
@@ -127,6 +165,21 @@ P["ROOF_RISE"] = P["HEX_W"] / 2 * math.tan(math.radians(P["ROOF_ANGLE"]))
 # CUT_Z the vault closes them, so they are filled instead of left as voids.
 OLD_MAG_HOLE = dict(r=2.40, z0=30.70)  # back magnet bore, pressed from below
 OLD_STAND_SLOT = dict(x=(-4.4, 4.4), y=(-47.2, -44.1), z0=36.40)  # stand clip slot
+
+# Breakaway tab levels (Z). The first holds the tip in the slot floor, the
+# rest hold the body at about 35 mm spacing while it prints.
+TIE_LEVELS = (42.0, 75.0, 110.0, 145.0, 180.0)
+# The latch turns about the N20 shaft (an axis along Y through this X, Z). It
+# swings toward +X to unlock (checked to 90 degrees) and stops on the slot
+# wall 8.5 degrees toward -X. It is free once wholly above the slot top.
+LATCH_PIVOT = (-15.25, 8.8)
+LATCH_SWING = (-8.5, 90.0)
+SLOT_TOP_Z = 28.7
+# Marking on the base, read from below. Each line: text, cap height, baseline Y.
+MARK_FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+MARK_LINES = (("EMERGENCY BYPASS", 4.2, -30.6), ("PUSH IN", 4.2, -37.2))
+# Box that cuts the latch end out of the vault for the escape test print.
+TEST_BOX = dict(x=(-17.0, 9.0), y=(-73.0, -38.0), z=(33.0, None))
 
 # Contents the cavity must take (length along Z, width along Y, thickness along X).
 PHONE = (170.0, 82.0, 14.0)  # 165 x 78 x 9 phone in a case
@@ -212,6 +265,54 @@ def rounded_rect(sk, x, y, r, exprs=None, prefix=""):
     distance_constraint(sk, "DistanceX", lg[3], 1, x0, prefix + "X0" if exprs.get("x0") else None, exprs.get("x0"))
     distance_constraint(sk, "DistanceX", lg[1], 1, x1, prefix + "X1" if exprs.get("x1") else None, exprs.get("x1"))
     return lg + ag
+
+
+def rect(sk, x, y, exprs=None, prefix=""):
+    """Rectangle, fully constrained by its side positions (expressions optional)."""
+    exprs = exprs or {}
+    (x0, x1), (y0, y1) = x, y
+    pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    g = [sk.addGeometry(Part.LineSegment(V(pts[i][0], pts[i][1], 0), V(pts[(i + 1) % 4][0], pts[(i + 1) % 4][1], 0)),
+                        False) for i in range(4)]
+    for i in range(4):
+        sk.addConstraint(Sketcher.Constraint("Coincident", g[i], 2, g[(i + 1) % 4], 1))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", g[0]))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", g[2]))
+    sk.addConstraint(Sketcher.Constraint("Vertical", g[1]))
+    sk.addConstraint(Sketcher.Constraint("Vertical", g[3]))
+    for key, kind, geo, pos, value in (("x0", "DistanceX", g[0], 1, x0), ("x1", "DistanceX", g[0], 2, x1),
+                                       ("y0", "DistanceY", g[0], 1, y0), ("y1", "DistanceY", g[2], 1, y1)):
+        distance_constraint(sk, kind, geo, pos, value, prefix + key.upper() if exprs.get(key) else None,
+                            exprs.get(key))
+    return g
+
+
+def text_wires(text, cap, cx, baseline):
+    """Outline wires of one line of text in the XY plane, centred on cx.
+
+    The first glyph must be a capital: its height sets the scale.
+    """
+    font = (str(MARK_FONT.parent) + "/", MARK_FONT.name)
+    probe = Part.makeWireString(text, *font, 10.0, 0.0)
+    size = 10.0 * cap / Part.Compound(probe[0]).BoundBox.YLength
+    chars = Part.makeWireString(text, *font, size, 0.0)
+    wires = [w for ch in chars for w in ch]
+    bb = Part.Compound(wires).BoundBox
+    m = App.Matrix()
+    m.move(V(cx - (bb.XMin + bb.XLength / 2), baseline - Part.Compound(chars[0]).BoundBox.YMin, 0))
+    return [w.transformGeometry(m) for w in wires]
+
+
+def add_blocked_wires(sk, wires):
+    """Copy wires into a sketch as blocked geometry (fully constrained)."""
+    for w in wires:
+        for e in w.Edges:
+            if isinstance(e.Curve, Part.Line):
+                geo = Part.LineSegment(e.Vertexes[0].Point, e.Vertexes[-1].Point)
+            else:
+                geo = e.Curve.toBSpline(*e.ParameterRange)
+            gi = sk.addGeometry(geo, False)
+            sk.addConstraint(Sketcher.Constraint("Block", gi))
 
 
 def circle(sk, cx, cy, r, exprs=None, prefix=""):
@@ -502,7 +603,165 @@ def build_vault(doc, interface):
         recompute(doc, sk, f)
         feats.append(f)
     report("Windows", body.Shape)
+    build_escape(doc, body)
     return body
+
+
+def esc_rects():
+    """Numeric outlines of the escape features, with their expressions."""
+    def r(xc, yc, w, t, grow, exprs):
+        return ((xc - w / 2 - grow, xc + w / 2 + grow), (yc - t / 2 - grow, yc + t / 2 + grow)), exprs
+
+    def ex(xc, yc, w, t, grow):
+        g = (" + " + grow) if grow else ""
+        m = (" - " + grow) if grow else ""
+        return {"x0": "%s - %s / 2%s" % (xc, w, m), "x1": "%s + %s / 2%s" % (xc, w, g),
+                "y0": "%s - %s / 2%s" % (yc, t, m), "y1": "%s + %s / 2%s" % (yc, t, g)}
+    X, TY, BY = "Params.ESC_X", "Params.ESC_TIP_Y", "Params.ESC_BODY_Y"
+    TW, TT, BW, BT = "Params.ESC_TIP_W", "Params.ESC_TIP_T", "Params.ESC_BODY_W", "Params.ESC_BODY_T"
+    c, w, sl = P["ESC_CLEAR"], P["ESC_WALL"], P["ESC_SLIT"]
+    tip = (P["ESC_X"], P["ESC_TIP_Y"], P["ESC_TIP_W"], P["ESC_TIP_T"])
+    body = (P["ESC_X"], P["ESC_BODY_Y"], P["ESC_BODY_W"], P["ESC_BODY_T"])
+    return {
+        "tip": r(*tip, 0, ex(X, TY, TW, TT, "")),
+        "tip_hole": r(*tip, c, ex(X, TY, TW, TT, "Params.ESC_CLEAR")),
+        "body": r(*body, 0, ex(X, BY, BW, BT, "")),
+        "shaft": r(*body, c, ex(X, BY, BW, BT, "Params.ESC_CLEAR")),
+        "slit": r(*body, sl, ex(X, BY, BW, BT, "Params.ESC_SLIT")),
+        "frame_in": r(*body, sl + P["MARK_GAP"], ex(X, BY, BW, BT, "(Params.ESC_SLIT + Params.MARK_GAP)")),
+        "frame_out": r(*body, sl + P["MARK_GAP"] + P["MARK_LINE"],
+                       ex(X, BY, BW, BT, "(Params.ESC_SLIT + Params.MARK_GAP + Params.MARK_LINE)")),
+        "tube": r(*body, c + w, ex(X, BY, BW, BT, "(Params.ESC_CLEAR + Params.ESC_WALL)")),
+    }
+
+
+def tie_boxes():
+    """Breakaway tabs: (x range, y range, z range) for each, left and right of the rod."""
+    out = []
+    c, tw, th = P["ESC_CLEAR"], P["ESC_TIE_W"], P["ESC_TIE_H"]
+    for zt in TIE_LEVELS:
+        if zt < P["ESC_HOLE_Z"]:
+            w, yc = P["ESC_TIP_W"], P["ESC_TIP_Y"]
+        else:
+            w, yc = P["ESC_BODY_W"], P["ESC_BODY_Y"]
+        for side in (-1, 1):
+            edge = P["ESC_X"] + side * w / 2
+            xs = sorted((edge - side * 0.2, edge + side * (c + 0.2)))
+            out.append((tuple(xs), (yc - tw / 2, yc + tw / 2), (zt - th, zt)))
+    return out
+
+
+def build_escape(doc, body):
+    """Emergency bypass: shaft, print-in-place rod, tabs, punch-out, marking."""
+    R = esc_rects()
+
+    def rect_sketch(name, z, z_expr, keys, extra=None):
+        sk = sketch(body, name, "XY_Plane", z, z_expr)
+        for k in keys:
+            (xr, yr), exprs = R[k]
+            rect(sk, xr, yr, exprs, k.capitalize() + "_")
+        if extra:
+            extra(sk)
+        finish_sketch(sk)
+        return sk
+
+    # Shaft walls: a block from just under the slot floor to the cavity floor,
+    # against the end wall. Inside the ramp it merges with solid material.
+    (txr, tyr), texprs = R["tube"]
+    sk = sketch(body, "EscapeTubeSketch", "XY_Plane", P["CUT_Z"] + 0.5, "Params.CUT_Z + 0.5 mm")
+    texprs = dict(texprs, y0="-Params.INNER_Y")
+    rect(sk, txr, (-P["INNER_Y"], tyr[1]), texprs, "Tube_")
+    finish_sketch(sk)
+    tube = pad(body, sk, "EscapeTube", "Params.FLOOR_Z - Params.CUT_Z - 0.5 mm")
+    recompute(doc, sk, tube)
+
+    # Tip hole through the slot floor, a 45 degree ceiling, then the shaft.
+    sk = rect_sketch("EscapeTipHoleSketch", P["CUT_Z"] - 1.0, "Params.CUT_Z - 1 mm", ["tip_hole"])
+    f = pocket(body, sk, "EscapeTipHole", "Params.ESC_HOLE_Z - Params.CUT_Z + 1 mm", reversed_=True)
+    recompute(doc, sk, f)
+    sk_a = rect_sketch("EscapeCeilingTop", P["ESC_HOLE_Z"], "Params.ESC_HOLE_Z", ["tip_hole"])
+    sk_b = rect_sketch("EscapeCeilingBottom", P["ESC_HOLE_Z"] + P["ESC_SHOULDER"],
+                       "Params.ESC_HOLE_Z + Params.ESC_SHOULDER", ["shaft"])
+    f = loft(body, "Subtractive", "EscapeCeiling", sk_a, sk_b)
+    recompute(doc, sk_a, sk_b, f)
+    sk = rect_sketch("EscapeShaftSketch", P["ESC_HOLE_Z"] + P["ESC_SHOULDER"],
+                     "Params.ESC_HOLE_Z + Params.ESC_SHOULDER", ["shaft"])
+    f = pocket(body, sk, "EscapeShaft", "Params.FLOOR_Z - Params.ESC_HOLE_Z - Params.ESC_SHOULDER", reversed_=True)
+    recompute(doc, sk, f)
+    report("Escape shaft", body.Shape)
+
+    # The rod, printed in place: body standing on the floor, 45 degree
+    # shoulder, then the tip up through the slot floor to just under the latch.
+    sk = rect_sketch("EscapeRodBodySketch", P["FLOOR_Z"], "Params.FLOOR_Z", ["body"])
+    f = pad(body, sk, "EscapeRodBody", "Params.FLOOR_Z - Params.ESC_BODY_TOP_Z", reversed_=True)
+    recompute(doc, sk, f)
+    sk_a = rect_sketch("EscapeShoulderBottom", P["ESC_BODY_TOP_Z"], "Params.ESC_BODY_TOP_Z", ["body"])
+    sk_b = rect_sketch("EscapeShoulderTop", P["ESC_BODY_TOP_Z"] - P["ESC_SHOULDER"],
+                       "Params.ESC_BODY_TOP_Z - Params.ESC_SHOULDER", ["tip"])
+    f = loft(body, "Additive", "EscapeRodShoulder", sk_a, sk_b)
+    recompute(doc, sk_a, sk_b, f)
+    sk = rect_sketch("EscapeRodTipSketch", P["ESC_BODY_TOP_Z"] - P["ESC_SHOULDER"],
+                     "Params.ESC_BODY_TOP_Z - Params.ESC_SHOULDER", ["tip"])
+    f = pad(body, sk, "EscapeRodTip", "Params.ESC_BODY_TOP_Z - Params.ESC_SHOULDER - Params.ESC_TIP_TOP_Z",
+            reversed_=True)
+    recompute(doc, sk, f)
+
+    # Punch-out: the rod's foot is cut free in the base by a slit all round
+    # and held only by the first layer, like the original plug.
+    sk = rect_sketch("EscapePunchOutSketch", P["FLOOR_Z"], "Params.FLOOR_Z", ["slit", "body"])
+    f = pocket(body, sk, "EscapePunchOut", "Params.FLOOR_T - Params.ESC_SKIN", reversed_=True)
+    recompute(doc, sk, f)
+
+    # Breakaway tabs, two per level, bridging the gap to the shaft walls.
+    for i, zt in enumerate(TIE_LEVELS):
+        sk = sketch(body, "EscapeTabs%dSketch" % (i + 1), "XY_Plane", zt)
+        for xs, ys, _zs in [b for b in tie_boxes() if abs(b[2][1] - zt) < 1e-9]:
+            rect(sk, xs, ys)
+        finish_sketch(sk)
+        f = pad(body, sk, "EscapeTabs%d" % (i + 1), "Params.ESC_TIE_H", reversed_=True)
+        recompute(doc, sk, f)
+    report("Escape rod", body.Shape)
+
+    # Marking on the base: a frame round the punch-out, an arrow and two
+    # lines of text, sunk MARK_DEPTH into the bed face.
+    (fx, fy), _ = R["frame_out"]
+    apex, base = fy[1] + 1.0, fy[1] + 5.0
+
+    def arrow(sk):
+        polygon(sk, [(P["ESC_X"], apex), (P["ESC_X"] + 3.0, base), (P["ESC_X"] - 3.0, base)])
+    sk = rect_sketch("BypassMarkSketch", P["BASE_Z"], "Params.BASE_Z", ["frame_out", "frame_in"], arrow)
+    f = pocket(body, sk, "BypassMark", "Params.MARK_DEPTH")
+    recompute(doc, sk, f)
+    sk = sketch(body, "BypassTextSketch", "XY_Plane", P["BASE_Z"], "Params.BASE_Z")
+    for text, cap, baseline in MARK_LINES:
+        add_blocked_wires(sk, text_wires(text, cap, P["ESC_X"], baseline))
+    finish_sketch(sk)
+    f = pocket(body, sk, "BypassText", "Params.MARK_DEPTH")
+    recompute(doc, sk, f)
+    report("Bypass marking", body.Shape)
+
+
+def rod_shape():
+    """The moving part of the bypass (rod plus punch-out), for the checks."""
+    R = esc_rects()
+    (bx, by), _ = R["body"]
+    (tx, ty), _ = R["tip"]
+    foot = P["BASE_Z"] - P["ESC_SKIN"]
+    body_box = Part.makeBox(bx[1] - bx[0], by[1] - by[0], foot - P["ESC_BODY_TOP_Z"], V(bx[0], by[0], P["ESC_BODY_TOP_Z"]))
+    z_s = P["ESC_BODY_TOP_Z"] - P["ESC_SHOULDER"]
+    w_a = Part.makePolygon([V(bx[0], by[0], P["ESC_BODY_TOP_Z"]), V(bx[1], by[0], P["ESC_BODY_TOP_Z"]),
+                            V(bx[1], by[1], P["ESC_BODY_TOP_Z"]), V(bx[0], by[1], P["ESC_BODY_TOP_Z"]),
+                            V(bx[0], by[0], P["ESC_BODY_TOP_Z"])])
+    w_b = Part.makePolygon([V(tx[0], ty[0], z_s), V(tx[1], ty[0], z_s), V(tx[1], ty[1], z_s), V(tx[0], ty[1], z_s),
+                            V(tx[0], ty[0], z_s)])
+    shoulder = Part.makeLoft([w_a, w_b], True, True)
+    tip_box = Part.makeBox(tx[1] - tx[0], ty[1] - ty[0], z_s - P["ESC_TIP_TOP_Z"], V(tx[0], ty[0], P["ESC_TIP_TOP_Z"]))
+    return body_box.fuse([shoulder, tip_box]).removeSplitter()
+
+
+def tie_solids():
+    return [Part.makeBox(xs[1] - xs[0], ys[1] - ys[0], zs[1] - zs[0], V(xs[0], ys[0], zs[0]))
+            for xs, ys, zs in tie_boxes()]
 
 
 def assembly_parts():
@@ -532,6 +791,23 @@ def build_references(doc):
     return refs
 
 
+def build_test_piece(doc, vault):
+    """The latch end of the vault: shaft, rod, punch-out and end wall."""
+    box = doc.addObject("Part::Box", "EscapeTestBox")
+    (x0, x1), (y0, y1), (z0, _z1) = TEST_BOX["x"], TEST_BOX["y"], TEST_BOX["z"]
+    box.Length, box.Width = x1 - x0, y1 - y0
+    box.setExpression("Height", "Params.BASE_Z - %g mm" % z0)
+    box.Placement.Base = V(x0, y0, z0)
+    box.Visibility = False
+    common = doc.addObject("Part::Common", "EscapeTestPiece")
+    common.Label = "Escape test piece (latch end)"
+    common.Base = vault
+    common.Tool = box
+    common.Visibility = False
+    recompute(doc, common)
+    return common
+
+
 def check(vault_shape, interface_shape, bottom_shape, refs):
     print("checks")
     fails = []
@@ -551,9 +827,10 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
     fills = (math.pi * OLD_MAG_HOLE["r"] ** 2 * (P["CUT_Z"] - OLD_MAG_HOLE["z0"])
              + (OLD_STAND_SLOT["x"][1] - OLD_STAND_SLOT["x"][0]) * (OLD_STAND_SLOT["y"][1] - OLD_STAND_SLOT["y"][0])
              * (P["CUT_Z"] - OLD_STAND_SLOT["z0"]))
-    print("  above CUT_Z: removed outside opening/magnet %.3f mm^3, added %.1f mm^3 (fills at most %.1f)" % (
-        unexplained, added, fills))
-    if unexplained > 0.05 or added > fills:
+    rod_tip = P["ESC_TIP_W"] * P["ESC_TIP_T"] * (P["CUT_Z"] - P["ESC_TIP_TOP_Z"])
+    print("  above CUT_Z: removed outside opening/magnet %.3f mm^3, added %.1f mm^3 (fills %.1f + rod tip %.1f)" % (
+        unexplained, added, fills, rod_tip))
+    if unexplained > 0.05 or added > fills + rod_tip + 0.5:
         fails.append("the interface above CUT_Z changed")
 
     parts = assembly_parts()
@@ -564,6 +841,71 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
         print("  overlap with %-14s vault %.3f  original %.3f" % (label, new, old))
         if new > old + 0.05:
             fails.append("%s overlaps the vault more than the original" % label)
+
+    rod = rod_shape()
+    gap = rod.distToShape(parts["Locking Latch"])[0]
+    print("  escape rod to latch at rest %.2f mm" % gap)
+    if not 0.8 < gap < 2.0:
+        fails.append("escape rod is not just under the latch (%.2f mm)" % gap)
+    # The rod tip must stay clear of the latch over its whole normal swing.
+    pivot = V(LATCH_PIVOT[0], 0, LATCH_PIVOT[1])
+    swing = []
+    lo, hi = (int(round(a * 10)) for a in LATCH_SWING)
+    for tenth in list(range(lo, hi, 25)) + [hi]:
+        turned = parts["Locking Latch"].copy()
+        turned.rotate(pivot, V(0, 1, 0), tenth / 10.0)
+        swing.append((turned.distToShape(rod)[0], tenth / 10.0))
+    closest, at = min(swing)
+    print("  latch swing %g..%g deg: closest to the rod %.2f mm at %.1f deg" % (LATCH_SWING + (closest, at)))
+    if closest < 0.3:
+        fails.append("the latch swing comes within %.2f mm of the escape rod" % closest)
+    # Pushed ESC_TRAVEL, the rod must have turned the latch out of its slot:
+    # one degree short of the turn that lifts it clear, the latch would still
+    # be inside the pushed rod.
+    frees = None
+    for a in range(0, int(LATCH_SWING[1]) + 1):
+        turned = parts["Locking Latch"].copy()
+        turned.rotate(pivot, V(0, 1, 0), a)
+        if turned.BoundBox.ZMax <= SLOT_TOP_Z:
+            frees = a
+            break
+    pushed = rod.copy()
+    pushed.translate(V(0, 0, -P["ESC_TRAVEL"]))
+    short = parts["Locking Latch"].copy()
+    short.rotate(pivot, V(0, 1, 0), (frees or 1) - 1)
+    lifted = frees is not None and short.common(pushed).Volume > 0.01
+    print("  latch clears its slot at %s deg; rod pushed %.1f mm %s it" % (
+        frees, P["ESC_TRAVEL"], "turns" if lifted else "does NOT turn"))
+    if not lifted:
+        fails.append("the escape rod does not lift the latch out of its slot")
+    ties = tie_solids()
+    static = vault_shape.cut(rod).cut(ties)
+    upper = rod.common(Part.makeBox(100, 160, P["FLOOR_Z"] - 31, V(-50, -80, 30)))  # above the floor slit
+    clear = upper.distToShape(static)[0]
+    print("  escape rod clearance to its shaft (tabs aside) %.2f mm" % clear)
+    if clear < P["ESC_CLEAR"] - 0.02:
+        fails.append("escape rod clearance %.2f mm" % clear)
+    moved = rod.copy()
+    moved.translate(V(0, 0, -P["ESC_TRAVEL"]))
+    hit = moved.common(static).Volume
+    print("  escape rod pushed %.1f mm: collides %.3f mm^3" % (P["ESC_TRAVEL"], hit))
+    if hit > 0.01:
+        fails.append("escape rod cannot travel %.1f mm" % P["ESC_TRAVEL"])
+    # ...and the shoulder stops it on the shaft ceiling soon after, so it
+    # cannot be driven up out of the slot.
+    stop = None
+    near = static.common(Part.makeBox(40, 30, 40, V(-24, -66, 30)))  # the shaft top only, for speed
+    for tenth in range(int(P["ESC_TRAVEL"] * 10), int(P["ESC_TRAVEL"] * 10) + 21):
+        moved = rod.copy()
+        moved.translate(V(0, 0, -tenth / 10.0))
+        if moved.common(near).Volume > 0.01:
+            stop = tenth / 10.0
+            break
+    print("  escape rod stops after %s mm" % ("more than %.1f" % (P["ESC_TRAVEL"] + 2) if stop is None else "%.1f" % stop))
+    if stop is None:
+        fails.append("nothing stops the escape rod within %.1f mm" % (P["ESC_TRAVEL"] + 2))
+    tie_vol = sum(t.common(vault_shape).Volume for t in ties)
+    print("  breakaway tabs: %d, %.2f mm^3" % (len(ties), tie_vol))
 
     for r in refs:
         hit = r.Shape.common(vault_shape).Volume
@@ -580,15 +922,25 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
 
     # Overhangs in print orientation (bed = BASE_Z, up = -Z): a facet below
     # the cut whose normal points more than 45 degrees toward the bed.
+    # Two kinds of short bridge are expected and reported apart: the
+    # breakaway tabs (1 mm spans) and the marking sunk into the bed face.
     mesh = MeshPart.meshFromShape(Shape=vault_shape, LinearDeflection=0.05, AngularDeflection=0.2, Relative=False)
-    bad = 0.0
+    bad = tabs = mark = 0.0
     bad_at = []
+    boxes = tie_boxes()
     for f in mesh.Facets:
         nz_print = -f.Normal.z
-        zc = sum(p[2] for p in f.Points) / 3
+        xc, yc, zc = (sum(p[i] for p in f.Points) / 3 for i in range(3))
         if zc > P["CUT_Z"] + 0.01 and zc < P["BASE_Z"] - 0.01 and nz_print < -math.cos(math.radians(45)) - 1e-3:
-            bad += f.Area
-            bad_at.append((round(f.Points[0][0]), round(f.Points[0][1]), round(zc, 1), round(nz_print, 2)))
+            if zc > P["BASE_Z"] - P["MARK_DEPTH"] - 0.02:
+                mark += f.Area
+            elif any(xs[0] - 0.05 <= xc <= xs[1] + 0.05 and ys[0] - 0.05 <= yc <= ys[1] + 0.05
+                     and zs[0] - 0.05 <= zc <= zs[1] + 0.05 for xs, ys, zs in boxes):
+                tabs += f.Area
+            else:
+                bad += f.Area
+                bad_at.append((round(f.Points[0][0]), round(f.Points[0][1]), round(zc, 1), round(nz_print, 2)))
+    print("  bridges: breakaway tabs %.2f mm^2, bed-face marking %.2f mm^2" % (tabs, mark))
     print("  overhang area below the cut steeper than 45 deg: %.2f mm^2" % bad)
     for spot in sorted(set(bad_at))[:20]:
         print("    overhang facet at", spot)
@@ -613,17 +965,22 @@ def main():
     imp, interface = build_interface(doc)
     vault = build_vault(doc, interface)
     refs = build_references(doc)
+    test = build_test_piece(doc, vault)
     doc.recompute()
     check(vault.Shape, interface.Shape, imp.Shape, refs)
+    if len(test.Shape.Solids) != 1:
+        raise RuntimeError("escape test piece is not one solid")
+    report("EscapeTestPiece", test.Shape)
     doc.saveAs(str(DOC_OUT))
     vault.Shape.exportStep(str(VAULT_OUT))
     # Print orientation: base on the bed. Rotate 180 degrees about X so the
     # vault keeps its handedness, then drop the base onto Z = 0.
-    printed = vault.Shape.copy()
-    printed.rotate(V(0, 0, 0), V(1, 0, 0), 180)
-    printed.translate(V(0, 0, -printed.BoundBox.ZMin))
-    export_stl(printed, VAULT_STL)
-    for out in (DOC_OUT, VAULT_OUT, VAULT_STL):
+    for shape, path in ((vault.Shape, VAULT_STL), (test.Shape, TEST_STL)):
+        printed = shape.copy()
+        printed.rotate(V(0, 0, 0), V(1, 0, 0), 180)
+        printed.translate(V(0, 0, -printed.BoundBox.ZMin))
+        export_stl(printed, path)
+    for out in (DOC_OUT, VAULT_OUT, VAULT_STL, TEST_STL):
         print("wrote", out, out.stat().st_size)
 
 
