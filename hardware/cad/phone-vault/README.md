@@ -2,10 +2,12 @@
 
 A tall bottom housing whose lower cavity takes a large phone or a king-size
 cigarette pack, behind honeycomb windows that print without supports.
-The top of the part is the original `bottom-housing.step`, unchanged, so the
-stock top housing slides on, latches and detects it exactly as before. The
-original's emergency escape is kept as an emergency bypass: a rod printed in
-place up the latch end, pushed in through a marked square in the base.
+The top of the part is the original `bottom-housing.step`, unchanged apart
+from an emergency key slot, so the stock top housing slides on, latches and
+detects it exactly as before. The original's emergency escape, a plug in the
+floor under the latch, is covered by the vault, so it has its own bypass: a
+2.5 mm hex key through a marked slot in the latch-end wall turns the latch
+out.
 
 ![Phone vault renders](phone-vault-render.png)
 
@@ -26,16 +28,13 @@ place up the latch end, pushed in through a marked square in the base.
 | Usable depth, slide-channel floor to cavity floor | 170 |
 | Honeycomb cells | 7 wide, 3 mm vertical sides, 60 degree roofs and floors |
 | Webs between cells | 3.5 (vertical and slanted), through the 4 mm wall |
-| Emergency bypass rod | 6 x 5 tip, 10 x 8 body, 168 long |
-| Rod clearance in its shaft | 1.0 all round |
-| Rod travel | 10 to the stop (about 8 lifts the latch clear) |
-| Bypass shaft in the cavity | 15.2 x 11.6, against the latch end wall |
-| Punch-out in the base | 10 x 8, 0.3 slit, 0.2 skin |
+| Emergency key slot | 21.5 long, 3 tall (3.9 at the entry), through the latch-end wall |
+| Skin over the key slot | 0.45 (one extrusion line) |
 
 The cavity is sized for a 165 x 78 x 9 mm phone in a case (a 170 x 82 x 14
 envelope), standing on end, which covers the largest current phones (about 163
 x 78 mm), and for an 88 x 55 x 22 mm king-size pack standing on end. Both pass
-the opening and clear the bypass shaft (the phone by 6 mm). Seven-millimetre
+the opening. Seven-millimetre
 cells keep a single cigarette (7.8 mm) from being pulled out. The honeycomb
 replaced an earlier set of full-height bars, which were easy to snap by hand:
 every web is now short, 3.5 mm thick and tied into the lattice on both ends.
@@ -45,7 +44,7 @@ every web is now short, 3.5 mm thick and tied into the lattice on both ends.
 - Everything above `CUT_Z` (Z 41, the floor of the latch slot) is the
   original part: the slide rails, the latch slot, the front magnet pocket and
   the end stop. The build checks that nothing there changes except the
-  opening, the back magnet pocket, two fills and the tip of the bypass rod,
+  opening, the back magnet pocket, two fills, the key slot and the marking,
   and that the top housing, locking latch and PCB cover overlap the vault no
   more than the original (they do not overlap either).
 - The original's escape plug sat just below `CUT_Z`, under the latch, so the
@@ -59,64 +58,86 @@ every web is now short, 3.5 mm thick and tied into the lattice on both ends.
   Install it south side up, as the assembly guide says.
 - The old bore under that magnet and the stand clip slot are filled; below the
   cut they would have been sealed voids. The stand does not fit this part.
-- The rubber feet glue onto the flat base, with no recesses. Keep them off the
-  bypass marking and the punch-out.
+- The rubber feet glue onto the flat base, with no recesses.
 
 ## Emergency bypass
 
-![The emergency bypass: rod, tabs, punch-out and marking](phone-vault-escape.png)
+![The emergency bypass: the marked end face, the key's push on the latch, and the key's way in under the lid](phone-vault-escape.png)
 
 The original bottom housing has an escape that is not in the assembly guide: a
 plug in the floor under the latch slot, cut free by 0.3 mm slits and held only
-by the first printed layer. Pushing it in from outside lifts the latch on the
-side away from its pivot, so the latch swings out of its slot and the top
-housing slides off. The vault keeps the same escape, 165 mm further down:
+by the first printed layer. The vault covers that floor, so it has its own
+bypass instead: a slot for a 2.5 mm hex key through the latch-end wall.
 
-- A sealed shaft runs down the latch end of the cavity, against the end wall.
-  A rod is printed in place inside it, standing, with 1 mm of clearance on
-  every side. Its 6 x 5 mm tip comes up through the slot floor and stops
-  1.2 mm under the latch, where the original plug would have pushed.
-- The rod's foot is the punch-out: it fills a 10 x 8 mm hole in the base,
-  cut free by a 0.3 mm slit and held by the 0.2 mm first layer, like the
-  original plug.
-- Ten breakaway tabs (0.5 x 0.4 mm, two at each of five heights) tie the rod
-  to its shaft, so it prints straight and does not rattle. A push snaps them
-  together with the skin.
-- The latch is clear of its slot after about 8 mm of travel (50 degrees of
-  turn). At 10 mm a 45 degree shoulder on the rod meets a 45 degree ceiling
-  in the shaft, so the rod cannot be driven on up into the top housing, and
-  the latch stops at about 60 degrees, short of the top housing.
-- The end-wall cells open into the shaft, so the rod can be inspected from
-  outside.
-- The base is marked EMERGENCY BYPASS / PUSH IN, with a frame round the
-  punch-out and an arrow to it, sunk 0.6 mm into the bed face.
+- The slot runs through the end wall just under the lid's end wall, from the
+  latch slot's side wall (X -23) to X -1.5, 3 mm tall (Z 28.5 to 31.5), so a
+  key in it is level with the latch's lower corner. It reaches 0.75 mm into
+  the latch slot to square off the slot's 0.7 mm corner round, which would
+  otherwise catch the key.
+- At the entry end it is 3.9 mm deep. A key resting on that floor passes under
+  the latch's rounded corner, and a 45 degree ramp lifts it onto the slot
+  floor as it moves along.
+- A 0.45 mm skin (one extrusion line) closes the slot on the outside. The key
+  punches through it, so a used bypass shows.
+- The end face is marked EMERGENCY BYPASS / 2.5 mm HEX KEY, with a pointer
+  under the entry and an arrow the way to push, sunk 0.6 mm.
 
-To use it, push the marked square in with a screwdriver, a pencil or anything
-up to 7 mm across, and keep pushing until the rod stops (10 mm), then slide
-the top housing off. Once the punch-out is through, the hole stays open and the rod is loose,
-so the vault no longer locks reliably: print a new one.
+To use it, stand the box on its base and look at the latch end (the end with
+the marking):
 
-The build checks that the rod sits 0.8 to 2 mm under the latch, that the
-latch keeps clear of the rod tip over its whole swing (8.5 degrees one way to
-the slot wall, 90 degrees the other; the tightest gap is 0.45 mm, at the slot
-wall), that the rod clears its shaft by 1 mm apart from the tabs, that it
-travels 9 mm freely and has turned the latch out of its slot by then, and
-that the shoulder stops it within 2 mm more.
+1. Push a 2.5 mm hex key through the skin at the pointer, at the right-hand
+   end of the slot, all the way in (about 13 mm, to the far side of the latch
+   slot). Turn it so a flat faces up if it does not go in.
+2. Lift it as high as it goes, then push it left along the slot, keeping it
+   up against the top, until it stops at the far end. It bears on the
+   latch's lower corner and turns the latch up out of its slot, back-driving
+   the motor.
+3. Keep the key pressed and slide the top housing off.
+
+Once the skin is broken the slot stays open, so print a new vault.
+
+Why a key from the side and not a push from below: the latch hangs from the
+motor shaft, so a push across it, low on the latch and far from the shaft,
+turns it with a long lever. A push straight up under its tip, like a rod's up
+through the vault, turns it with a short lever, while the friction of the tip
+sliding across the pusher works against it with a long one, and it jams.
+
+The build simulates the key's push on the latch's real section (pivot fitted
+to its shaft bore) with friction, for a key held up as in step 2 and for one
+left resting on the slot floor, each with a flat up and a corner up:
+
+| Key | Latch turned | Jams above friction |
+| --- | --- | --- |
+| 2.5 mm hex, flat up, held up | 39.5 deg | 0.91 |
+| 2.5 mm hex, corner up, held up | 39.5 deg | 0.90 |
+| 2.5 mm hex, flat up, resting | 36.7 deg | 0.67 |
+| 2.5 mm hex, corner up, resting | 39.0 deg | 0.77 |
+
+PLA on PLA slides at about 0.3 to 0.5, so the push does not jam even with the
+key left resting. The top housing slides off without touching the far slot
+wall once the latch is turned 38.5 degrees, which the held-up key reaches.
+Left resting, the key turns it 36.7 degrees and the latch dips 0.31 mm below
+the far wall's top; it rides over that on its 1 mm chamfered edge. The build
+also checks that the key's way in is clear of everything but the latch on
+all four paths. The model leaves out the motor: how hard the gearbox is to
+turn backward is the one thing to find out on the bench.
 
 ### Test piece
 
-`phone-vault-escape-test-print.stl` is the latch end of the vault on its own
-(26 x 35 x 169 mm): the shaft, the rod, the punch-out and the end wall. Print
-it before the vault, with a brim, and check that:
+`phone-vault-escape-test-print.stl` is the top of the vault down to the end of
+the transition, 60 x 121 x 33.3 mm: the whole lid interface with the latch
+slot, key slot and marking. It is oriented like the vault, cut face on the
+bed, and needs no supports. Print it before the vault, and with the real top
+housing check that:
 
-1. the rod is free all round (look through the end-wall cells) and does not
-   rattle,
-2. a firm push with a screwdriver breaks the punch-out and the tabs, without
-   needing a hammer, and
-3. the rod then slides about 10 mm and stops on its shoulder.
+1. the top housing slides on, locks and reports the backplate as before
+   (fit the magnets first),
+2. a 2.5 mm hex key punches through the skin without a hammer, and
+3. with the box locked, the key turns the latch out and the top housing then
+   slides off. Note how hard the motor is to turn backward.
 
-If the rod has fused to the shaft wall, or the push is too hard, change
-`ESC_CLEAR`, `ESC_TIE_W` or `ESC_TIE_H` and rebuild before printing the vault.
+If the latch does not come far enough out to slide off, the fallback is a
+small chamfer on the top edge of the latch slot's far wall.
 
 ## Printing
 
@@ -127,10 +148,12 @@ measures 0 mm² steeper); each honeycomb cell has vertical sides and pointed
 60 degree roofs, and the foot is a 45 degree chamfer. No supports are needed. It fits the P1S, X1C and
 A1 (256 mm Z) and, at 178.5 mm tall, the A1 mini (180 mm Z).
 
-The only bridges are small: the breakaway tabs span the 1 mm gap round the
-rod, and the layer above the sunk marking spans its letter strokes. Print
-with a 0.2 mm first layer (the Bambu default) so the punch-out skin is one
-layer, as designed.
+The only bridges are short: the key slot's ceiling spans 21.5 mm across the
+2.2 mm deep end-wall lip just under the top housing seam, and the layer
+above the sunk marking spans its 0.6 mm deep strokes. The skin over the key
+slot is 0.45 mm, one line with a 0.4 mm nozzle; keep the Arachne wall
+generator (the Bambu default) so the slicer prints it rather than dropping
+it, and check in the preview that it is there.
 
 ## Regenerating
 
@@ -149,5 +172,6 @@ LKBX_CAD_DIR=/path/to/real/step/files freecadcmd build_freecad.py
 `top-housing.step` and `lockbox-assembly.step` when the Git LFS copies are not
 checked out. The honeycomb layout is generated by the script; rerun it after
 changing `HEX_W`, `HEX_SIDE`, `WEB`, `ROOF_ANGLE` or the window limits. The
-bypass is driven by the `ESC_*` and `MARK_*` parameters; the marking text,
-font and tab heights are constants near the top of the script.
+bypass is driven by the `KEY_*` and `MARK_DEPTH` parameters; the marking
+text, pointer and arrow, the key sizes and the check limits are constants
+near the top of the script.

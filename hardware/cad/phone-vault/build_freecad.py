@@ -2,8 +2,9 @@
 
 The phone vault replaces the key tray of ``bottom-housing.step`` with a
 honeycomb-windowed tower deep enough for a large phone (standing on end) or a
-king-size cigarette pack. The top of the part is the original bottom housing, unchanged, so the
-stock top housing slides on, latches and detects it exactly as before.
+king-size cigarette pack. The top of the part is the original bottom housing,
+unchanged apart from the emergency key slot, so the stock top housing slides
+on, latches and detects it exactly as before.
 
 Run headless with FreeCAD 1.0:
 
@@ -19,8 +20,9 @@ Creates ``phone-vault.FCStd`` next to this script and writes, into
     phone-vault.step        the vault in the housing frame (mates with top-housing.step)
     phone-vault-print.stl   the vault in print orientation, base on Z = 0
     phone-vault-escape-test-print.stl
-                            the latch end only (shaft, rod and punch-out), to
-                            test the print-in-place escape rod before the vault
+                            the top of the vault only (lid interface, latch
+                            slot, key slot and marking), to test the escape
+                            with the real lid, latch and motor before the vault
 
 Document contents:
 
@@ -33,20 +35,23 @@ Document contents:
                 part opened through its underside, the top-entry back magnet
                 pocket, the opening, the 45 degree transition loft, the cavity,
                 the side and end honeycomb windows, and the emergency bypass:
-                a shaft down the latch end with a rod printed in place inside
-                it, breakaway tabs, the base punch-out and its marking
+                a key slot through the latch-end wall under a punch-through
+                skin, with its marking sunk into the end face
     EscapeTestPiece
-                the latch end of the vault, cut out for a test print
+                the vault down to TRANSITION_Z, for a test print
     References  phone and cigarette pack envelopes in the cavity
 
-The emergency bypass keeps the escape of the original bottom housing. The
-original has a plug in the floor under the latch, cut free by 0.3 mm slits and
-held only by the first printed layer: pushing it in lifts the latch on the
-side away from its pivot, so it swings out of the slot. Here the plug is in
-the base, and a rod printed in place in a sealed shaft carries the push 165 mm
-up to the latch. The rod clears its shaft by ESC_CLEAR on every side and is
-held centred by one-layer breakaway tabs, so it prints standing and does not
-rattle; the push snaps the tabs and the skin together.
+The emergency bypass replaces the escape of the original bottom housing,
+whose plug in the floor under the latch the vault covers. A 2.5 mm hex key
+goes in through a slot in the latch-end wall, just under the lid's end wall,
+at the latch's free side. Pushed along the slot, it bears sideways on the
+latch's lower corner, far below the pivot, and turns it out of the slot;
+the lid then slides off, its latch riding over the far slot wall on its
+chamfered edge. The build simulates that push with friction (in the same
+simulation a push straight up from under the latch, as a rod up through the
+vault would give, jams) and checks the slide-off in 3D.
+The slot is closed by a one-line skin that the key punches through, so
+using the bypass leaves a mark.
 
 Coordinates are the top-housing STEP frame: Z is depth from the screen face
 (it grows toward the print bed), Y runs along the housing length and X across
@@ -63,6 +68,7 @@ import FreeCAD as App
 import Import
 import Mesh  # noqa: F401  (registers the STL writer)
 import MeshPart
+import numpy as np
 import Part
 import Sketcher
 
@@ -116,25 +122,16 @@ PARAMS = [
     ("MAG_Y", 51.85, "Back magnet centre, from bottom-housing.step"),
     ("MAG_R", 2.175, "Back magnet pocket radius, the same as the front magnet pocket"),
     ("MAG_FLOOR_Z", 34.75, "Back magnet pocket floor, the same depth as the front magnet pocket"),
-    ("ESC_X", -4.50, "Escape rod centre across the width: under the latch, right of its pivot (X -15.25)"),
-    ("ESC_TIP_W", 6.00, "Rod tip width (X) where it passes the slot floor and pushes the latch"),
-    ("ESC_TIP_T", 5.00, "Rod tip thickness (Y); the latch slot is 7 mm"),
-    ("ESC_TIP_Y", -51.00, "Rod tip centre along the length, the middle of the latch slot"),
-    ("ESC_TIP_TOP_Z", 33.50, "Rod top at rest, 1.2 mm under the latch (its tip is at Z 32.3)"),
-    ("ESC_BODY_W", 10.00, "Rod body width (X) below the slot floor, stiff enough to print standing"),
-    ("ESC_BODY_T", 8.00, "Rod body thickness (Y)"),
-    ("ESC_BODY_TOP_Z", 54.00, "Top of the rod body; a 45 degree shoulder narrows it to the tip and stops it on the shaft ceiling"),
-    ("ESC_HOLE_Z", 43.00, "Bottom of the tip hole under the slot floor; a 45 degree ceiling widens it to the shaft"),
-    ("ESC_CLEAR", 1.00, "Gap between the rod and its shaft on every side"),
-    ("ESC_WALL", 1.60, "Shaft wall thickness inside the cavity"),
-    ("ESC_SLIT", 0.30, "Slit around the punch-out in the base, as on the original plug"),
-    ("ESC_SKIN", 0.20, "First-layer skin that holds the punch-out, as on the original plug"),
-    ("ESC_TIE_W", 0.50, "Breakaway tab width; the tabs hold the rod centred so it prints straight and does not rattle"),
-    ("ESC_TIE_H", 0.40, "Breakaway tab height (two 0.2 mm layers)"),
-    ("ESC_TRAVEL", 9.00, "Rod travel the build checks is free and has turned the latch out of its slot; the shoulder stops the rod within 2 mm more"),
-    ("MARK_DEPTH", 0.60, "Depth of the emergency bypass marking in the base"),
-    ("MARK_GAP", 2.00, "Gap between the punch-out slit and the marking frame"),
-    ("MARK_LINE", 0.80, "Width of the marking frame groove"),
+    ("KEY_X0", -23.00, "Key slot end under the latch's free side, level with the latch slot wall (the right end seen from outside)"),
+    ("KEY_X1", -1.50, "Far end of the key slot; it stops the key past its last contact with the latch"),
+    ("KEY_TOP_Z", 28.50, "Key slot top, level with the bottom of the lid's end wall"),
+    ("KEY_BOT_Z", 31.50, "Key slot floor along its run: a 2.5 mm hex key plus 0.5 mm"),
+    ("KEY_ENTRY_X", -19.60, "End of the entry pocket, where a 45 degree ramp lifts the key onto the slot floor"),
+    ("KEY_ENTRY_Z", 32.40, "Entry pocket floor: a key resting on it passes under the latch's corner"),
+    ("KEY_SKIN", 0.45, "Outer skin over the key slot (one extrusion line); the key punches through it"),
+    ("LATCH_SLOT_Y0", -54.50, "End-wall face of the latch slot, from bottom-housing.step"),
+    ("KEY_REACH", 0.75, "The key slot runs this far into the latch slot, squaring off the slot's 0.7 mm corner round at the key"),
+    ("MARK_DEPTH", 0.60, "Depth of the emergency bypass marking in the end face"),
     ("INNER_X", "=OUTER_X - WALL", "Half width of the cavity"),
     ("INNER_Y", "=OUTER_Y - WALL", "Half length of the cavity"),
     ("INNER_R", "=OUTER_R - WALL", "Cavity corner radius, concentric with the outline"),
@@ -143,8 +140,7 @@ PARAMS = [
     ("BASE_Z", "=FLOOR_Z + FLOOR_T", "Underside of the base, on the print bed"),
     ("FOOT_TOP_Z", "=BASE_Z - FOOT_EDGE - FOOT_W", "Where the 45 degree foot chamfer leaves the wall"),
     ("ROOF_RISE", "=HEX_W / 2 * tan(ROOF_ANGLE)", "Height of a cell's pointed roof"),
-    ("ESC_BODY_Y", "=-INNER_Y + ESC_CLEAR + ESC_BODY_T / 2", "Rod body centre: its back face is ESC_CLEAR off the end wall"),
-    ("ESC_SHOULDER", "=(ESC_BODY_W - ESC_TIP_W) / 2", "Height of the 45 degree rod shoulder and shaft ceiling"),
+    ("KEY_RAMP_X", "=KEY_ENTRY_X + KEY_ENTRY_Z - KEY_BOT_Z", "Top of the entry ramp (45 degrees)"),
 ]
 SIDE_U_LIMIT = 50.0  # cells stay within +-this along Y on the long walls (flat wall ends at 55.5)
 END_U_LIMIT = 21.0  # cells stay within +-this along X on the end walls (flat wall ends at 25)
@@ -166,20 +162,29 @@ P["ROOF_RISE"] = P["HEX_W"] / 2 * math.tan(math.radians(P["ROOF_ANGLE"]))
 OLD_MAG_HOLE = dict(r=2.40, z0=30.70)  # back magnet bore, pressed from below
 OLD_STAND_SLOT = dict(x=(-4.4, 4.4), y=(-47.2, -44.1), z0=36.40)  # stand clip slot
 
-# Breakaway tab levels (Z). The first holds the tip in the slot floor, the
-# rest hold the body at about 35 mm spacing while it prints.
-TIE_LEVELS = (42.0, 75.0, 110.0, 145.0, 180.0)
-# The latch turns about the N20 shaft (an axis along Y through this X, Z). It
-# swings toward +X to unlock (checked to 90 degrees) and stops on the slot
-# wall 8.5 degrees toward -X. It is free once wholly above the slot top.
-LATCH_PIVOT = (-15.25, 8.8)
-LATCH_SWING = (-8.5, 90.0)
-SLOT_TOP_Z = 28.7
-# Marking on the base, read from below. Each line: text, cap height, baseline Y.
+# The latch turns about the N20 shaft, an axis along Y. The build fits the
+# axis to the shaft bore in this section of the latch, where its profile is
+# uniform; positive angles turn its tip toward +X, out of the slot.
+LATCH_SECTION_Y = -51.0
+# Key checks. A 2.5 mm hex key is modelled as a round bar: 1.25 mm radius
+# with a flat facing up, 1.45 mm with a corner up. PLA on PLA slides at a
+# friction coefficient of about 0.3 to 0.5; a push only turns the latch while
+# the coefficient stays under the critical value the check reports.
+KEY_RADII = (1.25, 1.45)
+KEY_CLEAR = 0.10  # key to the slot end at the start of the push
+FRICTION_MARGIN = 0.60  # above the top of that range
+# Sliding the lid off, the latch's 1 mm chamfered edge may ride over the far
+# slot wall; anything deeper than this would meet its vertical face instead.
+RIDE_DEPTH_HELD, RIDE_DEPTH_RESTING = 0.40, 0.70
+# Marking on the end face, read from outside the latch end with the box
+# standing on its base. Each line: text, cap height, baseline Z.
 MARK_FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-MARK_LINES = (("EMERGENCY BYPASS", 4.2, -30.6), ("PUSH IN", 4.2, -37.2))
-# Box that cuts the latch end out of the vault for the escape test print.
-TEST_BOX = dict(x=(-17.0, 9.0), y=(-73.0, -38.0), z=(33.0, None))
+MARK_LINES = (("EMERGENCY", 4.0, 43.0), ("BYPASS", 4.0, 48.6), ("2.5 mm HEX KEY", 3.2, 54.0))
+# The entry pointer under the key slot's entry and the push arrow beside it:
+# Z of the pointer apex and base, Z of the arrow's centre line, and its ends.
+MARK_POINTER_Z = (33.4, 36.2)
+MARK_ARROW_Z = 34.8
+MARK_ARROW_X = (-18.6, -2.6)
 
 # Contents the cavity must take (length along Z, width along Y, thickness along X).
 PHONE = (170.0, 82.0, 14.0)  # 165 x 78 x 9 phone in a case
@@ -208,9 +213,15 @@ def distance_constraint(sk, kind, geo, pos, value, name=None, expr=None):
     return ci
 
 
-def polygon(sk, pts):
-    """Closed polygon of lines, fully constrained by its vertex coordinates."""
+def polygon(sk, pts, exprs=None, prefix=""):
+    """Closed polygon of lines, fully constrained by its vertex coordinates.
+
+    ``exprs`` may give, per vertex, a pair of expressions for its sketch
+    coordinates (either may be None); those constraints are named
+    ``<prefix>P<i>U`` and ``<prefix>P<i>V``.
+    """
     n = len(pts)
+    exprs = exprs or [(None, None)] * n
     geo = [sk.addGeometry(Part.LineSegment(V(pts[i][0], pts[i][1], 0),
                                            V(pts[(i + 1) % n][0], pts[(i + 1) % n][1], 0)), False)
            for i in range(n)]
@@ -218,14 +229,15 @@ def polygon(sk, pts):
         sk.addConstraint(Sketcher.Constraint("Coincident", geo[i], 2, geo[(i + 1) % n], 1))
     for i in range(n):
         x, y = pts[i]
+        ex, ey = exprs[i]
         if abs(x) < 1e-9:
             sk.addConstraint(Sketcher.Constraint("PointOnObject", geo[i], 1, -2))
         else:
-            distance_constraint(sk, "DistanceX", geo[i], 1, x)
+            distance_constraint(sk, "DistanceX", geo[i], 1, x, "%sP%dU" % (prefix, i) if ex else None, ex)
         if abs(y) < 1e-9:
             sk.addConstraint(Sketcher.Constraint("PointOnObject", geo[i], 1, -1))
         else:
-            distance_constraint(sk, "DistanceY", geo[i], 1, y)
+            distance_constraint(sk, "DistanceY", geo[i], 1, y, "%sP%dV" % (prefix, i) if ey else None, ey)
     return geo
 
 
@@ -329,15 +341,34 @@ def origin_feature(body, role):
     return [f for f in body.Origin.OriginFeatures if f.Role == role][0]
 
 
-def sketch(body, name, plane_role, offset=0.0, offset_expr=None):
-    """Sketch on a body origin plane, offset along the plane normal."""
+def sketch(body, name, plane_role, offset=0.0, offset_expr=None, turn=0.0):
+    """Sketch on a body origin plane, offset along the plane normal and
+    optionally turned about it."""
     sk = body.newObject("Sketcher::SketchObject", name)
     sk.AttachmentSupport = [(origin_feature(body, plane_role), "")]
     sk.MapMode = "FlatFace"
-    sk.AttachmentOffset = App.Placement(V(0, 0, offset), App.Rotation())
+    sk.AttachmentOffset = App.Placement(V(0, 0, offset), App.Rotation(V(0, 0, 1), turn))
     if offset_expr:
         sk.setExpression(".AttachmentOffset.Base.z", offset_expr)
     return sk
+
+
+def end_face_sketch(body, name, depth, depth_expr):
+    """Sketch facing out of the latch end, ``depth`` from the end face.
+
+    FreeCAD's XZ plane maps sketch (u, v) to global (X, Z) with its normal
+    along -Y; turned half a turn it maps (u, v) to (-X, -Z). That is how the
+    end face looks from outside with the box standing on its base, so text
+    reads correctly, and a pocket cuts into the wall (+Y).
+    """
+    sk = sketch(body, name, "XZ_Plane", P["OUTER_Y"] - depth,
+                "Params.OUTER_Y - %s" % depth_expr if depth_expr else "Params.OUTER_Y", turn=180.0)
+    return sk
+
+
+def end_uv(x, z):
+    """Global (X, Z) to the end-face sketch's (u, v)."""
+    return (-x, -z)
 
 
 def finish_sketch(sk):
@@ -603,165 +634,222 @@ def build_vault(doc, interface):
         recompute(doc, sk, f)
         feats.append(f)
     report("Windows", body.Shape)
-    build_escape(doc, body)
+    build_key_slot(doc, body)
     return body
 
 
-def esc_rects():
-    """Numeric outlines of the escape features, with their expressions."""
-    def r(xc, yc, w, t, grow, exprs):
-        return ((xc - w / 2 - grow, xc + w / 2 + grow), (yc - t / 2 - grow, yc + t / 2 + grow)), exprs
+def key_slot_outline():
+    """The key slot in global (X, Z), with expressions for the end-face sketch.
 
-    def ex(xc, yc, w, t, grow):
-        g = (" + " + grow) if grow else ""
-        m = (" - " + grow) if grow else ""
-        return {"x0": "%s - %s / 2%s" % (xc, w, m), "x1": "%s + %s / 2%s" % (xc, w, g),
-                "y0": "%s - %s / 2%s" % (yc, t, m), "y1": "%s + %s / 2%s" % (yc, t, g)}
-    X, TY, BY = "Params.ESC_X", "Params.ESC_TIP_Y", "Params.ESC_BODY_Y"
-    TW, TT, BW, BT = "Params.ESC_TIP_W", "Params.ESC_TIP_T", "Params.ESC_BODY_W", "Params.ESC_BODY_T"
-    c, w, sl = P["ESC_CLEAR"], P["ESC_WALL"], P["ESC_SLIT"]
-    tip = (P["ESC_X"], P["ESC_TIP_Y"], P["ESC_TIP_W"], P["ESC_TIP_T"])
-    body = (P["ESC_X"], P["ESC_BODY_Y"], P["ESC_BODY_W"], P["ESC_BODY_T"])
-    return {
-        "tip": r(*tip, 0, ex(X, TY, TW, TT, "")),
-        "tip_hole": r(*tip, c, ex(X, TY, TW, TT, "Params.ESC_CLEAR")),
-        "body": r(*body, 0, ex(X, BY, BW, BT, "")),
-        "shaft": r(*body, c, ex(X, BY, BW, BT, "Params.ESC_CLEAR")),
-        "slit": r(*body, sl, ex(X, BY, BW, BT, "Params.ESC_SLIT")),
-        "frame_in": r(*body, sl + P["MARK_GAP"], ex(X, BY, BW, BT, "(Params.ESC_SLIT + Params.MARK_GAP)")),
-        "frame_out": r(*body, sl + P["MARK_GAP"] + P["MARK_LINE"],
-                       ex(X, BY, BW, BT, "(Params.ESC_SLIT + Params.MARK_GAP + Params.MARK_LINE)")),
-        "tube": r(*body, c + w, ex(X, BY, BW, BT, "(Params.ESC_CLEAR + Params.ESC_WALL)")),
-    }
+    From the end under the latch's free side: the entry pocket, deep enough
+    that a key resting on its floor passes under the latch's rounded corner,
+    a 45 degree ramp up to the slot floor, and the run to the far end.
+    """
+    pts = [(P["KEY_X0"], P["KEY_TOP_Z"]), (P["KEY_X1"], P["KEY_TOP_Z"]), (P["KEY_X1"], P["KEY_BOT_Z"]),
+           (P["KEY_RAMP_X"], P["KEY_BOT_Z"]), (P["KEY_ENTRY_X"], P["KEY_ENTRY_Z"]), (P["KEY_X0"], P["KEY_ENTRY_Z"])]
+    names = [("KEY_X0", "KEY_TOP_Z"), ("KEY_X1", "KEY_TOP_Z"), ("KEY_X1", "KEY_BOT_Z"),
+             ("KEY_RAMP_X", "KEY_BOT_Z"), ("KEY_ENTRY_X", "KEY_ENTRY_Z"), ("KEY_X0", "KEY_ENTRY_Z")]
+    return pts, [("-Params.%s" % x, "-Params.%s" % z) for x, z in names]
 
 
-def tie_boxes():
-    """Breakaway tabs: (x range, y range, z range) for each, left and right of the rod."""
-    out = []
-    c, tw, th = P["ESC_CLEAR"], P["ESC_TIE_W"], P["ESC_TIE_H"]
-    for zt in TIE_LEVELS:
-        if zt < P["ESC_HOLE_Z"]:
-            w, yc = P["ESC_TIP_W"], P["ESC_TIP_Y"]
-        else:
-            w, yc = P["ESC_BODY_W"], P["ESC_BODY_Y"]
-        for side in (-1, 1):
-            edge = P["ESC_X"] + side * w / 2
-            xs = sorted((edge - side * 0.2, edge + side * (c + 0.2)))
-            out.append((tuple(xs), (yc - tw / 2, yc + tw / 2), (zt - th, zt)))
-    return out
+def key_slot_floor(x):
+    """Floor of the key slot (Z) at X."""
+    if x <= P["KEY_ENTRY_X"]:
+        return P["KEY_ENTRY_Z"]
+    if x >= P["KEY_RAMP_X"]:
+        return P["KEY_BOT_Z"]
+    return P["KEY_ENTRY_Z"] - (x - P["KEY_ENTRY_X"])
 
 
-def build_escape(doc, body):
-    """Emergency bypass: shaft, print-in-place rod, tabs, punch-out, marking."""
-    R = esc_rects()
+def arrow_outline():
+    """Push arrow along the key slot, pointing toward +X (left, seen from outside)."""
+    (x_t, x_h), z = MARK_ARROW_X, MARK_ARROW_Z
+    neck = x_h - 3.0
+    return [(x_t, z - 0.5), (neck, z - 0.5), (neck, z - 1.5), (x_h, z), (neck, z + 1.5), (neck, z + 0.5), (x_t, z + 0.5)]
 
-    def rect_sketch(name, z, z_expr, keys, extra=None):
-        sk = sketch(body, name, "XY_Plane", z, z_expr)
-        for k in keys:
-            (xr, yr), exprs = R[k]
-            rect(sk, xr, yr, exprs, k.capitalize() + "_")
-        if extra:
-            extra(sk)
-        finish_sketch(sk)
-        return sk
 
-    # Shaft walls: a block from just under the slot floor to the cavity floor,
-    # against the end wall. Inside the ramp it merges with solid material.
-    (txr, tyr), texprs = R["tube"]
-    sk = sketch(body, "EscapeTubeSketch", "XY_Plane", P["CUT_Z"] + 0.5, "Params.CUT_Z + 0.5 mm")
-    texprs = dict(texprs, y0="-Params.INNER_Y")
-    rect(sk, txr, (-P["INNER_Y"], tyr[1]), texprs, "Tube_")
+def pointer_outline():
+    """Triangle under the slot's entry, pointing up at it."""
+    xc = P["KEY_X0"] + max(KEY_RADII) + KEY_CLEAR
+    apex, base = MARK_POINTER_Z
+    return [(xc, apex), (xc + 1.5, base), (xc - 1.5, base)]
+
+
+def build_key_slot(doc, body):
+    """Emergency bypass: the key slot through the latch-end wall, its skin and marking."""
+    # The slot runs from behind the skin through the end wall into the
+    # latch slot, under the lid's end wall, and squares off the latch
+    # slot's rounded corner where the key goes in beside the latch.
+    sk = end_face_sketch(body, "KeySlotSketch", P["KEY_SKIN"], "Params.KEY_SKIN")
+    pts, exprs = key_slot_outline()
+    polygon(sk, [end_uv(x, z) for x, z in pts], exprs, "Key")
     finish_sketch(sk)
-    tube = pad(body, sk, "EscapeTube", "Params.FLOOR_Z - Params.CUT_Z - 0.5 mm")
-    recompute(doc, sk, tube)
-
-    # Tip hole through the slot floor, a 45 degree ceiling, then the shaft.
-    sk = rect_sketch("EscapeTipHoleSketch", P["CUT_Z"] - 1.0, "Params.CUT_Z - 1 mm", ["tip_hole"])
-    f = pocket(body, sk, "EscapeTipHole", "Params.ESC_HOLE_Z - Params.CUT_Z + 1 mm", reversed_=True)
+    f = pocket(body, sk, "KeySlot", "Params.OUTER_Y - Params.KEY_SKIN + Params.LATCH_SLOT_Y0 + Params.KEY_REACH")
     recompute(doc, sk, f)
-    sk_a = rect_sketch("EscapeCeilingTop", P["ESC_HOLE_Z"], "Params.ESC_HOLE_Z", ["tip_hole"])
-    sk_b = rect_sketch("EscapeCeilingBottom", P["ESC_HOLE_Z"] + P["ESC_SHOULDER"],
-                       "Params.ESC_HOLE_Z + Params.ESC_SHOULDER", ["shaft"])
-    f = loft(body, "Subtractive", "EscapeCeiling", sk_a, sk_b)
-    recompute(doc, sk_a, sk_b, f)
-    sk = rect_sketch("EscapeShaftSketch", P["ESC_HOLE_Z"] + P["ESC_SHOULDER"],
-                     "Params.ESC_HOLE_Z + Params.ESC_SHOULDER", ["shaft"])
-    f = pocket(body, sk, "EscapeShaft", "Params.FLOOR_Z - Params.ESC_HOLE_Z - Params.ESC_SHOULDER", reversed_=True)
-    recompute(doc, sk, f)
-    report("Escape shaft", body.Shape)
+    report("Key slot", body.Shape)
 
-    # The rod, printed in place: body standing on the floor, 45 degree
-    # shoulder, then the tip up through the slot floor to just under the latch.
-    sk = rect_sketch("EscapeRodBodySketch", P["FLOOR_Z"], "Params.FLOOR_Z", ["body"])
-    f = pad(body, sk, "EscapeRodBody", "Params.FLOOR_Z - Params.ESC_BODY_TOP_Z", reversed_=True)
+    # Marking, sunk into the end face: a pointer at the entry, an arrow
+    # along the slot the way the key pushes, and three lines of text.
+    sk = end_face_sketch(body, "BypassArrowSketch", 0.0, None)
+    polygon(sk, [end_uv(x, z) for x, z in pointer_outline()])
+    polygon(sk, [end_uv(x, z) for x, z in arrow_outline()])
+    finish_sketch(sk)
+    f = pocket(body, sk, "BypassArrow", "Params.MARK_DEPTH")
     recompute(doc, sk, f)
-    sk_a = rect_sketch("EscapeShoulderBottom", P["ESC_BODY_TOP_Z"], "Params.ESC_BODY_TOP_Z", ["body"])
-    sk_b = rect_sketch("EscapeShoulderTop", P["ESC_BODY_TOP_Z"] - P["ESC_SHOULDER"],
-                       "Params.ESC_BODY_TOP_Z - Params.ESC_SHOULDER", ["tip"])
-    f = loft(body, "Additive", "EscapeRodShoulder", sk_a, sk_b)
-    recompute(doc, sk_a, sk_b, f)
-    sk = rect_sketch("EscapeRodTipSketch", P["ESC_BODY_TOP_Z"] - P["ESC_SHOULDER"],
-                     "Params.ESC_BODY_TOP_Z - Params.ESC_SHOULDER", ["tip"])
-    f = pad(body, sk, "EscapeRodTip", "Params.ESC_BODY_TOP_Z - Params.ESC_SHOULDER - Params.ESC_TIP_TOP_Z",
-            reversed_=True)
-    recompute(doc, sk, f)
-
-    # Punch-out: the rod's foot is cut free in the base by a slit all round
-    # and held only by the first layer, like the original plug.
-    sk = rect_sketch("EscapePunchOutSketch", P["FLOOR_Z"], "Params.FLOOR_Z", ["slit", "body"])
-    f = pocket(body, sk, "EscapePunchOut", "Params.FLOOR_T - Params.ESC_SKIN", reversed_=True)
-    recompute(doc, sk, f)
-
-    # Breakaway tabs, two per level, bridging the gap to the shaft walls.
-    for i, zt in enumerate(TIE_LEVELS):
-        sk = sketch(body, "EscapeTabs%dSketch" % (i + 1), "XY_Plane", zt)
-        for xs, ys, _zs in [b for b in tie_boxes() if abs(b[2][1] - zt) < 1e-9]:
-            rect(sk, xs, ys)
-        finish_sketch(sk)
-        f = pad(body, sk, "EscapeTabs%d" % (i + 1), "Params.ESC_TIE_H", reversed_=True)
-        recompute(doc, sk, f)
-    report("Escape rod", body.Shape)
-
-    # Marking on the base: a frame round the punch-out, an arrow and two
-    # lines of text, sunk MARK_DEPTH into the bed face.
-    (fx, fy), _ = R["frame_out"]
-    apex, base = fy[1] + 1.0, fy[1] + 5.0
-
-    def arrow(sk):
-        polygon(sk, [(P["ESC_X"], apex), (P["ESC_X"] + 3.0, base), (P["ESC_X"] - 3.0, base)])
-    sk = rect_sketch("BypassMarkSketch", P["BASE_Z"], "Params.BASE_Z", ["frame_out", "frame_in"], arrow)
-    f = pocket(body, sk, "BypassMark", "Params.MARK_DEPTH")
-    recompute(doc, sk, f)
-    sk = sketch(body, "BypassTextSketch", "XY_Plane", P["BASE_Z"], "Params.BASE_Z")
+    sk = end_face_sketch(body, "BypassTextSketch", 0.0, None)
     for text, cap, baseline in MARK_LINES:
-        add_blocked_wires(sk, text_wires(text, cap, P["ESC_X"], baseline))
+        wires = text_wires(text, cap, 0.0, -baseline)
+        half = Part.Compound(wires).BoundBox.XLength / 2
+        if half > P["OUTER_X"] - P["OUTER_R"] - 2.0:
+            raise RuntimeError("marking line %r is %.1f mm wide; the flat end face is %.1f" % (
+                text, 2 * half, 2 * (P["OUTER_X"] - P["OUTER_R"])))
+        add_blocked_wires(sk, wires)
     finish_sketch(sk)
     f = pocket(body, sk, "BypassText", "Params.MARK_DEPTH")
     recompute(doc, sk, f)
     report("Bypass marking", body.Shape)
 
 
-def rod_shape():
-    """The moving part of the bypass (rod plus punch-out), for the checks."""
-    R = esc_rects()
-    (bx, by), _ = R["body"]
-    (tx, ty), _ = R["tip"]
-    foot = P["BASE_Z"] - P["ESC_SKIN"]
-    body_box = Part.makeBox(bx[1] - bx[0], by[1] - by[0], foot - P["ESC_BODY_TOP_Z"], V(bx[0], by[0], P["ESC_BODY_TOP_Z"]))
-    z_s = P["ESC_BODY_TOP_Z"] - P["ESC_SHOULDER"]
-    w_a = Part.makePolygon([V(bx[0], by[0], P["ESC_BODY_TOP_Z"]), V(bx[1], by[0], P["ESC_BODY_TOP_Z"]),
-                            V(bx[1], by[1], P["ESC_BODY_TOP_Z"]), V(bx[0], by[1], P["ESC_BODY_TOP_Z"]),
-                            V(bx[0], by[0], P["ESC_BODY_TOP_Z"])])
-    w_b = Part.makePolygon([V(tx[0], ty[0], z_s), V(tx[1], ty[0], z_s), V(tx[1], ty[1], z_s), V(tx[0], ty[1], z_s),
-                            V(tx[0], ty[0], z_s)])
-    shoulder = Part.makeLoft([w_a, w_b], True, True)
-    tip_box = Part.makeBox(tx[1] - tx[0], ty[1] - ty[0], z_s - P["ESC_TIP_TOP_Z"], V(tx[0], ty[0], P["ESC_TIP_TOP_Z"]))
-    return body_box.fuse([shoulder, tip_box]).removeSplitter()
+def key_slot_solid():
+    """The key slot as a solid, for the checks."""
+    pts, _ = key_slot_outline()
+    y0 = -P["OUTER_Y"] + P["KEY_SKIN"]
+    wire = Part.makePolygon([V(x, y0, z) for x, z in pts] + [V(pts[0][0], y0, pts[0][1])])
+    return Part.Face(wire).extrude(V(0, P["LATCH_SLOT_Y0"] + P["KEY_REACH"] - y0, 0))
 
 
-def tie_solids():
-    return [Part.makeBox(xs[1] - xs[0], ys[1] - ys[0], zs[1] - zs[0], V(xs[0], ys[0], zs[0]))
-            for xs, ys, zs in tie_boxes()]
+def latch_profile(latch):
+    """Outline (x, z) of the latch's uniform section, and the pivot fitted to its shaft bore."""
+    loops = [np.array([(p.x, p.z) for p in w.discretize(Deflection=0.01)]) for w in latch.slice(V(0, 1, 0), LATCH_SECTION_Y)]
+
+    def area(q):
+        return 0.5 * abs(np.dot(q[:, 0], np.roll(q[:, 1], 1)) - np.dot(q[:, 1], np.roll(q[:, 0], 1)))
+    loops.sort(key=area)
+    outline, bore = loops[-1], loops[0]
+    cx, cz = bore.mean(axis=0)
+    for _ in range(50):  # least-squares circle, leaving out the shaft's D flat
+        keep = np.hypot(bore[:, 0] - cx, bore[:, 1] - cz) > np.median(np.hypot(bore[:, 0] - cx, bore[:, 1] - cz)) - 0.05
+        a = np.c_[2 * bore[keep], np.ones(keep.sum())]
+        cx, cz = np.linalg.lstsq(a, (bore[keep] ** 2).sum(1), rcond=None)[0][:2]
+    return outline, np.array([cx, cz])
+
+
+def turn_profile(pts, piv, a):
+    """Turn (x, z) points about the pivot; positive angles move the tip toward +X."""
+    c, s = math.cos(math.radians(a)), math.sin(math.radians(a))
+    d = pts - piv
+    return np.c_[piv[0] + c * d[:, 0] + s * d[:, 1], piv[1] - s * d[:, 0] + c * d[:, 1]]
+
+
+def key_gap(poly, c, r):
+    """Clearance from a round key (centre c, radius r) to a polygon, and the nearest boundary point."""
+    a, b = poly, np.roll(poly, -1, axis=0)
+    ab = b - a
+    t = np.clip(((c - a) * ab).sum(1) / np.maximum((ab ** 2).sum(1), 1e-12), 0.0, 1.0)
+    q = a + t[:, None] * ab
+    d = np.hypot(q[:, 0] - c[0], q[:, 1] - c[1])
+    i = int(np.argmin(d))
+    crosses = (a[:, 1] > c[1]) != (b[:, 1] > c[1])
+    xs = a[:, 0] + (c[1] - a[:, 1]) * (b[:, 0] - a[:, 0]) / np.where(crosses, b[:, 1] - a[:, 1], 1.0)
+    inside = np.count_nonzero(crosses & (c[0] < xs)) % 2 == 1
+    return (-d[i] if inside else d[i]) - r, q[i]
+
+
+def critical_friction(outline, piv, a, c, d):
+    """Friction coefficient above which the key's push at this contact jams.
+
+    The contact force is the normal push plus friction against the latch's
+    sliding over the key. It turns the latch out of the slot while its torque
+    about the pivot is positive.
+    """
+    _, q = key_gap(turn_profile(outline, piv, a + 0.02), c, 0.0)
+    n = (q - c) / np.linalg.norm(q - c)  # push direction on the latch
+    arm = q - piv
+
+    def torque(f):
+        return arm[1] * f[0] - arm[0] * f[1]
+    t = np.array([-n[1], n[0]])
+    v_latch = np.array([arm[1], -arm[0]])  # velocity of the contact per unit turn
+    w = (d @ n) / (v_latch @ n)
+    slip = (w * v_latch - d) @ t
+    t_push, t_fric = torque(n), torque(-np.sign(slip) * t)
+    if t_push <= 0:
+        return 0.0
+    return t_push / -t_fric if t_fric < 0 else math.inf
+
+
+def push_latch(outline, piv, path, r, step=0.05):
+    """Move a round key along ``path`` and turn the latch just enough to make room.
+
+    Returns the angle the latch ends at, the lowest critical friction over
+    the pushing contacts, and whether the key jammed (only a backward turn,
+    which the slot wall stops, would make room).
+    """
+    a, mu = 0.0, math.inf
+    for (x0, z0), (x1, z1) in zip(path[:-1], path[1:]):
+        length = math.hypot(x1 - x0, z1 - z0)
+        if length < 1e-9:
+            continue
+        d = np.array([x1 - x0, z1 - z0]) / length
+        for i in range(int(length / step) + 1):
+            c = np.array([x0, z0]) + d * min(i * step, length)
+            if key_gap(turn_profile(outline, piv, a), c, r)[0] >= 0:
+                continue
+            lo, hi = a, a + 0.5
+            while key_gap(turn_profile(outline, piv, hi), c, r)[0] < 0:
+                lo, hi = hi, hi + 0.5
+                if hi > 90:
+                    return a, mu, True
+            for _ in range(30):
+                m = (lo + hi) / 2
+                if key_gap(turn_profile(outline, piv, m), c, r)[0] < 0:
+                    lo = m
+                else:
+                    hi = m
+            a = hi
+            mu = min(mu, critical_friction(outline, piv, a, c, d))
+    return a, mu, False
+
+
+def polyline_points(path, spacing):
+    """Points along a polyline, at most ``spacing`` apart, ends included."""
+    out = [path[0]]
+    for (x0, z0), (x1, z1) in zip(path[:-1], path[1:]):
+        n = max(1, int(math.ceil(math.hypot(x1 - x0, z1 - z0) / spacing)))
+        out += [(x0 + (x1 - x0) * k / n, z0 + (z1 - z0) * k / n) for k in range(1, n + 1)]
+    return out
+
+
+def key_paths(r, outline, piv):
+    """Key centre paths (x, z) for one key size, both from the entry pocket.
+
+    "held up": the key is lifted until it meets the latch's corner (or the
+    slot top), pushed along while rising to the slot top over 2 mm, then
+    along the top. "resting": the key is left on the slot floor throughout,
+    up the ramp and along.
+    """
+    x_e = P["KEY_X0"] + r + KEY_CLEAR
+    x_f = P["KEY_X1"] - r
+    z_rest = P["KEY_ENTRY_Z"] - r
+    lo, hi = P["KEY_TOP_Z"] + r, z_rest  # highest point the key reaches before it touches the latch
+    if key_gap(outline, np.array([x_e, lo]), r)[0] < 0:
+        for _ in range(30):
+            m = (lo + hi) / 2
+            if key_gap(outline, np.array([x_e, m]), r)[0] < 0:
+                lo = m
+            else:
+                hi = m
+        z_lift = hi
+    else:
+        z_lift = lo
+    held = [(x_e, z_rest), (x_e, z_lift), (x_e + 2.0, P["KEY_TOP_Z"] + r), (x_f, P["KEY_TOP_Z"] + r)]
+    resting = []
+    for i in range(int((x_f - x_e) / 0.1) + 1):
+        x = min(x_e + 0.1 * i, x_f)
+        z = min(key_slot_floor(x + u) - math.sqrt(max(r * r - u * u, 0.0))
+                for u in np.linspace(-r, r, 41))
+        resting.append((x, z))
+    return {"held up": held, "resting": resting}
 
 
 def assembly_parts():
@@ -792,20 +880,79 @@ def build_references(doc):
 
 
 def build_test_piece(doc, vault):
-    """The latch end of the vault: shaft, rod, punch-out and end wall."""
+    """The top of the vault, down to the end of the transition: the whole
+    lid interface with the latch slot, key slot and marking, for a test with
+    the real lid, latch and motor."""
     box = doc.addObject("Part::Box", "EscapeTestBox")
-    (x0, x1), (y0, y1), (z0, _z1) = TEST_BOX["x"], TEST_BOX["y"], TEST_BOX["z"]
-    box.Length, box.Width = x1 - x0, y1 - y0
-    box.setExpression("Height", "Params.BASE_Z - %g mm" % z0)
-    box.Placement.Base = V(x0, y0, z0)
+    box.Length, box.Width = 100, 160
+    box.setExpression("Height", "Params.TRANSITION_Z")
+    box.Placement.Base = V(-50, -80, 0)
     box.Visibility = False
     common = doc.addObject("Part::Common", "EscapeTestPiece")
-    common.Label = "Escape test piece (latch end)"
+    common.Label = "Escape test piece (vault top, to TRANSITION_Z)"
     common.Base = vault
     common.Tool = box
     common.Visibility = False
     recompute(doc, common)
     return common
+
+
+def check_key(vault_shape, parts, fails):
+    """The key slot: passage, push on the latch, and the lid sliding off."""
+    latch = parts["Locking Latch"]
+    outline, piv = latch_profile(latch)
+    print("  latch pivot fitted to its shaft bore: X %.2f Z %.2f" % tuple(piv))
+
+    # The key's way in, behind the skin, must be clear of the vault and of
+    # every part but the latch at each point of both paths.
+    y0 = -P["OUTER_Y"] + P["KEY_SKIN"] + 0.01
+    y1 = P["LATCH_SLOT_Y0"] + 6.2  # where the far corner round of the latch slot starts
+    others = {k: v for k, v in parts.items() if k not in ("Locking Latch", "Housing` Bottom")}
+    region = Part.makeBox(30, y1 - y0 + 2, 12, V(-26, y0 - 1, 26))
+    vault_near = vault_shape.common(region)
+    others = {k: v.common(region) for k, v in others.items() if v.BoundBox.intersect(region.BoundBox)}
+    results = {}
+    for r in KEY_RADII:
+        for name, path in key_paths(r, outline, piv).items():
+            hit = 0.0
+            for x, z in polyline_points(path, 0.5):
+                # 0.02 mm under size, so resting on the floor or touching the
+                # slot top is not counted as a collision
+                bar = Part.makeCylinder(r - 0.02, y1 - y0, V(x, y0, z), V(0, 1, 0))
+                hit += bar.common(vault_near).Volume + sum(bar.common(o).Volume for o in others.values() if o.Volume)
+            a, mu, jammed = push_latch(outline, piv, path, r)
+            results[(r, name)] = a
+            print("  key r %.2f %-8s: passage collides %.3f mm^3; latch turned %.1f deg, %s, lowest critical friction %.2f" % (
+                r, name, hit, a, "JAMS" if jammed else "free", mu))
+            if hit > 0.01:
+                fails.append("the key's path (r %.2f, %s) is blocked" % (r, name))
+            if jammed or mu < FRICTION_MARGIN:
+                fails.append("the key push (r %.2f, %s) jams at friction %.2f" % (r, name, mu))
+
+    # Sliding the lid off (+Y), the turned latch must pass over the far slot
+    # wall, riding its chamfered edge where it still dips below the wall top.
+    near = vault_shape.common(Part.makeBox(30, 20, 15, V(-25, -50, 26)))
+    axis = V(piv[0], 0, piv[1])
+
+    def ride_depth(a):
+        deepest = 0.0
+        for dy in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0):
+            turned = latch.copy()
+            turned.rotate(axis, V(0, 1, 0), a)
+            turned.translate(V(0, dy, 0))
+            c = turned.common(near)
+            if c.Volume > 1e-5:
+                deepest = max(deepest, c.optimalBoundingBox().ZLength)
+        return deepest
+    free = next((t / 2.0 for t in range(74, 90) if ride_depth(t / 2.0) == 0.0), None)
+    print("  the lid slides off with no contact once the latch is turned %s deg" % free)
+    for name, limit in (("held up", RIDE_DEPTH_HELD), ("resting", RIDE_DEPTH_RESTING)):
+        a = min(v for (r, n), v in results.items() if n == name)
+        depth = ride_depth(a)
+        print("  key %-8s: latch at %.1f deg dips %.2f mm below the far wall top (rides over up to %.2f)" % (
+            name, a, depth, limit))
+        if depth > limit:
+            fails.append("with the key %s the latch dips %.2f mm into the far slot wall" % (name, depth))
 
 
 def check(vault_shape, interface_shape, bottom_shape, refs):
@@ -814,24 +961,39 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
     if len(vault_shape.Solids) != 1 or len(vault_shape.Shells) != 1 or not vault_shape.isValid():
         fails.append("vault is not one valid solid with one shell (sealed void?)")
 
-    # Above the cut the vault must be the original part, minus the opening
-    # and the new magnet pocket, plus the two fills; nothing else may change.
+    # Above the cut the vault must be the original part, minus the opening,
+    # the new magnet pocket, the key slot and the marking, plus the two
+    # fills; nothing else may change.
     above = Part.makeBox(100, 160, P["CUT_Z"] - 20, V(-50, -80, 20))
     orig_above = bottom_shape.common(above)
     removed = orig_above.cut(vault_shape)
     opening = Part.makeBox(2 * P["OPEN_X"], P["OPEN_Y1"] - P["OPEN_Y0"], 30,
                            V(-P["OPEN_X"], P["OPEN_Y0"], P["CUT_Z"] - 30))
     magnet = Part.makeCylinder(P["MAG_R"] + 0.01, 30, V(P["MAG_X"], P["MAG_Y"], P["MAG_FLOOR_Z"] - 30))
-    unexplained = removed.cut(opening).cut(magnet).Volume
+    slot = key_slot_solid()
+    marking = Part.makeBox(2 * P["OUTER_X"], P["MARK_DEPTH"] + 0.01, 30, V(-P["OUTER_X"], -P["OUTER_Y"] - 0.01, 32))
+    unexplained = removed.cut(opening).cut(magnet).cut(slot).cut(marking).Volume
     added = vault_shape.common(above).cut(bottom_shape).Volume
     fills = (math.pi * OLD_MAG_HOLE["r"] ** 2 * (P["CUT_Z"] - OLD_MAG_HOLE["z0"])
              + (OLD_STAND_SLOT["x"][1] - OLD_STAND_SLOT["x"][0]) * (OLD_STAND_SLOT["y"][1] - OLD_STAND_SLOT["y"][0])
              * (P["CUT_Z"] - OLD_STAND_SLOT["z0"]))
-    rod_tip = P["ESC_TIP_W"] * P["ESC_TIP_T"] * (P["CUT_Z"] - P["ESC_TIP_TOP_Z"])
-    print("  above CUT_Z: removed outside opening/magnet %.3f mm^3, added %.1f mm^3 (fills %.1f + rod tip %.1f)" % (
-        unexplained, added, fills, rod_tip))
-    if unexplained > 0.05 or added > fills + rod_tip + 0.5:
+    print("  above CUT_Z: removed outside opening/magnet/key slot/marking %.3f mm^3, added %.1f mm^3 (fills %.1f)" % (
+        unexplained, added, fills))
+    if unexplained > 0.05 or added > fills + 0.5:
         fails.append("the interface above CUT_Z changed")
+    cut = removed.common(slot).Volume
+    print("  key slot removes %.1f mm^3 of the end wall" % cut)
+    if cut < 50:
+        fails.append("the key slot does not cut the end wall")
+    pts, _ = key_slot_outline()
+    face = Part.Face(Part.makePolygon([V(x, 0, z) for x, z in pts] + [V(pts[0][0], 0, pts[0][1])]))
+    skin_box = face.extrude(V(0, P["KEY_SKIN"], 0))
+    skin_box.translate(V(0, -P["OUTER_Y"], 0))
+    skin = vault_shape.common(skin_box).Volume
+    print("  skin over the key slot %.2f mm^3 of %.2f (%.2f mm thick)" % (skin, skin_box.Volume, P["KEY_SKIN"]))
+    if skin < 0.99 * skin_box.Volume:
+        fails.append("the skin over the key slot is incomplete")
+    print("  key slot ceiling bridges %.1f mm across the end wall lip" % (P["KEY_X1"] - P["KEY_X0"]))
 
     parts = assembly_parts()
     for label in ("Housing` Top", "Locking Latch", "PCB Cover"):
@@ -841,71 +1003,7 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
         print("  overlap with %-14s vault %.3f  original %.3f" % (label, new, old))
         if new > old + 0.05:
             fails.append("%s overlaps the vault more than the original" % label)
-
-    rod = rod_shape()
-    gap = rod.distToShape(parts["Locking Latch"])[0]
-    print("  escape rod to latch at rest %.2f mm" % gap)
-    if not 0.8 < gap < 2.0:
-        fails.append("escape rod is not just under the latch (%.2f mm)" % gap)
-    # The rod tip must stay clear of the latch over its whole normal swing.
-    pivot = V(LATCH_PIVOT[0], 0, LATCH_PIVOT[1])
-    swing = []
-    lo, hi = (int(round(a * 10)) for a in LATCH_SWING)
-    for tenth in list(range(lo, hi, 25)) + [hi]:
-        turned = parts["Locking Latch"].copy()
-        turned.rotate(pivot, V(0, 1, 0), tenth / 10.0)
-        swing.append((turned.distToShape(rod)[0], tenth / 10.0))
-    closest, at = min(swing)
-    print("  latch swing %g..%g deg: closest to the rod %.2f mm at %.1f deg" % (LATCH_SWING + (closest, at)))
-    if closest < 0.3:
-        fails.append("the latch swing comes within %.2f mm of the escape rod" % closest)
-    # Pushed ESC_TRAVEL, the rod must have turned the latch out of its slot:
-    # one degree short of the turn that lifts it clear, the latch would still
-    # be inside the pushed rod.
-    frees = None
-    for a in range(0, int(LATCH_SWING[1]) + 1):
-        turned = parts["Locking Latch"].copy()
-        turned.rotate(pivot, V(0, 1, 0), a)
-        if turned.BoundBox.ZMax <= SLOT_TOP_Z:
-            frees = a
-            break
-    pushed = rod.copy()
-    pushed.translate(V(0, 0, -P["ESC_TRAVEL"]))
-    short = parts["Locking Latch"].copy()
-    short.rotate(pivot, V(0, 1, 0), (frees or 1) - 1)
-    lifted = frees is not None and short.common(pushed).Volume > 0.01
-    print("  latch clears its slot at %s deg; rod pushed %.1f mm %s it" % (
-        frees, P["ESC_TRAVEL"], "turns" if lifted else "does NOT turn"))
-    if not lifted:
-        fails.append("the escape rod does not lift the latch out of its slot")
-    ties = tie_solids()
-    static = vault_shape.cut(rod).cut(ties)
-    upper = rod.common(Part.makeBox(100, 160, P["FLOOR_Z"] - 31, V(-50, -80, 30)))  # above the floor slit
-    clear = upper.distToShape(static)[0]
-    print("  escape rod clearance to its shaft (tabs aside) %.2f mm" % clear)
-    if clear < P["ESC_CLEAR"] - 0.02:
-        fails.append("escape rod clearance %.2f mm" % clear)
-    moved = rod.copy()
-    moved.translate(V(0, 0, -P["ESC_TRAVEL"]))
-    hit = moved.common(static).Volume
-    print("  escape rod pushed %.1f mm: collides %.3f mm^3" % (P["ESC_TRAVEL"], hit))
-    if hit > 0.01:
-        fails.append("escape rod cannot travel %.1f mm" % P["ESC_TRAVEL"])
-    # ...and the shoulder stops it on the shaft ceiling soon after, so it
-    # cannot be driven up out of the slot.
-    stop = None
-    near = static.common(Part.makeBox(40, 30, 40, V(-24, -66, 30)))  # the shaft top only, for speed
-    for tenth in range(int(P["ESC_TRAVEL"] * 10), int(P["ESC_TRAVEL"] * 10) + 21):
-        moved = rod.copy()
-        moved.translate(V(0, 0, -tenth / 10.0))
-        if moved.common(near).Volume > 0.01:
-            stop = tenth / 10.0
-            break
-    print("  escape rod stops after %s mm" % ("more than %.1f" % (P["ESC_TRAVEL"] + 2) if stop is None else "%.1f" % stop))
-    if stop is None:
-        fails.append("nothing stops the escape rod within %.1f mm" % (P["ESC_TRAVEL"] + 2))
-    tie_vol = sum(t.common(vault_shape).Volume for t in ties)
-    print("  breakaway tabs: %d, %.2f mm^3" % (len(ties), tie_vol))
+    check_key(vault_shape, parts, fails)
 
     for r in refs:
         hit = r.Shape.common(vault_shape).Volume
@@ -921,26 +1019,22 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
     print("  height %.2f mm, footprint %.1f x %.1f mm" % (bb.ZLength, bb.XLength, bb.YLength))
 
     # Overhangs in print orientation (bed = BASE_Z, up = -Z): a facet below
-    # the cut whose normal points more than 45 degrees toward the bed.
-    # Two kinds of short bridge are expected and reported apart: the
-    # breakaway tabs (1 mm spans) and the marking sunk into the bed face.
+    # the cut whose normal points more than 45 degrees toward the bed. The
+    # marking's 0.6 mm deep ceilings in the end face are short bridges and
+    # are reported apart.
     mesh = MeshPart.meshFromShape(Shape=vault_shape, LinearDeflection=0.05, AngularDeflection=0.2, Relative=False)
-    bad = tabs = mark = 0.0
+    bad = mark = 0.0
     bad_at = []
-    boxes = tie_boxes()
     for f in mesh.Facets:
         nz_print = -f.Normal.z
         xc, yc, zc = (sum(p[i] for p in f.Points) / 3 for i in range(3))
         if zc > P["CUT_Z"] + 0.01 and zc < P["BASE_Z"] - 0.01 and nz_print < -math.cos(math.radians(45)) - 1e-3:
-            if zc > P["BASE_Z"] - P["MARK_DEPTH"] - 0.02:
+            if yc < -P["OUTER_Y"] + P["MARK_DEPTH"] + 0.02 and zc < MARK_LINES[-1][2] + 0.5:
                 mark += f.Area
-            elif any(xs[0] - 0.05 <= xc <= xs[1] + 0.05 and ys[0] - 0.05 <= yc <= ys[1] + 0.05
-                     and zs[0] - 0.05 <= zc <= zs[1] + 0.05 for xs, ys, zs in boxes):
-                tabs += f.Area
             else:
                 bad += f.Area
                 bad_at.append((round(f.Points[0][0]), round(f.Points[0][1]), round(zc, 1), round(nz_print, 2)))
-    print("  bridges: breakaway tabs %.2f mm^2, bed-face marking %.2f mm^2" % (tabs, mark))
+    print("  bridges: end-face marking %.2f mm^2" % mark)
     print("  overhang area below the cut steeper than 45 deg: %.2f mm^2" % bad)
     for spot in sorted(set(bad_at))[:20]:
         print("    overhang facet at", spot)
