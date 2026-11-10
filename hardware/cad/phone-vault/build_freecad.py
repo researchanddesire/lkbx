@@ -36,7 +36,7 @@ Document contents:
                 pocket, the opening, the 45 degree transition loft, the cavity,
                 the side and end honeycomb windows, and the emergency bypass:
                 a hex key hole through the side wall beside the latch, under
-                a punch-through skin in a small dimple, with a hex key icon
+                a punch-through skin in a small dimple, with a caution sign
                 and a line leading to it sunk into that face
     EscapeTestPiece
                 the vault down to TRANSITION_Z, for a test print
@@ -129,7 +129,7 @@ PARAMS = [
     ("KEY_DIMPLE_R", 2.70, "Radius at the side face of the conical dimple over the key hole"),
     ("KEY_DIMPLE_DEPTH", 0.80, "Depth of the dimple over the key hole"),
     ("LATCH_SLOT_X0", -23.00, "Side wall of the latch slot the key comes through, from bottom-housing.step"),
-    ("MARK_DEPTH", 0.40, "Depth of the bypass icon and the line leading to the key hole"),
+    ("MARK_DEPTH", 0.40, "Depth of the caution sign and the line leading to the key hole"),
     ("INNER_X", "=OUTER_X - WALL", "Half width of the cavity"),
     ("INNER_Y", "=OUTER_Y - WALL", "Half length of the cavity"),
     ("INNER_R", "=OUTER_R - WALL", "Cavity corner radius, concentric with the outline"),
@@ -176,12 +176,14 @@ FRICTION_MARGIN = 0.70
 # Sliding the lid off, the latch's 1 mm chamfered edge may ride over the far
 # slot wall; anything deeper than this would meet its vertical face instead.
 RIDE_DEPTH_HELD, RIDE_DEPTH_RESTING = 0.40, 0.70
-# Marking on the side face the key goes in through: a hex key icon and a line
-# leading up from it to the dimple over the key hole, sunk MARK_DEPTH. Points
-# are (Y, Z) offsets from the key hole's centre. Read from outside with the box
-# on its base, the latch end is on the left and the icon hangs under the hole.
+# Marking on the side face the key goes in through: a caution sign (a
+# triangle with an exclamation mark left standing in it) under the key hole,
+# and a line leading up from its tip to the dimple, sunk MARK_DEPTH. Offsets
+# are (Y, Z) from the key hole's centre; read from outside with the box on its
+# base, the latch end is on the left and the sign hangs under the hole.
 MARK_LINE = (0.4, 2.2, 7.7)  # half width, Z offsets of its ends; the top end runs into the dimple
-MARK_ICON = ((-0.6, 8.7), (0.6, 8.7), (0.6, 13.5), (3.0, 13.5), (3.0, 14.7), (0.0, 14.7), (-0.6, 14.1))
+MARK_SIGN = (8.7, 7.0)  # Z offset of the triangle's tip, side length
+MARK_BANG = (0.45, 1.9, 3.9, 4.85, 0.5)  # bar half width, bar ends, dot centre, below the tip; dot radius
 
 # Contents the cavity must take (length along Z, width along Y, thickness along X).
 PHONE = (170.0, 82.0, 14.0)  # 165 x 78 x 9 phone in a case
@@ -633,13 +635,26 @@ DIMPLE_FLOOR_EXPR = "(Params.KEY_AF / sqrt(3) + 0.1 mm)"
 
 
 def mark_outlines():
-    """The line and the icon in global (Y, Z), with expressions that keep them on the key hole."""
+    """The line, the sign's triangle and its exclamation bar in global (Y, Z),
+    with expressions that keep them on the key hole, and the dot (centre,
+    radius)."""
     hw, z0, z1 = MARK_LINE
+    tip, side = MARK_SIGN
+    h = side * math.sqrt(3) / 2
+    bw, b0, b1, dot_z, dot_r = MARK_BANG
+    shapes = (("Line", [(-hw, z0), (hw, z0), (hw, z1), (-hw, z1)]),
+              ("Sign", [(0.0, tip), (side / 2, tip + h), (-side / 2, tip + h)]),
+              ("Bar", [(-bw, tip + b0), (bw, tip + b0), (bw, tip + b1), (-bw, tip + b1)]))
     out = []
-    for name, pts in (("Line", [(-hw, z0), (hw, z0), (hw, z1), (-hw, z1)]), ("Icon", MARK_ICON)):
+    for name, pts in shapes:
         out.append((name, [(P["KEY_Y"] + du, P["KEY_Z"] + dz) for du, dz in pts],
                     [("Params.KEY_Y + (%g mm)" % du, "-(Params.KEY_Z + (%g mm))" % dz) for du, dz in pts]))
-    return out
+    return out, ((P["KEY_Y"], P["KEY_Z"] + tip + dot_z), dot_r, tip + dot_z)
+
+
+def mark_bottom():
+    """Z offset of the sign's base below the key hole's centre."""
+    return MARK_SIGN[0] + MARK_SIGN[1] * math.sqrt(3) / 2
 
 
 def build_key_hole(doc, body):
@@ -672,14 +687,17 @@ def build_key_hole(doc, body):
     recompute(doc, sk, f)
     report("Key hole", body.Shape)
 
-    # Marking, sunk into the side face: a hex key icon under the hole and a
-    # line from it up to the dimple.
+    # Marking, sunk into the side face: a caution sign under the hole, its
+    # exclamation mark left standing, and a line from its tip up to the
+    # dimple.
     sk = side_face_sketch(body, "BypassMarkSketch", 0.0, None)
-    flat = P["OUTER_Y"] - P["OUTER_R"] - 1.0
-    for name, pts, exprs in mark_outlines():
+    flat = P["OUTER_Y"] - P["OUTER_R"] - 0.5
+    shapes, (dot, dot_r, dot_dz) = mark_outlines()
+    for name, pts, exprs in shapes:
         if any(abs(y) > flat for y, _ in pts):
             raise RuntimeError("the bypass %s runs off the flat side face" % name.lower())
         polygon(sk, [side_uv(y, z) for y, z in pts], exprs, name)
+    circle(sk, *side_uv(*dot), dot_r, {"x": "Params.KEY_Y", "y": "-(Params.KEY_Z + (%g mm))" % dot_dz}, "Dot")
     finish_sketch(sk)
     f = pocket(body, sk, "BypassMark", "Params.MARK_DEPTH")
     recompute(doc, sk, f)
@@ -994,7 +1012,7 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
         nz_print = -f.Normal.z
         xc, yc, zc = (sum(p[i] for p in f.Points) / 3 for i in range(3))
         if zc > P["CUT_Z"] + 0.01 and zc < P["BASE_Z"] - 0.01 and nz_print < -math.cos(math.radians(45)) - 1e-3:
-            if xc < -P["OUTER_X"] + P["MARK_DEPTH"] + 0.02 and zc < P["KEY_Z"] + max(dz for _, dz in MARK_ICON) + 0.5:
+            if xc < -P["OUTER_X"] + P["MARK_DEPTH"] + 0.02 and zc < P["KEY_Z"] + mark_bottom() + 0.5:
                 mark += f.Area
             else:
                 bad += f.Area
