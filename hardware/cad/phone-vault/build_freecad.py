@@ -36,7 +36,8 @@ Document contents:
                 pocket, the opening, the 45 degree transition loft, the cavity,
                 the side and end honeycomb windows, and the emergency bypass:
                 a hex key hole through the side wall beside the latch, under
-                a punch-through skin, with its marking sunk into that face
+                a punch-through skin in a small dimple, with a hex key icon
+                and a line leading to it sunk into that face
     EscapeTestPiece
                 the vault down to TRANSITION_Z, for a test print
     References  phone and cigarette pack envelopes in the cavity
@@ -49,8 +50,8 @@ down, far below the pivot, and turns it out of the slot; the lid then
 slides off, its latch riding over the far slot wall on its chamfered edge
 where it has not turned far enough to clear it. The build simulates that
 push with friction and checks the key's way in and the slide-off in 3D.
-The hole is closed by a one-line skin that the key punches through, so
-using the bypass leaves a mark.
+The hole is closed by a one-line skin at the floor of a shallow dimple that
+the key punches through, so using the bypass leaves a mark.
 
 Coordinates are the top-housing STEP frame: Z is depth from the screen face
 (it grows toward the print bed), Y runs along the housing length and X across
@@ -124,9 +125,11 @@ PARAMS = [
     ("KEY_Y", -51.00, "Key hole centre along the length: the middle of the latch's uniform section"),
     ("KEY_Z", 30.05, "Key hole centre depth: its top flat is just under the lid's rail, level with the latch's lower corner"),
     ("KEY_AF", 2.80, "Key hole across flats, flats top and bottom: a 2.5 mm hex key, flat up, plus 0.3 mm"),
-    ("KEY_SKIN", 0.45, "Outer skin over the key hole (one extrusion line); the key punches through it"),
+    ("KEY_SKIN", 0.45, "Skin over the key hole (one extrusion line), at the dimple's floor; the key punches through it"),
+    ("KEY_DIMPLE_R", 2.70, "Radius at the side face of the conical dimple over the key hole"),
+    ("KEY_DIMPLE_DEPTH", 0.80, "Depth of the dimple over the key hole"),
     ("LATCH_SLOT_X0", -23.00, "Side wall of the latch slot the key comes through, from bottom-housing.step"),
-    ("MARK_DEPTH", 0.60, "Depth of the emergency bypass marking in the side face"),
+    ("MARK_DEPTH", 0.40, "Depth of the bypass icon and the line leading to the key hole"),
     ("INNER_X", "=OUTER_X - WALL", "Half width of the cavity"),
     ("INNER_Y", "=OUTER_Y - WALL", "Half length of the cavity"),
     ("INNER_R", "=OUTER_R - WALL", "Cavity corner radius, concentric with the outline"),
@@ -173,15 +176,12 @@ FRICTION_MARGIN = 0.70
 # Sliding the lid off, the latch's 1 mm chamfered edge may ride over the far
 # slot wall; anything deeper than this would meet its vertical face instead.
 RIDE_DEPTH_HELD, RIDE_DEPTH_RESTING = 0.40, 0.70
-# Marking on the side face the key goes in through, read from outside with
-# the box standing on its base (the latch end is on the left). Each line:
-# text, cap height, baseline Z; the lines are centred on MARK_Y. Below
-# CUT_Z the face is the vault's own wall, clear of the original's grooves.
-MARK_FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-MARK_LINES = (("EMERGENCY BYPASS", 3.6, 46.0), ("2.5 mm HEX KEY, PUSH IN", 3.0, 51.6))
-MARK_Y = -20.0
-# Pointer under the key hole: Z of its apex and base.
-MARK_POINTER_Z = (33.6, 36.4)
+# Marking on the side face the key goes in through: a hex key icon and a line
+# leading up from it to the dimple over the key hole, sunk MARK_DEPTH. Points
+# are (Y, Z) offsets from the key hole's centre. Read from outside with the box
+# on its base, the latch end is on the left and the icon hangs under the hole.
+MARK_LINE = (0.4, 2.2, 7.7)  # half width, Z offsets of its ends; the top end runs into the dimple
+MARK_ICON = ((-0.6, 8.7), (0.6, 8.7), (0.6, 13.5), (3.0, 13.5), (3.0, 14.7), (0.0, 14.7), (-0.6, 14.1))
 
 # Contents the cavity must take (length along Z, width along Y, thickness along X).
 PHONE = (170.0, 82.0, 14.0)  # 165 x 78 x 9 phone in a case
@@ -294,34 +294,6 @@ def rect(sk, x, y, exprs=None, prefix=""):
         distance_constraint(sk, kind, geo, pos, value, prefix + key.upper() if exprs.get(key) else None,
                             exprs.get(key))
     return g
-
-
-def text_wires(text, cap, cx, baseline):
-    """Outline wires of one line of text in the XY plane, centred on cx.
-
-    The first glyph must be a capital: its height sets the scale.
-    """
-    font = (str(MARK_FONT.parent) + "/", MARK_FONT.name)
-    probe = Part.makeWireString(text, *font, 10.0, 0.0)
-    size = 10.0 * cap / Part.Compound(probe[0]).BoundBox.YLength
-    chars = Part.makeWireString(text, *font, size, 0.0)
-    wires = [w for ch in chars for w in ch]
-    bb = Part.Compound(wires).BoundBox
-    m = App.Matrix()
-    m.move(V(cx - (bb.XMin + bb.XLength / 2), baseline - Part.Compound(chars[0]).BoundBox.YMin, 0))
-    return [w.transformGeometry(m) for w in wires]
-
-
-def add_blocked_wires(sk, wires):
-    """Copy wires into a sketch as blocked geometry (fully constrained)."""
-    for w in wires:
-        for e in w.Edges:
-            if isinstance(e.Curve, Part.Line):
-                geo = Part.LineSegment(e.Vertexes[0].Point, e.Vertexes[-1].Point)
-            else:
-                geo = e.Curve.toBSpline(*e.ParameterRange)
-            gi = sk.addGeometry(geo, False)
-            sk.addConstraint(Sketcher.Constraint("Block", gi))
 
 
 def circle(sk, cx, cy, r, exprs=None, prefix=""):
@@ -652,41 +624,64 @@ def key_hole_outline():
     return pts, ex
 
 
-def pointer_outline():
-    """Triangle under the key hole, pointing up at it."""
-    apex, base = MARK_POINTER_Z
-    return [(P["KEY_Y"], apex), (P["KEY_Y"] + 1.6, base), (P["KEY_Y"] - 1.6, base)]
+def dimple_floor_r():
+    """Radius of the dimple's floor: just clear of the key hole's corners."""
+    return P["KEY_AF"] / math.sqrt(3) + 0.1
+
+
+DIMPLE_FLOOR_EXPR = "(Params.KEY_AF / sqrt(3) + 0.1 mm)"
+
+
+def mark_outlines():
+    """The line and the icon in global (Y, Z), with expressions that keep them on the key hole."""
+    hw, z0, z1 = MARK_LINE
+    out = []
+    for name, pts in (("Line", [(-hw, z0), (hw, z0), (hw, z1), (-hw, z1)]), ("Icon", MARK_ICON)):
+        out.append((name, [(P["KEY_Y"] + du, P["KEY_Z"] + dz) for du, dz in pts],
+                    [("Params.KEY_Y + (%g mm)" % du, "-(Params.KEY_Z + (%g mm))" % dz) for du, dz in pts]))
+    return out
 
 
 def build_key_hole(doc, body):
-    """Emergency bypass: the key hole through the side wall, its skin and marking."""
-    # The hole runs straight in from behind the skin, through the side wall
-    # beside the latch's free edge, into the latch slot.
-    sk = side_face_sketch(body, "KeyHoleSketch", P["KEY_SKIN"], "Params.KEY_SKIN")
+    """Emergency bypass: the dimple, the key hole behind its skin, and the marking."""
+    # Dimple: a shallow cone over the hole, so the spot shows and the key's
+    # end finds the hole. Its walls are 51 degrees from the hole's axis, so
+    # the upper one prints 39 degrees from vertical. The cut starts 0.2 mm
+    # outside the face.
+    slope = "(Params.KEY_DIMPLE_R - %s) / Params.KEY_DIMPLE_DEPTH" % DIMPLE_FLOOR_EXPR
+    r_out = P["KEY_DIMPLE_R"] + 0.2 * (P["KEY_DIMPLE_R"] - dimple_floor_r()) / P["KEY_DIMPLE_DEPTH"]
+    centre = {"x": "Params.KEY_Y", "y": "-Params.KEY_Z"}
+    sk_a = side_face_sketch(body, "KeyDimpleOuterSketch", -0.2, "(-0.2 mm)")
+    circle(sk_a, *side_uv(P["KEY_Y"], P["KEY_Z"]), r_out, dict(centre, r="Params.KEY_DIMPLE_R + 0.2 mm * " + slope), "Dimple")
+    finish_sketch(sk_a)
+    sk_b = side_face_sketch(body, "KeyDimpleFloorSketch", P["KEY_DIMPLE_DEPTH"], "Params.KEY_DIMPLE_DEPTH")
+    circle(sk_b, *side_uv(P["KEY_Y"], P["KEY_Z"]), dimple_floor_r(), dict(centre, r=DIMPLE_FLOOR_EXPR), "Floor")
+    finish_sketch(sk_b)
+    f = loft(body, "Subtractive", "KeyDimple", sk_a, sk_b)
+    recompute(doc, sk_a, sk_b, f)
+
+    # The hole runs straight in from behind the skin at the dimple's floor,
+    # through the side wall beside the latch's free edge, into the latch slot.
+    sk = side_face_sketch(body, "KeyHoleSketch", P["KEY_DIMPLE_DEPTH"] + P["KEY_SKIN"],
+                          "(Params.KEY_DIMPLE_DEPTH + Params.KEY_SKIN)")
     pts, exprs = key_hole_outline()
     polygon(sk, [side_uv(y, z) for y, z in pts], exprs, "Key")
     finish_sketch(sk)
-    f = pocket(body, sk, "KeyHole", "Params.OUTER_X - Params.KEY_SKIN + Params.LATCH_SLOT_X0 + 0.5 mm")
+    f = pocket(body, sk, "KeyHole",
+               "Params.OUTER_X - Params.KEY_DIMPLE_DEPTH - Params.KEY_SKIN + Params.LATCH_SLOT_X0 + 0.5 mm")
     recompute(doc, sk, f)
     report("Key hole", body.Shape)
 
-    # Marking, sunk into the side face: a pointer under the hole and two
-    # lines of text beside it.
-    sk = side_face_sketch(body, "BypassPointerSketch", 0.0, None)
-    polygon(sk, [side_uv(y, z) for y, z in pointer_outline()])
+    # Marking, sunk into the side face: a hex key icon under the hole and a
+    # line from it up to the dimple.
+    sk = side_face_sketch(body, "BypassMarkSketch", 0.0, None)
+    flat = P["OUTER_Y"] - P["OUTER_R"] - 1.0
+    for name, pts, exprs in mark_outlines():
+        if any(abs(y) > flat for y, _ in pts):
+            raise RuntimeError("the bypass %s runs off the flat side face" % name.lower())
+        polygon(sk, [side_uv(y, z) for y, z in pts], exprs, name)
     finish_sketch(sk)
-    f = pocket(body, sk, "BypassPointer", "Params.MARK_DEPTH")
-    recompute(doc, sk, f)
-    sk = side_face_sketch(body, "BypassTextSketch", 0.0, None)
-    flat = P["OUTER_Y"] - P["OUTER_R"] - 2.0
-    for text, cap, baseline in MARK_LINES:
-        wires = text_wires(text, cap, MARK_Y, -baseline)
-        bb = Part.Compound(wires).BoundBox
-        if bb.XMin < -flat or bb.XMax > flat or baseline - cap < P["CUT_Z"] + 0.5:
-            raise RuntimeError("marking line %r runs off the flat side face or above CUT_Z" % text)
-        add_blocked_wires(sk, wires)
-    finish_sketch(sk)
-    f = pocket(body, sk, "BypassText", "Params.MARK_DEPTH")
+    f = pocket(body, sk, "BypassMark", "Params.MARK_DEPTH")
     recompute(doc, sk, f)
     report("Bypass marking", body.Shape)
 
@@ -703,9 +698,16 @@ def hex_prism(zc, af, x0, x1):
 
 def key_hole_solid(x0=None, x1=None):
     """The key hole as a solid, by default from behind the skin into the latch slot."""
-    x0 = -P["OUTER_X"] + P["KEY_SKIN"] if x0 is None else x0
+    x0 = -P["OUTER_X"] + P["KEY_DIMPLE_DEPTH"] + P["KEY_SKIN"] if x0 is None else x0
     x1 = P["LATCH_SLOT_X0"] + 0.5 if x1 is None else x1
     return hex_prism(P["KEY_Z"], P["KEY_AF"], x0, x1)
+
+
+def dimple_solid(grow=0.0):
+    """The dimple over the key hole as a cone, from 0.2 mm outside the face to its floor."""
+    r_out = P["KEY_DIMPLE_R"] + 0.2 * (P["KEY_DIMPLE_R"] - dimple_floor_r()) / P["KEY_DIMPLE_DEPTH"]
+    return Part.makeCone(r_out + grow, dimple_floor_r() + grow, P["KEY_DIMPLE_DEPTH"] + 0.2,
+                         V(-P["OUTER_X"] - 0.2, P["KEY_Y"], P["KEY_Z"]), V(1, 0, 0))
 
 
 def latch_profile(latch):
@@ -872,7 +874,7 @@ def check_key(vault_shape, parts, fails):
     # The key's way in, behind the skin and on past the latch, must be clear
     # of the vault and of every part but the latch at both heights. The bar
     # is 0.02 mm under size, so a key touching the hole is not a collision.
-    x0, x1 = -P["OUTER_X"] + P["KEY_SKIN"] + 0.01, KEY_PUSH_END
+    x0, x1 = -P["OUTER_X"] + P["KEY_DIMPLE_DEPTH"] + P["KEY_SKIN"] + 0.01, KEY_PUSH_END
     region = Part.makeBox(x1 - x0 + 2, 8, 8, V(x0 - 1, P["KEY_Y"] - 4, 26))
     vault_near = vault_shape.common(region)
     others = {k: v.common(region) for k, v in parts.items()
@@ -922,7 +924,7 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
         fails.append("vault is not one valid solid with one shell (sealed void?)")
 
     # Above the cut the vault must be the original part, minus the opening,
-    # the new magnet pocket, the key hole and the marking, plus the two
+    # the new magnet pocket, the key hole, its dimple and the marking, plus the two
     # fills; nothing else may change.
     above = Part.makeBox(100, 160, P["CUT_Z"] - 20, V(-50, -80, 20))
     orig_above = bottom_shape.common(above)
@@ -932,24 +934,28 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
     magnet = Part.makeCylinder(P["MAG_R"] + 0.01, 30, V(P["MAG_X"], P["MAG_Y"], P["MAG_FLOOR_Z"] - 30))
     hole = key_hole_solid()
     marking = Part.makeBox(P["MARK_DEPTH"] + 0.02, 2 * P["OUTER_Y"], 30, V(-P["OUTER_X"] - 0.01, -P["OUTER_Y"], 32))
-    unexplained = removed.cut(opening).cut(magnet).cut(hole).cut(marking).Volume
+    unexplained = removed.cut(opening).cut(magnet).cut(hole).cut(dimple_solid(0.01)).cut(marking).Volume
     added = vault_shape.common(above).cut(bottom_shape).Volume
     fills = (math.pi * OLD_MAG_HOLE["r"] ** 2 * (P["CUT_Z"] - OLD_MAG_HOLE["z0"])
              + (OLD_STAND_SLOT["x"][1] - OLD_STAND_SLOT["x"][0]) * (OLD_STAND_SLOT["y"][1] - OLD_STAND_SLOT["y"][0])
              * (P["CUT_Z"] - OLD_STAND_SLOT["z0"]))
-    print("  above CUT_Z: removed outside opening/magnet/key hole/marking %.3f mm^3, added %.1f mm^3 (fills %.1f)" % (
+    print("  above CUT_Z: removed outside opening/magnet/key hole/dimple/marking %.3f mm^3, added %.1f mm^3 (fills %.1f)" % (
         unexplained, added, fills))
     if unexplained > 0.05 or added > fills + 0.5:
         fails.append("the interface above CUT_Z changed")
     cut = removed.common(hole).Volume
-    run = P["LATCH_SLOT_X0"] + P["OUTER_X"] - P["KEY_SKIN"]
+    run = P["LATCH_SLOT_X0"] + P["OUTER_X"] - P["KEY_DIMPLE_DEPTH"] - P["KEY_SKIN"]
     full = math.sqrt(3) / 2 * P["KEY_AF"] ** 2 * run
     print("  key hole removes %.1f mm^3 of the side wall (%.1f for the full %.2f mm run)" % (cut, full, run))
     if cut < 0.95 * full:
         fails.append("the key hole does not go through the side wall")
-    skin_box = key_hole_solid(-P["OUTER_X"], -P["OUTER_X"] + P["KEY_SKIN"])
+    dimple = removed.common(dimple_solid()).Volume
+    print("  dimple %.1f mm across and %.2f deep removes %.1f mm^3" % (2 * P["KEY_DIMPLE_R"], P["KEY_DIMPLE_DEPTH"], dimple))
+    skin_x = -P["OUTER_X"] + P["KEY_DIMPLE_DEPTH"]
+    skin_box = key_hole_solid(skin_x, skin_x + P["KEY_SKIN"])
     skin = vault_shape.common(skin_box).Volume
-    print("  skin over the key hole %.2f mm^3 of %.2f (%.2f mm thick)" % (skin, skin_box.Volume, P["KEY_SKIN"]))
+    print("  skin over the key hole %.2f mm^3 of %.2f (%.2f mm thick, at the dimple's floor)" % (
+        skin, skin_box.Volume, P["KEY_SKIN"]))
     if skin < 0.99 * skin_box.Volume:
         fails.append("the skin over the key hole is incomplete")
     print("  key hole ceiling bridges %.2f mm (its top flat)" % (P["KEY_AF"] / math.sqrt(3)))
@@ -979,7 +985,7 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
 
     # Overhangs in print orientation (bed = BASE_Z, up = -Z): a facet below
     # the cut whose normal points more than 45 degrees toward the bed. The
-    # marking's 0.6 mm deep ceilings in the side face are short bridges and
+    # marking's 0.4 mm deep ceilings in the side face are short bridges and
     # are reported apart.
     mesh = MeshPart.meshFromShape(Shape=vault_shape, LinearDeflection=0.05, AngularDeflection=0.2, Relative=False)
     bad = mark = 0.0
@@ -988,7 +994,7 @@ def check(vault_shape, interface_shape, bottom_shape, refs):
         nz_print = -f.Normal.z
         xc, yc, zc = (sum(p[i] for p in f.Points) / 3 for i in range(3))
         if zc > P["CUT_Z"] + 0.01 and zc < P["BASE_Z"] - 0.01 and nz_print < -math.cos(math.radians(45)) - 1e-3:
-            if xc < -P["OUTER_X"] + P["MARK_DEPTH"] + 0.02 and zc < MARK_LINES[-1][2] + 0.5:
+            if xc < -P["OUTER_X"] + P["MARK_DEPTH"] + 0.02 and zc < P["KEY_Z"] + max(dz for _, dz in MARK_ICON) + 0.5:
                 mark += f.Area
             else:
                 bad += f.Area
