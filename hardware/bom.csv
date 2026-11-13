@@ -1,5 +1,5 @@
 #,Part Name,Category,Description,Qty,UOM,Manufacturer,MFG PN,Vendor,Vendor PN,Source,Notes
-1,Top housing,FDM,FDM-printed top enclosure housing,1,each,–,–,–,–,cad/top-housing.step,–
+1,Top housing,FDM,FDM-printed top enclosure housing,1,each,–,–,–,–,cad/lockbox-assembly.FCStd,–
 2,Bottom housing,FDM,FDM-printed bottom enclosure housing,1,each,–,–,–,–,cad/bottom-housing.step,–
 3,PCB cover,FDM,FDM-printed PCB cover,1,each,–,–,–,–,cad/pcb-cover.step,Secures over the populated PCB.
 4,Back button,FDM,FDM-printed back/arrow button cap,1,each,–,–,–,–,cad/back-button.step,–
