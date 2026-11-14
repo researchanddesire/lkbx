@@ -250,6 +250,7 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
                ossm->sm->is("locked.ready"_s) ||
                ossm->sm->is("locked.ready.addTime"_s) ||
                ossm->sm->is("lockMenu.sleep"_s) ||
+               ossm->sm->is("lockMenu.vote"_s) ||
                ossm->sm->is("emergency.blocked"_s) ||
                ossm->sm->is("locked.frozen"_s);
     };

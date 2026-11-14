@@ -24,11 +24,13 @@ enum MenuItemE {
     BACK,
     EMERGENCY,
     BREAK,
+    VOTE,
 };
 
-// struct for menu item
+// struct for menu item. Assignable, so the lock menu can be assembled at run
+// time (see LKBX::drawEmergencyMenu).
 struct MenuItem {
-    const MenuItemE id;
+    MenuItemE id;
     const char* name;
     const uint8_t* bitmap;
 
@@ -98,5 +100,13 @@ static const MenuItem lockedMenuNoBreakNoEUnlock[] = {
     {MenuItemE::WIFI_SETTINGS, Str::Menu::WIFI_SETTINGS, bitmap_wifi},
     {MenuItemE::RESTART, Str::Menu::RESTART_DEVICE, bitmap_restart},
 };
+
+// Added to the lock menu, right after Go Back, while the session has a voting
+// link (Chaster Share links). It opens the link as a QR code.
+static const MenuItem voteMenuItem = {MenuItemE::VOTE, Str::Menu::VOTE_LINK,
+                                      bitmap_link};
+
+// Room for the longest lock menu plus the vote item.
+static constexpr int maxLockedMenuItems = 8;
 
 #endif  // LOCKBOX_MENUITEM_H

@@ -142,6 +142,19 @@ void LKBX::drawEmergencyMenu() {
                    sizeof(lockedMenuNoBreakNoEUnlock[0]);
     }
 
+    // With a voting link the menu offers it right after Go Back.
+    static MenuItem lockedMenuWithVote[maxLockedMenuItems];
+    if (!readVoteUrl().isEmpty() && menuSize < maxLockedMenuItems) {
+        int size = 0;
+        for (int i = 0; i < menuSize; i++) {
+            lockedMenuWithVote[size++] = activeMenu[i];
+            if (activeMenu[i].id == MenuItemE::BACK)
+                lockedMenuWithVote[size++] = voteMenuItem;
+        }
+        activeMenu = lockedMenuWithVote;
+        menuSize = size;
+    }
+
     encoder.setAcceleration(0);
     encoder.setBoundaries(0, menuSize - 1, true);
     encoder.setEncoderValue(0);

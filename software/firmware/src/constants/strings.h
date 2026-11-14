@@ -205,6 +205,11 @@ namespace Str {
             "Your session will pause immediately. You must lock the device "
             "before this period ends.";
 
+        // Voting link of the session (Chaster Share links), from the lock menu
+        constexpr char VOTE_TITLE[] PROGMEM = "Vote On This Lock";
+        constexpr char VOTE_DESC[] PROGMEM =
+            "Scan to add or remove time on this lock.";
+
         // Locked screen
         constexpr char TIME_HIDDEN[] PROGMEM = "Time Hidden";
         constexpr char WIFI_FOR_TIME[] PROGMEM =
@@ -226,6 +231,7 @@ namespace Str {
         constexpr char INFO[] PROGMEM = "INFO";
         constexpr char SCAN[] PROGMEM = "SCAN";
         constexpr char PAIR[] PROGMEM = "PAIR";
+        constexpr char VOTE[] PROGMEM = "VOTE";
     }  // namespace Label
 
     // ── Menu item names
@@ -243,6 +249,7 @@ namespace Str {
         constexpr char PAIRING[] PROGMEM = "Pairing";
         constexpr char UPDATE_DEVICE[] PROGMEM = "Update Device";
         constexpr char ENROL_IN_ALPHA[] PROGMEM = "Enrol in Alpha";
+        constexpr char VOTE_LINK[] PROGMEM = "Vote Link";
         constexpr char MENU[] PROGMEM = "Menu";
     }  // namespace Menu
 
@@ -336,6 +343,8 @@ namespace Str {
         constexpr char IS_FROZEN[] PROGMEM = "isFrozen";
         constexpr char FROZEN_AT[] PROGMEM = "frozenAt";
         constexpr char FREEZE_REASON[] PROGMEM = "freezeReason";
+        // Voting link (HTTP state + MQTT sync + BLE session.apply)
+        constexpr char VOTE_URL[] PROGMEM = "voteUrl";
         constexpr char VERSION_KEY[] PROGMEM = "version";
         constexpr char MAJOR[] PROGMEM = "major";
         constexpr char MINOR[] PROGMEM = "minor";

@@ -209,6 +209,7 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                     .displayElapsedTime = doc[Str::Json::DISPLAY_ELAPSED_TIME].as<bool>(),
                 };
                 applyFreezeSync(doc, session);
+                applyVoteUrlSync(doc, session);
                 session.breakKeyholderOnly =
                     doc[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
 

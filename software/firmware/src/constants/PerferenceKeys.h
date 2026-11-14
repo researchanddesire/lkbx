@@ -83,6 +83,9 @@ namespace Keys {
         constexpr char isFrozen[] = "isFrozen";
         constexpr char frozenAt[] = "frozenAt";
         constexpr char freezeReason[] = "freezeReason";
+        // Page where others vote on the session (Chaster's Share links page),
+        // shown as a QR code from the lock menu. Empty when there is none.
+        constexpr char voteUrl[] = "voteUrl";
     }
 }
 
