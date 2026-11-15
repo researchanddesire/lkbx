@@ -7,6 +7,7 @@
 #include <boost/sml.hpp>
 
 #include <atomic>
+#include <mutex>
 
 #include "../constants/LogTags.h"
 #include "../constants/Pins.h"
@@ -29,6 +30,7 @@
 #include "motor/Motor.h"
 #include "structs/Action.h"
 #include "structs/MenuItem.h"
+#include "tasks/TaskStart.h"
 #include "utils/breakTiming.h"
 #include "utils/chasterAsk.h"
 #include "utils/getPairingCode.h"
@@ -68,14 +70,18 @@ class LKBX {
     void drawBreakCooldown(bool initial);
     void checkBreakCooldown();
     uint32_t breakCooldownUpdatedMs = 0;
-    // A Chaster session asks the dashboard before a break or an unlock.
+    // A Chaster session asks the dashboard before a break or an unlock. The
+    // question runs on the delay task, one step per pass (LKBX.chaster.cpp).
     void startChasterAsk();
-    static void chasterAskTask(void *pvParameters);
-    void drawChasterNotice(const char *title, const String &body,
-                           const Action &right);
+    void serviceChasterAsk();
+    void answerChasterAsk(const AskAnswer &answer);
+    // A plain page: a heading, a few lines and its buttons.
+    void drawNotice(const char *title, const String &body, const Action &right,
+                    const Action &left);
     void drawAskAnswer();
-    // Only the newest question may answer; an older task's result is dropped.
-    std::atomic<uint32_t> askGeneration{0};
+    // The newest question: its number and what it asks (nextAskOrder). Only
+    // the newest question may answer; an older one's result is dropped.
+    std::atomic<uint32_t> askOrder{kNoAskOrder};
     // What the box is asking, set by the transition into "locked.asking".
     AskAction askAction = AskAction::UNLOCK;
     // The answer and why Chaster refused, as the dashboard worded it. Written
@@ -86,6 +92,11 @@ class LKBX {
     // Which heading the held-session page was last drawn with, so a freeze
     // that turns into an unlock hold (or back) repaints it.
     volatile bool heldPageShowsWaiting = false;
+    // A locked timer must have its countdown task (LKBX.cpp).
+    void restoreUnlockTimer();
+    std::mutex unlockTimerStart;
+    uint32_t unlockTimerCheckedMs = 0;
+    bool unlockTimerMissing = false;
     void checkOfferedLock();
     uint32_t offerStartedMs = 0;
     String offerSessionId;
@@ -176,8 +187,14 @@ class LKBX {
                 return [message](LKBX &o) { o.sendMessage(message); };
             };
 
-            auto saveDuration = [](LKBX &o) {
-                saveLocalLockTimerDuration(o.duration);
+            // A local timer locks only once its end is saved. The guard saves
+            // it, and refuses the press when the page never showed a duration
+            // or the end could not be stored (LocalTimerTransitions.inc).
+            auto saveLocalTimer = [](LKBX &o) {
+                return saveLocalLockTimerDuration(o.duration);
+            };
+            auto showTimerUnavailable = [](LKBX &o) {
+                o.drawTimerUnavailable();
             };
 
             auto drawLoadingScreen = [](const char *title,
@@ -510,33 +527,37 @@ class LKBX {
                 esp_restart();
             };
 
+            // A boot step whose task cannot be created must not hold the box
+            // on the loading page: a locked box that restarts has to reach its
+            // locked page. The delay task reports such a step as done instead,
+            // which is how each of these steps ends when the box is offline.
             auto checkWifi = [](LKBX &o) {
                 ESP_LOGD(TASKDEBUG_TAG, "Creating check wifi task");
-                xTaskCreatePinnedToCore(
-                    o.checkWifiTask, Tasks::checkWifi.name,
-                    Tasks::checkWifi.stackSize, &o, Tasks::checkWifi.priority,
-                    &TaskHandles::checkWifi, Tasks::checkWifi.core);
+                if (!startTaskWithRetry(o.checkWifiTask, Tasks::checkWifi, &o,
+                                        &TaskHandles::checkWifi)) {
+                    delayTimeout = 100;
+                }
             };
 
             // Async update check for onboarding flow.
             // Skips if offline, otherwise checks for major/minor version bumps.
             auto checkForUpdates = [](LKBX &o) {
                 ESP_LOGD(TASKDEBUG_TAG, "Creating check for updates task");
-                xTaskCreatePinnedToCore(
-                    o.checkForUpdatesTask, Tasks::checkUpdates.name,
-                    Tasks::checkUpdates.stackSize, &o,
-                    Tasks::checkUpdates.priority, &TaskHandles::checkUpdates,
-                    Tasks::checkUpdates.core);
+                if (!startTaskWithRetry(o.checkForUpdatesTask,
+                                        Tasks::checkUpdates, &o,
+                                        &TaskHandles::checkUpdates)) {
+                    delayTimeout = 100;
+                }
             };
 
             // One-shot pairing check. Reuses MQTT auth status when available.
             auto startPairingCheck = [](LKBX &o) {
                 ESP_LOGD(TASKDEBUG_TAG, "Creating pairing check task");
-                xTaskCreatePinnedToCore(
-                    o.startPairingCheckTask, Tasks::pairingCheck.name,
-                    Tasks::pairingCheck.stackSize, &o,
-                    Tasks::pairingCheck.priority, &TaskHandles::pairingCheck,
-                    Tasks::pairingCheck.core);
+                if (!startTaskWithRetry(o.startPairingCheckTask,
+                                        Tasks::pairingCheck, &o,
+                                        &TaskHandles::pairingCheck)) {
+                    delayTimeout = 100;
+                }
             };
 
             // Pull current lock state during onboarding and route to
@@ -544,15 +565,11 @@ class LKBX {
             auto syncLockStateOnBoot = [](LKBX &o) {
                 ESP_LOGD(TASKDEBUG_TAG,
                          "Creating sync lock state on boot task");
-                if (xTaskCreatePinnedToCore(
-                        o.syncLockStateOnBootTask, Tasks::syncLockState.name,
-                        Tasks::syncLockState.stackSize, &o,
-                        Tasks::syncLockState.priority,
-                        &TaskHandles::syncLockState,
-                        Tasks::syncLockState.core) != pdPASS) {
+                if (!startTaskWithRetry(o.syncLockStateOnBootTask,
+                                        Tasks::syncLockState, &o,
+                                        &TaskHandles::syncLockState)) {
                     // No memory for the task: carry on as after a failed pull,
                     // through the delay task, instead of waiting here forever.
-                    ESP_LOGE(TASKDEBUG_TAG, "Could not start the boot sync");
                     bootHttpDone = true;
                     delayTimeout = 1000;
                 }
@@ -563,10 +580,14 @@ class LKBX {
             // clock.
             auto syncClockOnBoot = [](LKBX &o) {
                 ESP_LOGD(TASKDEBUG_TAG, "Creating sync clock on boot task");
-                xTaskCreatePinnedToCore(
-                    o.syncClockOnBootTask, Tasks::syncClock.name,
-                    Tasks::syncClock.stackSize, &o, Tasks::syncClock.priority,
-                    &TaskHandles::syncClock, Tasks::syncClock.core);
+                if (!startTaskWithRetry(o.syncClockOnBootTask, Tasks::syncClock,
+                                        &o, &TaskHandles::syncClock)) {
+                    // A clock restored offline still counts, as it does in
+                    // the task. Online the clock stays unverified; a held
+                    // LOCKED report retries the sync (startClockRetry).
+                    if (isOffline() && isWallClockSet()) isTimeSynced = true;
+                    delayTimeout = 100;
+                }
             };
 
             // With a hidden timer the Sleep item must behave the same at any
@@ -580,9 +601,10 @@ class LKBX {
             auto setAskUnlock = [](LKBX &o) { o.askAction = AskAction::UNLOCK; };
             auto setAskBreak = [](LKBX &o) { o.askAction = AskAction::BREAK; };
             auto drawAskingChaster = [](LKBX &o) {
-                o.drawChasterNotice(Str::Screen::ASKING_CHASTER_TITLE,
-                                    Str::Screen::ASKING_CHASTER_DESC,
-                                    Action{.visible = false});
+                o.drawNotice(Str::Screen::ASKING_CHASTER_TITLE,
+                             Str::Screen::ASKING_CHASTER_DESC,
+                             Action{.visible = false},
+                             Action{.visible = false});
             };
             auto startChasterAsk = [](LKBX &o) { o.startChasterAsk(); };
             auto drawAskAnswer = [](LKBX &o) { o.drawAskAnswer(); };
@@ -612,11 +634,8 @@ class LKBX {
             auto startPairingPoll = [](LKBX &o) {
                 if (TaskHandles::pairingPoll != nullptr) return;
                 ESP_LOGD(TASKDEBUG_TAG, "Creating pairing poll task");
-                xTaskCreatePinnedToCore(
-                    o.pollPairingTask, Tasks::pairingPoll.name,
-                    Tasks::pairingPoll.stackSize, &o,
-                    Tasks::pairingPoll.priority, &TaskHandles::pairingPoll,
-                    Tasks::pairingPoll.core);
+                startTaskWithRetry(o.pollPairingTask, Tasks::pairingPoll, &o,
+                                   &TaskHandles::pairingPoll);
             };
 
             auto needsPairing = [](LKBX &o) { return o.initNeedsPairing; };
@@ -807,7 +826,7 @@ class LKBX {
                 "timer"_s + backPress = "home.idle"_s,
                 "timer"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
                 "timer"_s + locktimer / (clearLocalPlay, lockTimerAction) = "locking"_s,
-                "timer"_s + buttonPress / (saveDuration, lockTimerAction) = "locking"_s,
+#include "LocalTimerTransitions.inc"
                 "timer"_s + forceUpdate = "update"_s,
 
                 "locking"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
@@ -1093,7 +1112,9 @@ class LKBX {
 
     void initDelayTask();
     // A dashboard clear that names no session: re-read the state over HTTPS.
-    void confirmServerClear();
+    // Also what a box does when it may have missed a message. False when the
+    // pull could not be started.
+    bool confirmServerClear();
 
     Adafruit_ST7789 &display;
     AiEsp32RotaryEncoder &encoder;
@@ -1106,7 +1127,17 @@ class LKBX {
         sm = nullptr;  // The state machine
 
     String errorMessage = "";
+    // The local timer's duration in ms, as the timer page last showed it. Zero
+    // until the page has drawn a duration: nothing can be locked for it.
     uint64_t duration = 0;
+    // What the timer page shows. The dial task repaints the whole page when
+    // the page was entered again (REDRAW), and once the dial is turned after
+    // a notice was drawn over it (NOTICE).
+    enum class TimerPage : uint8_t { DIAL, REDRAW, NOTICE };
+    std::atomic<TimerPage> timerPage{TimerPage::DIAL};
+    // Shown when the timer page cannot be drawn or the timer's end cannot be
+    // saved. The box does not lock.
+    void drawTimerUnavailable();
     // Set by the phase-1 pairing check; routes preflight to the pairing prompt.
     bool initNeedsPairing = false;
     bool initPairingStatusKnown = false;
@@ -1189,6 +1220,7 @@ class LKBX {
     void checkPendingStateChange() {
         checkOfferedLock();
         checkBreakCooldown();
+        restoreUnlockTimer();
         if (logger.stateChangeMessagePending) {
             logger.stateChangeMessagePending = false;
             sendActivityLog(Str::Protocol::STATE_CHANGE);

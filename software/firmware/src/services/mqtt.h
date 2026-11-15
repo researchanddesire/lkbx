@@ -16,6 +16,24 @@ extern const char* root_ca;
 bool startMqtt();
 bool stopMqtt();
 
+// The Wi-Fi setup portal and the client do not fit in internal RAM together
+// on R8 hardware, so the client is stopped while a portal is open (see
+// utils/mqttPause.h). The portal task calls pauseMqttForPortal before it opens
+// the portal and resumeMqttAfterPortal once it has closed it. Never call
+// pauseMqttForPortal from the MQTT task or from a state machine action: it
+// waits for the MQTT task to stop.
+void pauseMqttForPortal();
+void resumeMqttAfterPortal();
+// Called often from a task that is always running. Starts a paused client
+// again once the last portal has closed, trying again until its task fits in
+// memory. True when the client has connected again and the caller should now
+// read the dashboard's state; report that attempt with noteMqttReconcile.
+bool serviceMqttPause();
+void noteMqttReconcile(bool started);
+// Stops and frees the client, for a firmware update or a client that could not
+// be started.
+void destroyMqtt();
+
 // The broker publishes a client's last will every time that client's
 // connection drops, and the client reconnects on its own for as long as the
 // box is up. So the will is built again before every connection attempt

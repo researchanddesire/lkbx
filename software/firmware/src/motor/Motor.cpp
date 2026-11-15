@@ -12,7 +12,7 @@ void Motor::watchCurrent() {
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating current watch task");
-    xTaskCreatePinnedToCore(
+    const BaseType_t created = xTaskCreatePinnedToCore(
         [](void *pvParameters) {
             auto *motor = (Motor *)pvParameters;
 
@@ -60,6 +60,14 @@ void Motor::watchCurrent() {
         Tasks::currentWatch.name, Tasks::currentWatch.stackSize, this,
         Tasks::currentWatch.priority, &TaskHandles::currentWatch,
         Tasks::currentWatch.core);
+    if (created != pdPASS) {
+        // This task is what switches the motor off, after a second or at the
+        // current limit. Without it the motor would stay powered. The paddle
+        // has already had its travel time (waitForLock / waitForUnlock).
+        ESP_LOGE(TASKDEBUG_TAG,
+                 "Could not start the current watch; switching the motor off");
+        Motor::clear();
+    }
 }
 void Motor::waitForLock() {
     // Wait for the motor to lock the box.

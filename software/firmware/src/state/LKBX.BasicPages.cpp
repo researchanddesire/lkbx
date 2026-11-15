@@ -384,10 +384,11 @@ void LKBX::drawLockedActions() {
     }
 }
 
-// A plain page for the Chaster questions: a heading, a few lines and one
-// button. It has no QR code, so the whole width is left for the reason.
-void LKBX::drawChasterNotice(const char* title, const String& body,
-                             const Action& right) {
+// A plain page: a heading, a few lines and its buttons. The Chaster questions
+// and the timer page's notice use it. It has no QR code, so the whole width is
+// left for the text, and it is drawn here and now, without a task.
+void LKBX::drawNotice(const char* title, const String& body,
+                      const Action& right, const Action& left) {
     if (xSemaphoreTake(displayMutex, 100) != pdTRUE) return;
     clearScreen(display);
     const int top = drawHeading(display, title);
@@ -395,7 +396,7 @@ void LKBX::drawChasterNotice(const char* title, const String& body,
     display.setTextColor(Colors::white);
     wrapText(display, body.c_str(), Display::Padding::P2, top + 14,
              Display::WIDTH - Display::Padding::P4);
-    drawButtons(display, right, Action{.visible = false});
+    drawButtons(display, right, left);
     xSemaphoreGive(displayMutex);
 }
 
@@ -420,7 +421,7 @@ void LKBX::drawAskAnswer() {
         body += forBreak ? Str::Screen::BREAK_REFUSED_SUFFIX
                          : Str::Screen::UNLOCK_REFUSED_SUFFIX;
     }
-    drawChasterNotice(title, body, {Str::Menu::MENU});
+    drawNotice(title, body, {Str::Menu::MENU}, Action{.visible = false});
 }
 
 void LKBX::drawReadyToUnlock() {
@@ -484,7 +485,7 @@ void LKBX::drawLoadingScreen(const String& title, const String& description) {
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating loader task");
-    xTaskCreatePinnedToCore(
-        loadingSpinnerTask, Tasks::loader.name, Tasks::loader.stackSize, this,
-        Tasks::loader.priority, &TaskHandles::loader, Tasks::loader.core);
+    // Only the spinner: the heading and text above are already on the screen.
+    startTaskChecked(loadingSpinnerTask, Tasks::loader, this,
+                     &TaskHandles::loader);
 }

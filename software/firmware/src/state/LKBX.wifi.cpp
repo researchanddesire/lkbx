@@ -178,10 +178,13 @@ void LKBX::startWifiConnectionTask(void *pvParameters) {
 
 void LKBX::startWifiConnection() {
     ESP_LOGD(TASKDEBUG_TAG, "Creating wifi connection task");
-    xTaskCreatePinnedToCore(startWifiConnectionTask, Tasks::wifiConnect.name,
-                            Tasks::wifiConnect.stackSize, this,
-                            Tasks::wifiConnect.priority,
-                            &TaskHandles::wifiConnect, Tasks::wifiConnect.core);
+    if (!startTaskWithRetry(startWifiConnectionTask, Tasks::wifiConnect, this,
+                            &TaskHandles::wifiConnect)) {
+        // Nothing would ever end this boot step. Report it as a network that
+        // could not be reached: a returning box resumes its saved session
+        // offline, a new one gets the Wi-Fi error page with Retry.
+        sm->process_event(Error{.error = ErrorT::WIFI_NETWORK_UNREACHABLE});
+    }
 }
 
 // Onboarding update check task.
@@ -497,8 +500,7 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
         }
     }
     if (!mqttStarted) {
-        if (mqttClient) esp_mqtt_client_destroy(mqttClient);
-        mqttClient = nullptr;
+        destroyMqtt();
         plkbx->sm->process_event(Error{.error = ErrorT::MQTT_AUTH_FAILED});
         vTaskDelete(nullptr);
         return;
@@ -549,10 +551,15 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
 
 void LKBX::startMqttConnection() {
     ESP_LOGD(TASKDEBUG_TAG, "Creating MQTT connection task");
-    xTaskCreatePinnedToCore(startMqttConnectionTask, Tasks::mqttConnect.name,
-                            Tasks::mqttConnect.stackSize, this,
-                            Tasks::mqttConnect.priority,
-                            &TaskHandles::mqttConnect, Tasks::mqttConnect.core);
+    if (!startTaskWithRetry(startMqttConnectionTask, Tasks::mqttConnect, this,
+                            &TaskHandles::mqttConnect)) {
+        // Nothing would ever end this boot step. Report it as a broker that
+        // did not answer: a returning box carries on to its saved session
+        // (off the broker until it restarts), a new one gets the error page
+        // with Retry.
+        TaskHandles::mqttConnect = nullptr;
+        sm->process_event(Error{.error = ErrorT::MQTT_TIMEOUT});
+    }
 }
 
 // A clear without a session id comes from a dashboard older than this
@@ -572,26 +579,33 @@ void LKBX::confirmServerClearTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
-void LKBX::confirmServerClear() {
+bool LKBX::confirmServerClear() {
     // One pull answers every clear that arrived while it runs.
-    if (TaskHandles::confirmClear != nullptr) return;
-    if (xTaskCreatePinnedToCore(confirmServerClearTask, Tasks::confirmClear.name,
-                                Tasks::confirmClear.stackSize, this,
-                                Tasks::confirmClear.priority,
-                                &TaskHandles::confirmClear,
-                                Tasks::confirmClear.core) != pdPASS) {
-        // Without memory for the pull the box keeps its session; the next
-        // reconnect or boot reconciles it.
-        TaskHandles::confirmClear = nullptr;
-        ESP_LOGW(MQTT_TAG, "Could not start the clear confirmation");
+    if (TaskHandles::confirmClear != nullptr) return true;
+    if (startTaskChecked(confirmServerClearTask, Tasks::confirmClear, this,
+                         &TaskHandles::confirmClear)) {
+        return true;
     }
+    // Without memory for the pull the box keeps its session; the next
+    // reconnect or boot reconciles it.
+    TaskHandles::confirmClear = nullptr;
+    ESP_LOGW(MQTT_TAG, "Could not start the clear confirmation");
+    return false;
 }
 
 // update methods
 void LKBX::startUpdate() {
-    xTaskCreatePinnedToCore(
-        updateTask, Tasks::update.name, Tasks::update.stackSize, this,
-        Tasks::update.priority, &TaskHandles::update, Tasks::update.core);
+    if (!startTaskWithRetry(updateTask, Tasks::update, this,
+                            &TaskHandles::update)) {
+        // The Updating page has no buttons, and a locked box can be sent here
+        // (forceUpdate), so it must not wait for a task that does not exist.
+        // Leave through the "no update" page: any button returns home, which
+        // restores a lock. Restarting instead (as a failed install does) could
+        // loop on a forced update while memory stays short.
+        TaskHandles::update = nullptr;
+        ESP_LOGE(OTA_TAG, "Could not start the update; carrying on without it");
+        sm->process_event(Error{.error = ErrorT::NO_UPDATE_AVAILABLE});
+    }
 }
 
 void LKBX::updateTask(void *pvParameters) {
@@ -629,10 +643,7 @@ void LKBX::updateTask(void *pvParameters) {
     }
 
     if (mqttClient) {
-        esp_mqtt_client_stop(mqttClient);
-        esp_mqtt_client_destroy(mqttClient);
-        mqttClient = nullptr;
-        mqttConnected = false;
+        destroyMqtt();
         ESP_LOGI(OTA_TAG, "Stopped MQTT client");
     }
 

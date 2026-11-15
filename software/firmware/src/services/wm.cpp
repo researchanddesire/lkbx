@@ -10,6 +10,7 @@
 
 #include "constants/strings.h"
 #include "machine.h"
+#include "services/mqtt.h"
 #include "services/serverOnline.h"
 
 WiFiManager wm;
@@ -127,14 +128,27 @@ void processWifiTask(void *pvParameters) {
                lkbx->sm->is("emergency.wifi"_s) || lkbx->sm->is("wmConfig"_s) ||
                lkbx->sm->is("update.wifi"_s);
     };
+    // The portal and the MQTT client do not fit in internal RAM together on
+    // R8 hardware (utils/mqttPause.h): stop the client first, which gives
+    // back its task stack and TLS session. It starts again after the portal
+    // has closed, as a new connection.
+    pauseMqttForPortal();
     // The setup network is intentionally open on every track; the portal
     // guard still admits only clients associated with this access point.
     wm.startConfigPortal(Str::Wifi::PORTAL_SSID);
     registerCaptivePortalFallbackRoutes();
     wm.process();
 
+    // WiFiManager closes the portal by itself after its timeout while the
+    // page can stay on the screen. Nothing needs the memory then, and a box
+    // left on this page must not stay off the broker.
+    bool mqttResumed = false;
     while (isInCorrectState()) {
         wm.process();
+        if (!mqttResumed && !wm.getConfigPortalActive()) {
+            resumeMqttAfterPortal();
+            mqttResumed = true;
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
@@ -146,5 +160,6 @@ void processWifiTask(void *pvParameters) {
         wm.stopConfigPortal();
         wm.process();
     }
+    if (!mqttResumed) resumeMqttAfterPortal();
     vTaskDelete(nullptr);
 }

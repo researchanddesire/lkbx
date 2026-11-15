@@ -6,6 +6,7 @@
 #include "constants/LogTags.h"
 #include "machine.h"
 #include "magnetics.h"
+#include "mqtt.h"
 #include "tasks/TaskParams.h"
 
 void initActivityLogTask() {
@@ -17,6 +18,13 @@ void initActivityLogTask() {
                     updateStablePaddleState();
                     lkbx->checkPendingStateChange();
                     checkPendingSensorChange();
+                    // A client stopped for the Wi-Fi setup portal starts
+                    // again here once the portal has closed. Connected, the
+                    // box reads the dashboard's state once for whatever was
+                    // published while it could not listen.
+                    if (serviceMqttPause()) {
+                        noteMqttReconcile(lkbx->confirmServerClear());
+                    }
                 }
                 vTaskDelay(50 / portTICK_PERIOD_MS);
             }

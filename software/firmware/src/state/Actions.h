@@ -16,14 +16,17 @@
 #include "services/settings.h"
 #include "services/wm.h"
 #include "tasks/TaskParams.h"
+#include "tasks/TaskStart.h"
 #include "utils/syncState.h"
 
+// Starts the Wi-Fi setup portal's task. If it cannot be created the page still
+// shows and both buttons leave it; only the setup network is missing, and the
+// failure is logged.
 constexpr auto startTask = [](auto task, const TaskParams &params,
                               TaskHandle_t &handle) {
     return [task, &params, &handle]() {
         ESP_LOGD(TASKDEBUG_TAG, "Creating task %s", params.name);
-        xTaskCreatePinnedToCore(task, params.name, params.stackSize, nullptr,
-                                params.priority, &handle, params.core);
+        startTaskWithRetry(task, params, nullptr, &handle);
     };
 };
 
@@ -181,37 +184,6 @@ auto clearActiveBreak = []() {
         preferences.end();
         xSemaphoreGive(preferencesMutex);
     }
-};
-
-auto startWiFiPortal = []() {
-    // Give a second for any pending MQTT messages to be sent before
-    // disconnecting WiFi Otherwise we lose this state_change message until the
-    // device comes back online.
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-    WiFi.disconnect(true, true);
-    wm.setConfigPortalBlocking(false);
-    wm.setCleanConnect(true);
-    wm.setConnectTimeout(30);
-    wm.setConnectRetries(5);
-    wm.setEnableConfigPortal(true);
-    wm.startConfigPortal("Lockbox Setup");
-
-    // if the wifi is not currently connected then make a small task the looks
-    // for the wifi connection and sends an event.
-
-    // // Pause the radio-backed services while the setup access point is active.
-    // stopMqtt();
-    // stopBle();
-};
-
-auto stopWiFiPortal = []() {
-    wm.setConfigPortalBlocking(false);
-    wm.stopConfigPortal();
-
-    // // Restore the services that were paused for the setup portal.
-    // startMqtt();
-    // startBle();
 };
 
 #endif  // SOFTWARE_ACTIONS_H

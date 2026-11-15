@@ -41,12 +41,44 @@ namespace chasterAsk {
     // The whole request, including queue time and the TLS handshake. The
     // dashboard itself waits up to 8 s for Chaster.
     constexpr int kTimeoutMs = 20000;
+    // Handing the question to the HTTP worker can fail for a moment: its
+    // queue is full, or there is no memory for the request. The box tries
+    // once more after a short wait before it reports that it could not ask.
+    constexpr uint8_t kSendAttempts = 2;
+    constexpr uint32_t kSendRetryMs = 500;
 }  // namespace chasterAsk
 
 enum class AskAction : uint8_t { BREAK, UNLOCK };
 
 inline const char* askActionText(AskAction action) {
     return action == AskAction::BREAK ? "break" : "unlock";
+}
+
+// The question is asked from the delay task, which always exists. A task of
+// its own needed one free block of internal RAM as large as its stack, and R8
+// hardware often has none that large: the box then could not ask at all and
+// showed "Can't Reach Chaster" with Wi-Fi up.
+//
+// One word names the newest question: its number and what it asks. The
+// transition into "locked.asking" writes the word and the delay task reads
+// it, so the two always agree on which question is the newest and what it is.
+// An answer counts only while its question is still the newest.
+constexpr uint32_t kNoAskOrder = 0;
+
+inline uint32_t nextAskOrder(uint32_t previous, AskAction action) {
+    uint32_t number = ((previous >> 1) + 1) & 0x7FFFFFFFu;
+    // Never the value that means "nothing was asked".
+    if (number == 0) number = 1;
+    return (number << 1) | (action == AskAction::BREAK ? 1u : 0u);
+}
+
+inline AskAction askOrderAction(uint32_t order) {
+    return (order & 1u) != 0 ? AskAction::BREAK : AskAction::UNLOCK;
+}
+
+// Whether a question the HTTP worker could not take is handed over again.
+inline bool askSendMayRetry(uint8_t attemptsMade) {
+    return attemptsMade < chasterAsk::kSendAttempts;
 }
 
 enum class AskOutcome : uint8_t {

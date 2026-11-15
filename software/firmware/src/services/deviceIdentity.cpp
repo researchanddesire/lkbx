@@ -23,6 +23,7 @@
 #include "services/settings.h"
 #include "utils/getEfuseMac.h"
 #include "utils/lastWillPolicy.h"
+#include "utils/ownReports.h"
 #include "utils/trustedClock.h"
 
 namespace {
@@ -37,6 +38,10 @@ lockbox::security::CommandGate commandGate;
 bool commandGateLoaded = false;
 // This box has held a command key, so it never accepts plain commands again.
 bool everSigned = false;
+// The state reports this box sent last. The broker returns each one on the
+// command topic; they are dropped there without being opened. Guarded by
+// identityMutex.
+OwnReports ownReports;
 
 bool validSecretText(const String& text) {
     return text.length() == SECRET_TEXT_LENGTH &&
@@ -303,6 +308,12 @@ bool cloudBinding(const char* topic, const char*& recipient,
 
 bool openCloudCommand(const char* topic, const char* frame, size_t size,
                       String& command) {
+    {
+        // The broker handing back one of this box's own reports: not a
+        // command, and nothing worth a log line.
+        std::lock_guard<std::mutex> lock(identityMutex);
+        if (ownReports.matches(frame, size)) return false;
+    }
     if (!loadCommandGate()) return false;
     std::string opened;
     lockbox::security::CommandGateResult result =
@@ -365,12 +376,20 @@ String sealCloudReport(const char* topic, lockbox::security::ReportKind kind,
             commandGate.seal(recipient, binding, kind,
                              std::string(report.c_str(), report.length()), timestamp,
                              iv, nonce, sealed)) {
+            // Only state reports go out on the command topic; logs have their
+            // own, which the box does not listen to.
+            if (kind == lockbox::security::ReportKind::state) {
+                ownReports.remember(sealed.data(), sealed.size());
+            }
             return String(sealed.c_str());
         }
         // Only a box that never signed and has no burned key reports in plain
         // JSON, and only once it is known to hold no key.
         if (lockbox::security::mayReportPlain(commandGateLoaded, burned, everSigned,
                                               commandGate.hasKey())) {
+            if (kind == lockbox::security::ReportKind::state) {
+                ownReports.remember(report.c_str(), report.length());
+            }
             return report;
         }
     }

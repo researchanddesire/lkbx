@@ -1,11 +1,20 @@
 #include "mqtt.h"
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
+
+#include <mutex>
 
 #include "constants/LogTags.h"
+#include "utils/mqttPause.h"
 
 namespace {
 bool mqttPaused = false;
+
+// Serializes stopping, starting and destroying the client with the portal
+// bookkeeping, across the portal task, the activity log task and an update.
+std::mutex pauseMutex;
+MqttPause portalPause;
 
 // What the client was created with, minus everything it already holds a copy
 // of (see rememberMqttSettings).
@@ -61,6 +70,70 @@ bool startMqtt() {
     mqttPaused = false;
     ESP_LOGI(MQTT_TAG, "MQTT client resumed");
     return true;
+}
+
+void pauseMqttForPortal() {
+    std::lock_guard<std::mutex> lock(pauseMutex);
+    portalPause.portalOpened();
+    if (!portalPause.shouldStop() || mqttClient == nullptr) return;
+    // A client that was never started stays as it is; it has nothing to
+    // give back and its own start is still to come.
+    if (stopMqtt()) portalPause.stopped();
+}
+
+void resumeMqttAfterPortal() {
+    std::lock_guard<std::mutex> lock(pauseMutex);
+    portalPause.portalClosed(millis());
+}
+
+bool serviceMqttPause() {
+    // Never waits behind a stop that is in progress.
+    std::unique_lock<std::mutex> lock(pauseMutex, std::try_to_lock);
+    if (!lock.owns_lock()) return false;
+
+    switch (portalPause.next(millis(), mqttConnected)) {
+        case MqttPauseStep::START_CLIENT: {
+            if (mqttClient == nullptr) {
+                mqttPaused = false;
+                portalPause.clientGone();
+                return false;
+            }
+            const bool started = startMqtt();
+            if (!started) {
+                ESP_LOGW(MQTT_TAG,
+                         "MQTT client not resumed yet: largest free internal "
+                         "block %u bytes, %u bytes free",
+                         static_cast<unsigned>(heap_caps_get_largest_free_block(
+                             MALLOC_CAP_INTERNAL)),
+                         static_cast<unsigned>(
+                             heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+            }
+            portalPause.startTried(started, millis());
+            return false;
+        }
+        case MqttPauseStep::RECONCILE:
+            return true;
+        case MqttPauseStep::NONE:
+        default:
+            return false;
+    }
+}
+
+void noteMqttReconcile(bool started) {
+    std::lock_guard<std::mutex> lock(pauseMutex);
+    portalPause.reconcileTried(started, millis());
+}
+
+void destroyMqtt() {
+    std::lock_guard<std::mutex> lock(pauseMutex);
+    if (mqttClient != nullptr) {
+        esp_mqtt_client_stop(mqttClient);
+        esp_mqtt_client_destroy(mqttClient);
+        mqttClient = nullptr;
+    }
+    mqttConnected = false;
+    mqttPaused = false;
+    portalPause.clientGone();
 }
 
 void rememberMqttSettings(const esp_mqtt_client_config_t& config,

@@ -42,4 +42,23 @@ int post(const String &url, const JsonDocument &doc,
          String *responsePayload = nullptr, int timeoutMs = 5000,
          int retries = 0);
 
+// A POST the caller polls instead of waiting for, so a task with other work to
+// do (the delay task asking Chaster) is never blocked on the network. The same
+// checks, limits and total deadline as post() apply, without retries.
+struct HttpPending;
+
+// Queues the request. Null when it could not be queued: an invalid request, no
+// memory, a full queue or a stopped worker.
+HttpPending *postDetached(const String &url, const JsonDocument &doc,
+                          int timeoutMs);
+
+// True once the request has ended: answered, failed, or past its deadline.
+// `code` and `responsePayload` then hold what post() would have returned, and
+// `pending` is released and set to null. False while it is still running.
+bool takeHttpResult(HttpPending *&pending, int &code, String *responsePayload);
+
+// Stops waiting for a request whose answer is no longer wanted, and sets
+// `pending` to null. The worker drops the request.
+void abandonHttp(HttpPending *&pending);
+
 #endif  // LOCKBOX_HTTP_WORKER_H

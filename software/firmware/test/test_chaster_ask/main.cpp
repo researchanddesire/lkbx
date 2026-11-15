@@ -568,6 +568,49 @@ void test_hidden_timer_sync_wakes_the_screen_only_for_a_new_page() {
     }
 }
 
+// --- asking from the delay task ----------------------------------------------
+
+// The delay task asks. It knows the newest question by its order, which also
+// says what is asked.
+void test_each_question_gets_a_new_order_that_says_what_it_asks() {
+    uint32_t order = kNoAskOrder;
+    for (int question = 0; question < 6; ++question) {
+        const AskAction action =
+            question % 2 == 0 ? AskAction::UNLOCK : AskAction::BREAK;
+        const uint32_t next = nextAskOrder(order, action);
+        TEST_ASSERT_TRUE(next != kNoAskOrder);
+        TEST_ASSERT_TRUE(next != order);
+        TEST_ASSERT_TRUE(askOrderAction(next) == action);
+        order = next;
+    }
+    // The same question asked again is a new question: the first one's
+    // answer no longer counts.
+    const uint32_t first = nextAskOrder(kNoAskOrder, AskAction::UNLOCK);
+    TEST_ASSERT_TRUE(nextAskOrder(first, AskAction::UNLOCK) != first);
+}
+
+void test_the_order_never_wraps_to_nothing_asked() {
+    // The highest question number, for an unlock and for a break.
+    const uint32_t lastUnlock = 0xFFFFFFFEu;
+    const uint32_t wrapped = nextAskOrder(lastUnlock, AskAction::UNLOCK);
+    TEST_ASSERT_TRUE(wrapped != kNoAskOrder);
+    TEST_ASSERT_TRUE(wrapped != lastUnlock);
+    TEST_ASSERT_TRUE(askOrderAction(wrapped) == AskAction::UNLOCK);
+    TEST_ASSERT_TRUE(nextAskOrder(0xFFFFFFFFu, AskAction::BREAK) !=
+                     kNoAskOrder);
+}
+
+// When the HTTP worker cannot take the question the box tries once more, then
+// says it could not ask. It never waits on the asking page forever.
+void test_a_question_that_cannot_be_sent_is_tried_once_more() {
+    TEST_ASSERT_EQUAL_INT(2, chasterAsk::kSendAttempts);
+    TEST_ASSERT_TRUE(askSendMayRetry(1));
+    TEST_ASSERT_FALSE(askSendMayRetry(2));
+    TEST_ASSERT_FALSE(askSendMayRetry(3));
+    TEST_ASSERT_TRUE(chasterAsk::kSendRetryMs > 0);
+    TEST_ASSERT_TRUE(chasterAsk::kSendRetryMs <= 2000);
+}
+
 // --- a break on a Chaster session --------------------------------------------
 
 void test_chaster_break_does_not_end_at_the_boxs_deadline() {
@@ -614,6 +657,9 @@ int main() {
     RUN_TEST(test_hidden_timer_never_wakes_the_screen_near_the_end);
     RUN_TEST(test_hidden_timer_sleep_item_behaves_the_same_near_the_end);
     RUN_TEST(test_hidden_timer_sync_wakes_the_screen_only_for_a_new_page);
+    RUN_TEST(test_each_question_gets_a_new_order_that_says_what_it_asks);
+    RUN_TEST(test_the_order_never_wraps_to_nothing_asked);
+    RUN_TEST(test_a_question_that_cannot_be_sent_is_tried_once_more);
     RUN_TEST(test_chaster_break_does_not_end_at_the_boxs_deadline);
     return UNITY_END();
 }

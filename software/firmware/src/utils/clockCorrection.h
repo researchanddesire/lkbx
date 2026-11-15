@@ -21,6 +21,9 @@ bool isWallClockSet();
 void beginNtpClockCorrectionWindow();
 bool recordNtpClockCorrection(const char* source);
 
+// Stores the deadline of a local timer that starts now. True only once the
+// deadline is in NVS: the caller must not lock on false (a zero or oversized
+// duration, or a write that did not take).
 bool saveLocalLockTimerDuration(uint64_t durationMs);
 bool processPendingLocalTimerClockCorrections();
 uint32_t localTimerCorrectionVersion();
