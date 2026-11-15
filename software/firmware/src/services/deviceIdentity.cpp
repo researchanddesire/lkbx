@@ -22,6 +22,7 @@
 #include "services/serverOnline.h"
 #include "services/settings.h"
 #include "utils/getEfuseMac.h"
+#include "utils/lastWillPolicy.h"
 #include "utils/trustedClock.h"
 
 namespace {
@@ -375,6 +376,44 @@ String sealCloudReport(const char* topic, lockbox::security::ReportKind kind,
     }
     ESP_LOGW(IDENTITY_TAG, "Could not seal a report; not sending it");
     return String();
+}
+
+String lastWillForConnection(const char* clientId,
+                             const char* firmwareProvenanceId,
+                             const String& plainWill) {
+    loadCommandGate();
+    const bool burned = hasBurnedKey();
+    struct timeval tv{};
+    lockboxGetTimeOfDay(&tv, nullptr);
+    const uint64_t timestamp = static_cast<uint64_t>(tv.tv_sec) * 1000 +
+                               static_cast<uint64_t>(tv.tv_usec) / 1000;
+    uint8_t iv[lockbox::security::COMMAND_IV_BYTES];
+    uint8_t nonce[lockbox::security::REPORT_NONCE_BYTES];
+    esp_fill_random(iv, sizeof(iv));
+    esp_fill_random(nonce, sizeof(nonce));
+
+    std::lock_guard<std::mutex> lock(identityMutex);
+    const bool holdsKey = commandGateLoaded && commandGate.hasKey();
+    switch (lastWillKind(holdsKey,
+                         lockbox::security::mayReportPlain(
+                             commandGateLoaded, burned, everSigned,
+                             commandGate.hasKey()),
+                         timestamp)) {
+        case LastWill::SEALED: {
+            std::string sealed;
+            if (commandGate.sealLastWill(clientId, firmwareProvenanceId,
+                                         timestamp, iv, nonce, sealed)) {
+                return String(sealed.c_str());
+            }
+            ESP_LOGW(IDENTITY_TAG, "Could not seal the last will; connecting without one");
+            return String();
+        }
+        case LastWill::PLAIN:
+            return plainWill;
+        case LastWill::NONE:
+        default:
+            return String();
+    }
 }
 
 bool runningImageConfirmed() {

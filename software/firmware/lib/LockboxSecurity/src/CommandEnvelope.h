@@ -33,6 +33,9 @@ constexpr std::uint64_t COMMAND_MAX_AGE_MS = 10ULL * 60 * 1000;
 constexpr std::size_t COMMAND_REPLAY_STATE_BYTES =
     8 + 2 + COMMAND_REPLAY_RING * COMMAND_REPLAY_PREFIX;
 constexpr std::size_t REPORT_NONCE_BYTES = 16;
+// A sealed last will carries a plausible clock or the dashboard refuses it:
+// 2024-01-01T00:00:00Z, in milliseconds.
+constexpr std::uint64_t LAST_WILL_EARLIEST_MS = 1704067200000ULL;
 
 enum class CommandGateResult {
     plain,          // No key is held: the frame is today's plain JSON.
@@ -56,6 +59,22 @@ enum class ReportKind { state, log };
 
 inline const char* reportKindText(ReportKind kind) {
     return kind == ReportKind::log ? "log" : "state";
+}
+
+// The report inside a sealed last will. The dashboard records the disconnect
+// under the will's nonce, so the report carries the same text as its id.
+// `createdAt` is 0: the box cannot know when the connection will drop.
+inline std::string lastWillReport(const std::string& id,
+                                  const char* firmwareProvenanceId) {
+    JsonDocument document;
+    document["id"] = id;
+    document["state"] = "disconnected";
+    document["createdAt"] = 0;
+    document["firmwareProvenanceId"] =
+        firmwareProvenanceId ? firmwareProvenanceId : "";
+    std::string report;
+    serializeJson(document, report);
+    return report;
 }
 
 inline bool commandGateAccepted(CommandGateResult result) {
@@ -312,6 +331,55 @@ class CommandGate {
             document["k"] = reportKindText(kind);
             document["n"] = nonceText;
         }
+        document["iv"] = ivText;
+        document["ct"] = cipherText;
+        document["sig"] = base64UrlEncode(signature, sizeof(signature));
+        serializeJson(document, envelope);
+        return true;
+    }
+
+    // Seals the last will the broker publishes when a connection drops:
+    //
+    //   {"v":4,"k":"will","ts","n","iv","ct","sig"}
+    //   signed  r4.{ts}.{clientId}.will.{n}.{iv}.{ct}
+    //
+    // The v3 report seal with a third binding: the MQTT client id, exactly as
+    // sent to the broker, because that is the topic a will is published on.
+    // `ct` holds lastWillReport(n, firmwareProvenanceId). `iv` and `nonce`
+    // must be fresh random bytes for every connection attempt, and
+    // `timestamp` the time the will is built: the dashboard does not compare
+    // it with the time the will arrives, which can be days later.
+    bool sealLastWill(const char* clientId, const char* firmwareProvenanceId,
+                      std::uint64_t timestamp,
+                      const std::uint8_t (&iv)[COMMAND_IV_BYTES],
+                      const std::uint8_t (&nonce)[REPORT_NONCE_BYTES],
+                      std::string& envelope) const {
+        envelope.clear();
+        if (!hasKey_ || !clientId || !*clientId ||
+            timestamp < LAST_WILL_EARLIEST_MS ||
+            timestamp > COMMAND_MAX_TIMESTAMP) return false;
+        const std::string nonceText = base64UrlEncode(nonce, sizeof(nonce));
+        const std::string report = lastWillReport(nonceText, firmwareProvenanceId);
+        const std::size_t padding = COMMAND_AES_BLOCK - report.size() % COMMAND_AES_BLOCK;
+        std::vector<std::uint8_t> plain(report.begin(), report.end());
+        plain.insert(plain.end(), padding, static_cast<std::uint8_t>(padding));
+        std::vector<std::uint8_t> cipher(plain.size());
+        if (!aes256CbcEncrypt(reportEncKey_, iv, plain.data(), plain.size(),
+                              cipher.data())) return false;
+        const std::string ivText = base64UrlEncode(iv, sizeof(iv));
+        const std::string cipherText = base64UrlEncode(cipher.data(), cipher.size());
+        const std::string message = "r4." + std::to_string(timestamp) + "." +
+                                    clientId + ".will." + nonceText + "." +
+                                    ivText + "." + cipherText;
+        std::uint8_t signature[HMAC_SHA256_BYTES];
+        if (!hmacSha256(reportMacKey_, sizeof(reportMacKey_),
+                        reinterpret_cast<const std::uint8_t*>(message.data()),
+                        message.size(), signature)) return false;
+        JsonDocument document;
+        document["v"] = 4;
+        document["k"] = "will";
+        document["ts"] = timestamp;
+        document["n"] = nonceText;
         document["iv"] = ivText;
         document["ct"] = cipherText;
         document["sig"] = base64UrlEncode(signature, sizeof(signature));

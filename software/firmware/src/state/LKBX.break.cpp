@@ -7,6 +7,7 @@
 #include "services/serverOnline.h"
 #include "ui/Animation.h"
 #include "utils/breakTiming.h"
+#include "utils/chasterAsk.h"
 #include "utils/psram.h"
 
 static constexpr int kBreakCanvasWidth = 170;  // Display::WIDTH - 150
@@ -46,6 +47,9 @@ void startBreakTimerTask(void *pvParameters) {
     uint64_t breakMax = 0;
     uint64_t lockEnd = 0;
     int64_t timeRemaining = 0;
+    // On a Chaster session the box's own deadline ends nothing: Chaster, the
+    // keyholder or the wearer ends the break.
+    bool chasterControlled = false;
 
     // Check if we're resuming from a previous break (after wake-up from sleep)
     // or starting a new break.
@@ -57,6 +61,8 @@ void startBreakTimerTask(void *pvParameters) {
             preferences.getULong64(Keys::Session::breakStart, 0);
         breakMax = preferences.getULong64(Keys::Session::breakMax, 0);
         lockEnd = preferences.getULong64(Keys::Session::lockEnd, 0);
+        chasterControlled =
+            preferences.getBool(Keys::Session::chasterControlled, false);
 
         // Resume a previously-started break regardless of whether its window has
         // already elapsed. If it's late, timeRemaining goes negative below and the
@@ -94,7 +100,8 @@ void startBreakTimerTask(void *pvParameters) {
 
     // Expiry ends a normal break by re-locking into Ready to unlock. A pending
     // dashboard break-end request still waits for the wearer's acceptance.
-    if (isTimeSynced && isLockWindowOver(lockEnd, currentDatetimeMs) &&
+    if (breakEndsAtLockWindow(chasterControlled, isTimeSynced, lockEnd,
+                              currentDatetimeMs) &&
         plkbx->sm->process_event(TimerExpired{})) {
         ESP_LOGW(BREAK_TIMER_TAG,
                  "Lock window ended (lockEnd=%llu) -- ready to unlock",
@@ -126,6 +133,8 @@ void startBreakTimerTask(void *pvParameters) {
             breakMax = preferences.getULong64(Keys::Session::breakMax, 0);
             //            breakMax = 1000 * 30;  // 30 seconds.
             lockEnd = preferences.getULong64(Keys::Session::lockEnd, 0);
+            chasterControlled =
+                preferences.getBool(Keys::Session::chasterControlled, false);
             const bool requested = preferences.getString(Keys::Session::lockState, "") == Str::Protocol::BREAK_ENDING;
             String requestedBy = preferences.getString(Keys::Session::requestedBy, "");
             if (requestedBy.isEmpty()) requestedBy = "Your dashboard";
@@ -146,7 +155,8 @@ void startBreakTimerTask(void *pvParameters) {
             endRequested = requested;
         }
 
-        if (isTimeSynced && isLockWindowOver(lockEnd, currentDatetimeMs) &&
+        if (breakEndsAtLockWindow(chasterControlled, isTimeSynced, lockEnd,
+                                  currentDatetimeMs) &&
             plkbx->sm->process_event(TimerExpired{})) {
             ESP_LOGW(BREAK_TIMER_TAG,
                      "Lock window ended mid-break (lockEnd=%llu) -- ready to unlock",
@@ -341,6 +351,13 @@ void LKBX::startBreakPreflight() const {
             return;
         case BreakPreflight::ALLOWED:
             break;
+    }
+
+    // Chaster decides a break on a session it controls. The box's own rules
+    // passed, so ask the dashboard; it opens only on a granted answer.
+    if (isChasterSession()) {
+        sm->process_event(Error{.error = ErrorT::ASK_CHASTER});
+        return;
     }
 
     sm->process_event(Break{});

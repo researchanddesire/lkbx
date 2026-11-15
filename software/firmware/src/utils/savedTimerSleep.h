@@ -23,9 +23,12 @@ inline uint64_t savedTimerSleepDelayMs() {
          preferences.getBool(Keys::Base::isLockTimer, false));
     uint64_t deadline = preferences.getULong64(Keys::Base::emergencyEnd, 0);
     preferences.end();
+    // The emergency countdown is always shown.
+    bool timerDisplayed = true;
     if (!emergency) {
         preferences.begin(Keys::session);
         deadline = preferences.getULong64(Keys::Session::lockEnd, 0);
+        timerDisplayed = preferences.getBool(Keys::Session::isTimeDisp, true);
         preferences.end();
     }
     xSemaphoreGive(preferencesMutex);
@@ -34,7 +37,9 @@ inline uint64_t savedTimerSleepDelayMs() {
     lockboxGetTimeOfDay(&tv, nullptr);
     const uint64_t now = static_cast<uint64_t>(tv.tv_sec) * 1000ULL +
                          static_cast<uint64_t>(tv.tv_usec) / 1000ULL;
-    return timerSleepDelayMs(active, deadline, now, PSEUDO_SLEEP_TIMEOUT);
+    return timerSleepDelayMs(
+        active, deadline, now,
+        timerWakeMarginMs(timerDisplayed, PSEUDO_SLEEP_TIMEOUT));
 }
 
 #endif

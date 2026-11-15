@@ -6,6 +6,8 @@
 
 #include <boost/sml.hpp>
 
+#include <atomic>
+
 #include "../constants/LogTags.h"
 #include "../constants/Pins.h"
 #include "../services/ina.h"
@@ -28,6 +30,7 @@
 #include "structs/Action.h"
 #include "structs/MenuItem.h"
 #include "utils/breakTiming.h"
+#include "utils/chasterAsk.h"
 #include "utils/getPairingCode.h"
 #include "utils/lockedReport.h"
 #include "utils/normalizeOption.h"
@@ -65,6 +68,24 @@ class LKBX {
     void drawBreakCooldown(bool initial);
     void checkBreakCooldown();
     uint32_t breakCooldownUpdatedMs = 0;
+    // A Chaster session asks the dashboard before a break or an unlock.
+    void startChasterAsk();
+    static void chasterAskTask(void *pvParameters);
+    void drawChasterNotice(const char *title, const String &body,
+                           const Action &right);
+    void drawAskAnswer();
+    // Only the newest question may answer; an older task's result is dropped.
+    std::atomic<uint32_t> askGeneration{0};
+    // What the box is asking, set by the transition into "locked.asking".
+    AskAction askAction = AskAction::UNLOCK;
+    // The answer and why Chaster refused, as the dashboard worded it. Written
+    // by the asking task just before it reports the answer, read by the page
+    // it leads to.
+    AskOutcome askOutcome = AskOutcome::UNANSWERED;
+    char askReason[kAskReasonBytes] = "";
+    // Which heading the held-session page was last drawn with, so a freeze
+    // that turns into an unlock hold (or back) repaints it.
+    volatile bool heldPageShowsWaiting = false;
     void checkOfferedLock();
     uint32_t offerStartedMs = 0;
     String offerSessionId;
@@ -548,7 +569,23 @@ class LKBX {
                     &TaskHandles::syncClock, Tasks::syncClock.core);
             };
 
-            auto timerNearExpiry = []() { return savedTimerSleepDelayMs() == 1; };
+            // With a hidden timer the Sleep item must behave the same at any
+            // time, or it would say the end is near.
+            auto sleepReturnsToCountdown = []() {
+                return sleepReturnsToTimer(isTimerDisplayed(), isFrozen(),
+                                           savedTimerSleepDelayMs() == 1);
+            };
+
+            // A Chaster session asks the dashboard before it opens.
+            auto setAskUnlock = [](LKBX &o) { o.askAction = AskAction::UNLOCK; };
+            auto setAskBreak = [](LKBX &o) { o.askAction = AskAction::BREAK; };
+            auto drawAskingChaster = [](LKBX &o) {
+                o.drawChasterNotice(Str::Screen::ASKING_CHASTER_TITLE,
+                                    Str::Screen::ASKING_CHASTER_DESC,
+                                    Action{.visible = false});
+            };
+            auto startChasterAsk = [](LKBX &o) { o.startChasterAsk(); };
+            auto drawAskAnswer = [](LKBX &o) { o.drawAskAnswer(); };
             auto deepSleep = [](LKBX &o) {
                 enterSleep(savedTimerSleepDelayMs(), [&o]() {
                     o.sendMessage(Str::Protocol::DISCONNECTED);
@@ -756,8 +793,6 @@ class LKBX {
                 "pairing.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
                 "pairing.wifi"_s + buttonPress = "home.settings"_s,
                 "pairing.wifi"_s + backPress = "home.settings"_s,
-                "pairing.wifi"_s + buttonPress[isOnline] = "pairing"_s,
-                "pairing.wifi"_s + buttonPress[isOffline] = "wmConfig.error"_s,
                 "pairing.wifi"_s + wifiConnected = "pairing"_s,
                 
                 "home.sleep"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
@@ -790,6 +825,7 @@ class LKBX {
                 "locking.preflight"_s + on_entry<_> / (startPreflight),
 #include "FrozenTransitions.inc"
 #include "TimerExpiryTransitions.inc"
+#include "ChasterAskTransitions.inc"
                 "locking.preflight"_s + done[isReadyToUnlock] / sendMessage(Str::Protocol::LOCKED) = "locked.ready"_s,
                 "locking.preflight"_s + done[isLockedTimer] / sendMessage(Str::Protocol::LOCKED) = "locked.timer"_s,
                 "locking.preflight"_s + done[isLocked] / sendMessage(Str::Protocol::LOCKED) = "locked"_s,
@@ -850,7 +886,8 @@ class LKBX {
                 "locked.timer"_s + forceUpdate = "update"_s,
 
                 "locked.ready"_s + on_entry<_> / (drawReadyToUnlock, startUnlockTimer),
-                "locked.ready"_s + buttonPress[acceptNaturalUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
+                // The Unlock button's rows are in ChasterAskTransitions.inc:
+                // a Chaster session asks first, any other unlocks.
                 "locked.ready"_s + backPress = "locked.ready.addTime"_s,
                 "locked.ready"_s + locktimer[!isReadyToUnlock] / switchToTimer = "locked.timer"_s,
                 "locked.ready"_s + lock / switchToLock = "locked"_s,
@@ -914,8 +951,6 @@ class LKBX {
                 "lockMenu.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
                 "lockMenu.wifi"_s + buttonPress = "lockMenu"_s,
                 "lockMenu.wifi"_s + backPress = "lockMenu"_s,
-                "lockMenu.wifi"_s + buttonPress[isOnline] = "lockMenu"_s,
-                "lockMenu.wifi"_s + buttonPress[isOffline] = "lockMenu"_s,
                 "lockMenu.wifi"_s + wifiConnected = "lockMenu"_s,
                 "lockMenu.wifi"_s + forceUpdate = "update"_s,
 
@@ -923,7 +958,7 @@ class LKBX {
                 "lockMenu.sleep"_s + on_entry<_> / (drawSleepQR),
                 // Keep the timer alive instead of spending its last seconds
                 // rebooting through preflight after a short sleep.
-                "lockMenu.sleep"_s + buttonPress[!isFrozen && timerNearExpiry] = "locked.timer"_s,
+                "lockMenu.sleep"_s + buttonPress[sleepReturnsToCountdown] = "locked.timer"_s,
                 "lockMenu.sleep"_s + buttonPress / deepSleep = "lockMenu"_s,
                 "lockMenu.sleep"_s + backPress = "lockMenu"_s,
                 "lockMenu.sleep"_s + lock / (switchToLock) = "locking"_s,
@@ -954,8 +989,6 @@ class LKBX {
                 "emergency.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
                 "emergency.wifi"_s + buttonPress = "emergency.blocked"_s,
                 "emergency.wifi"_s + backPress = "emergency.blocked"_s,
-                "emergency.wifi"_s + buttonPress[isOnline] = "emergency.blocked"_s,
-                "emergency.wifi"_s + buttonPress[isOffline] = "emergency.blocked"_s,
                 "emergency.wifi"_s + wifiConnected = "emergency.blocked"_s,
                 "emergency.wifi"_s + unlock / (clearEBlock, clearLocalPlay, unlockAction) = "home"_s,
                 "emergency.wifi"_s + lock / (clearEBlock, clearLocalPlay, lockAction) = "locking"_s,
