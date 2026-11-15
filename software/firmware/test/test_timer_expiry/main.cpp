@@ -10,6 +10,7 @@ struct Context {
     bool ready = true;
     bool acceptance = true;
     bool breakEnding = false;
+    bool chaster = false;
     int unlocks = 0;
     int locks = 0;
     int clearedBreaks = 0;
@@ -22,6 +23,7 @@ struct Fixture {
             return c.local && c.ready && c.acceptance;
         };
         auto isBreakEndRequested = [](Context& c) { return c.breakEnding; };
+        auto isChasterSession = [](Context& c) { return c.chaster; };
         auto clearLocalPlay = [](Context& c) { c.local = false; };
         auto clearActiveBreak = [](Context& c) { ++c.clearedBreaks; };
         auto unlockAction = [](Context& c) { ++c.unlocks; };
@@ -101,6 +103,33 @@ void test_local_break_expiry_does_not_relock() {
     TEST_ASSERT_EQUAL_INT(0, c.locks);
 }
 
+void test_managed_break_relocks_after_lock_window() {
+    Context c;
+    c.local = false;
+    Machine machine{c};
+    machine.set_current_states("locked.break"_s);
+    machine.process_event(TimerExpired{});
+    TEST_ASSERT_TRUE(machine.is("locking"_s));
+    TEST_ASSERT_EQUAL_INT(1, c.locks);
+    TEST_ASSERT_EQUAL_INT(1, c.clearedBreaks);
+}
+
+// A dashboard break on a Chaster session opened from Ready to unlock, where
+// the unlock timer keeps sending TimerExpired, stays open.
+void test_chaster_break_outlives_lock_window() {
+    Context c;
+    c.local = false;
+    c.chaster = true;
+    Machine machine{c};
+    machine.set_current_states("locked.break"_s);
+    machine.process_event(TimerExpired{});
+    machine.process_event(TimerExpired{});
+    TEST_ASSERT_TRUE(machine.is("locked.break"_s));
+    TEST_ASSERT_EQUAL_INT(0, c.locks);
+    TEST_ASSERT_EQUAL_INT(0, c.unlocks);
+    TEST_ASSERT_EQUAL_INT(0, c.clearedBreaks);
+}
+
 void test_ineligible_timer_does_not_move_motor() {
     Context c;
     c.ready = false;
@@ -127,6 +156,8 @@ int main() {
     RUN_TEST(test_managed_timer_waits_for_wearer);
     RUN_TEST(test_restored_local_timer_releases_from_ready_pages);
     RUN_TEST(test_local_break_expiry_does_not_relock);
+    RUN_TEST(test_managed_break_relocks_after_lock_window);
+    RUN_TEST(test_chaster_break_outlives_lock_window);
     RUN_TEST(test_ineligible_timer_does_not_move_motor);
     RUN_TEST(test_session_change_before_acceptance_prevents_release);
     return UNITY_END();
