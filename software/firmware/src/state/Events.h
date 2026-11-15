@@ -69,6 +69,13 @@ struct TimerExpired {};
 struct LockOffered {};
 struct Decline {};
 struct Break {};
+// A Chaster session asks the dashboard before it opens for a break or unlocks
+// at the end of its timer (utils/chasterAsk.h). AskChaster starts the question
+// for a break; the three answers come from the task that asked.
+struct AskChaster {};
+struct AskGranted {};
+struct AskRefused {};
+struct AskUnanswered {};
 struct ForceUpdate {};
 struct Recalibrate {};
 struct WiFiSync {
@@ -100,6 +107,10 @@ static auto timerExpired = sml::event<TimerExpired>;
 static auto lockOffered = sml::event<LockOffered>;
 static auto decline = sml::event<Decline>;
 static auto breakE = sml::event<Break>;
+static auto askChaster = sml::event<AskChaster>;
+static auto askGranted = sml::event<AskGranted>;
+static auto askRefused = sml::event<AskRefused>;
+static auto askUnanswered = sml::event<AskUnanswered>;
 static auto wifi = sml::event<WiFiSync>;
 static auto encoder = sml::event<EncoderValue>;
 

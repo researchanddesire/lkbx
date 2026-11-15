@@ -100,7 +100,8 @@ inline bool sessionResponse(JsonVariantConst value, bool allowPending = false,
         if (!boundedNumber(value[key])) return false;
     }
     for (const auto* key : {"isBreak", "isEUnlock", "isTestLock", "isTimeDisp",
-                            "displayElapsedTime", "breakKeyholderOnly"}) {
+                            "displayElapsedTime", "breakKeyholderOnly",
+                            "chasterControlled"}) {
         if (!value[key].isNull() && !value[key].is<bool>()) return false;
     }
     return true;

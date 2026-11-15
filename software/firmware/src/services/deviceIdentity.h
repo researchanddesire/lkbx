@@ -33,6 +33,15 @@ bool openCloudCommand(const char* topic, const char* frame, size_t size,
 String sealCloudReport(const char* topic, lockbox::security::ReportKind kind,
                        const String& report);
 
+// The last will for a connection made as `clientId`: the v4 "will" seal for a
+// box that holds a command key, `plainWill` unchanged for a box that has never
+// signed, and empty when the connection must have no will (a box that signs
+// never registers a plain one). Every call uses a new nonce, IV and timestamp.
+// See utils/lastWill.h and utils/lastWillPolicy.h.
+String lastWillForConnection(const char* clientId,
+                             const char* firmwareProvenanceId,
+                             const String& plainWill);
+
 // The broker topic this boot speaks on: "v2/<device id>" after a v2 sign-in,
 // the MAC otherwise. Logs go to "<topic>/log", provenance to "<topic>/firmware".
 String cloudTopic();

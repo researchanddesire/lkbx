@@ -454,8 +454,6 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     plkbx->initNeedsPairing = !response.isPaired;
     plkbx->initPairingStatusKnown = response.pairingStatusKnown;
 
-    static String lwt = createStateMessage(Str::Protocol::DISCONNECTED, false);
-
     // RAD BLE v1 remains available after provisioning. LKBX has PSRAM and the
     // MQTT client is now expected to coexist with the peripheral service.
     if (NimBLEDevice::isInitialized())
@@ -467,8 +465,9 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     mqtt_cfg.client_id = response.clientId.c_str();
     mqtt_cfg.username = response.username.c_str();
     mqtt_cfg.password = response.password.c_str();
-    mqtt_cfg.lwt_topic = response.clientId.c_str();
-    mqtt_cfg.lwt_msg = lwt.c_str();
+    // The will itself is built before every connection attempt, sealed and
+    // unique to that connection (MQTT_EVENT_BEFORE_CONNECT, utils/lastWill.h).
+    // The client is created without one.
     mqtt_cfg.lwt_qos = 2;
     mqtt_cfg.lwt_retain = true;
     mqtt_cfg.keepalive = 15;
@@ -483,6 +482,8 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     mqtt_cfg.task_stack = 10 * 1024;
 
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
+    // The broker names the will by the client id, as it always has.
+    rememberMqttSettings(mqtt_cfg, response.clientId.c_str());
     bool mqttStarted = false;
     if (mqttClient &&
         esp_mqtt_client_register_event(mqttClient, MQTT_EVENT_ANY,

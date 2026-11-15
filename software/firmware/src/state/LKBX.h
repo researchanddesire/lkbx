@@ -6,6 +6,8 @@
 
 #include <boost/sml.hpp>
 
+#include <atomic>
+
 #include "../constants/LogTags.h"
 #include "../constants/Pins.h"
 #include "../services/ina.h"
@@ -28,6 +30,7 @@
 #include "structs/Action.h"
 #include "structs/MenuItem.h"
 #include "utils/breakTiming.h"
+#include "utils/chasterAsk.h"
 #include "utils/getPairingCode.h"
 #include "utils/lockedReport.h"
 #include "utils/normalizeOption.h"
@@ -65,6 +68,19 @@ class LKBX {
     void drawBreakCooldown(bool initial);
     void checkBreakCooldown();
     uint32_t breakCooldownUpdatedMs = 0;
+    // A Chaster session asks the dashboard before a break or an unlock.
+    void startChasterAsk(AskAction action);
+    static void chasterAskTask(void *pvParameters);
+    void drawChasterNotice(const char *title, const String &body,
+                           const Action &right, const Action &left);
+    // Only the newest question may answer; an older task's result is dropped.
+    std::atomic<uint32_t> askGeneration{0};
+    // Why Chaster refused, as the dashboard worded it. Written by the asking
+    // task just before it reports the answer, read by the page it leads to.
+    char askReason[kAskReasonBytes] = "";
+    // Which heading the held-session page was last drawn with, so a freeze
+    // that turns into an unlock hold (or back) repaints it.
+    volatile bool heldPageShowsWaiting = false;
     void checkOfferedLock();
     uint32_t offerStartedMs = 0;
     String offerSessionId;
@@ -548,7 +564,52 @@ class LKBX {
                     &TaskHandles::syncClock, Tasks::syncClock.core);
             };
 
-            auto timerNearExpiry = []() { return savedTimerSleepDelayMs() == 1; };
+            // With a hidden timer the Sleep item must behave the same at any
+            // time, or it would say the end is near.
+            auto sleepReturnsToCountdown = []() {
+                return sleepReturnsToTimer(isTimerDisplayed(), isFrozen(),
+                                           savedTimerSleepDelayMs() == 1);
+            };
+
+            // A Chaster session asks the dashboard before it opens.
+            auto drawAskingChaster = [](LKBX &o) {
+                o.drawChasterNotice(Str::Screen::ASKING_CHASTER_TITLE,
+                                    Str::Screen::ASKING_CHASTER_DESC,
+                                    Action{.visible = false},
+                                    Action{.visible = false});
+            };
+            auto startUnlockAsk = [](LKBX &o) {
+                o.startChasterAsk(AskAction::UNLOCK);
+            };
+            auto startBreakAsk = [](LKBX &o) {
+                o.startChasterAsk(AskAction::BREAK);
+            };
+            auto drawUnlockRefused = [](LKBX &o) {
+                const String reason = o.askReason[0] != '\0'
+                    ? String(o.askReason)
+                    : String(Str::Screen::UNLOCK_REFUSED_DEFAULT);
+                o.drawChasterNotice(Str::Screen::UNLOCK_REFUSED_TITLE,
+                                    reason + Str::Screen::UNLOCK_REFUSED_SUFFIX,
+                                    {Str::Action::ASK_AGAIN}, {Str::Menu::MENU});
+            };
+            auto drawUnlockNoAnswer = [](LKBX &o) {
+                o.drawChasterNotice(Str::Screen::CHASTER_NO_ANSWER_TITLE,
+                                    Str::Screen::UNLOCK_NO_ANSWER_DESC,
+                                    {Str::Action::ASK_AGAIN}, {Str::Menu::MENU});
+            };
+            auto drawBreakRefused = [](LKBX &o) {
+                const String reason = o.askReason[0] != '\0'
+                    ? String(o.askReason)
+                    : String(Str::Screen::BREAK_REFUSED_DEFAULT);
+                o.drawChasterNotice(Str::Screen::BREAK_REFUSED_TITLE,
+                                    reason + Str::Screen::BREAK_REFUSED_SUFFIX,
+                                    continueAction, backAction);
+            };
+            auto drawBreakNoAnswer = [](LKBX &o) {
+                o.drawChasterNotice(Str::Screen::CHASTER_NO_ANSWER_TITLE,
+                                    Str::Screen::BREAK_NO_ANSWER_DESC,
+                                    {Str::Action::RETRY}, backAction);
+            };
             auto deepSleep = [](LKBX &o) {
                 enterSleep(savedTimerSleepDelayMs(), [&o]() {
                     o.sendMessage(Str::Protocol::DISCONNECTED);
@@ -790,6 +851,7 @@ class LKBX {
                 "locking.preflight"_s + on_entry<_> / (startPreflight),
 #include "FrozenTransitions.inc"
 #include "TimerExpiryTransitions.inc"
+#include "ChasterAskTransitions.inc"
                 "locking.preflight"_s + done[isReadyToUnlock] / sendMessage(Str::Protocol::LOCKED) = "locked.ready"_s,
                 "locking.preflight"_s + done[isLockedTimer] / sendMessage(Str::Protocol::LOCKED) = "locked.timer"_s,
                 "locking.preflight"_s + done[isLocked] / sendMessage(Str::Protocol::LOCKED) = "locked"_s,
@@ -850,7 +912,8 @@ class LKBX {
                 "locked.timer"_s + forceUpdate = "update"_s,
 
                 "locked.ready"_s + on_entry<_> / (drawReadyToUnlock, startUnlockTimer),
-                "locked.ready"_s + buttonPress[acceptNaturalUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
+                // The Unlock button's rows are in ChasterAskTransitions.inc:
+                // a Chaster session asks first, any other unlocks.
                 "locked.ready"_s + backPress = "locked.ready.addTime"_s,
                 "locked.ready"_s + locktimer[!isReadyToUnlock] / switchToTimer = "locked.timer"_s,
                 "locked.ready"_s + lock / switchToLock = "locked"_s,
@@ -923,7 +986,7 @@ class LKBX {
                 "lockMenu.sleep"_s + on_entry<_> / (drawSleepQR),
                 // Keep the timer alive instead of spending its last seconds
                 // rebooting through preflight after a short sleep.
-                "lockMenu.sleep"_s + buttonPress[!isFrozen && timerNearExpiry] = "locked.timer"_s,
+                "lockMenu.sleep"_s + buttonPress[sleepReturnsToCountdown] = "locked.timer"_s,
                 "lockMenu.sleep"_s + buttonPress / deepSleep = "lockMenu"_s,
                 "lockMenu.sleep"_s + backPress = "lockMenu"_s,
                 "lockMenu.sleep"_s + lock / (switchToLock) = "locking"_s,
@@ -969,6 +1032,9 @@ class LKBX {
                 "wmConfig"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
                 "wmConfig"_s + locktimer / (clearLocalPlay, lockTimerAction) = "locking"_s,
                 "wmConfig"_s + wifiConnected = "home"_s,
+                // Reached from the lock menu too: a break the dashboard
+                // starts opens a locked box from this page as well.
+                "wmConfig"_s + breakE[isLocked] = "locked.break"_s,
                 "wmConfig"_s + forceUpdate = "update"_s,
 
                 "wmConfig.error"_s + on_entry<_> / (drawCouldNotConnectQR),

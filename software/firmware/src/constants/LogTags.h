@@ -11,6 +11,7 @@ inline constexpr const char* OTA_TAG = "OTA";
 inline constexpr const char* TASKDEBUG_TAG = "TASKDEBUG";
 inline constexpr const char* BREAK_TIMER_TAG = "BreakTimer";
 inline constexpr const char* SYNC_STATE_TAG = "SyncState";
+inline constexpr const char* CHASTER_ASK_TAG = "ChasterAsk";
 inline constexpr const char* WIFI_CONNECT_TAG = "WiFiConnect";
 inline constexpr const char* NIMBLE_TAG = "NimBLE";
 inline constexpr const char* PAIRING_CHECK_TAG = "PairingCheck";

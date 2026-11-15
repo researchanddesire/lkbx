@@ -91,8 +91,30 @@ without a key, and refuses plain reports for a hardware-bound device. A box
 that has ever held a command key, or has a burned key, never reports in plain
 JSON: a report it cannot seal is dropped, and so is any report sent before the
 stored key has loaded, and a LOCKED report stays pending until it can be sealed. The
-retained `/firmware` provenance and the last will stay plain; neither carries
-session data.
+retained `/firmware` provenance stays plain; it carries no session data.
+
+### Last will
+
+The broker publishes a client's last will on its client id when the connection
+drops. The box builds a new one before every connection attempt, including the
+MQTT client's own reconnects, so each disconnect is recorded once.
+
+| Box | Will | Signed text |
+|-----|------|-------------|
+| Holds a command key (keyed v1, v2) | `{"v":4,"k":"will","ts","n","iv","ct","sig"}` | `r4.{ts}.{clientId}.will.{n}.{iv}.{ct}` |
+| Never signed | `{"id","state":"disconnected","createdAt":0,"firmwareProvenanceId"}` | none |
+
+It is the v3 report seal with a third binding: the MQTT client id, exactly as
+sent to the broker, instead of the device id, with prefix `r4.`, version 4 and
+kind `will`. The keys are the two report keys. `ct` is AES-256-CBC with PKCS#7
+over `{"id":"{n}","state":"disconnected","createdAt":0,"firmwareProvenanceId"}`;
+`n` and `iv` are 16 fresh random bytes each and `ts` is the time the will is
+built. The dashboard does not compare `ts` with the time of arrival, which can
+be days later, but refuses one before 2024. A box that signs never registers a
+plain will: when it holds no key yet, or its clock was never set, it connects
+without one. `CommandGate::sealLastWill` builds the seal, and `buildLastWill`
+in `src/utils/lastWill.h` is the one place that chooses the will.
+`test/test_command_envelope` holds the vector shared with the dashboard.
 
 ## Physical access
 

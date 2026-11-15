@@ -230,6 +230,16 @@ namespace Tasks {
         .core = 1,
     };
 
+    constexpr TaskParams chasterAsk = {
+        .name = "chasterAsk",
+        // Builds one small request and parses one small answer; the HTTPS
+        // itself runs on the HTTP worker. A granted answer then runs the
+        // unlock or break transition on this stack, as confirmClear does.
+        .stackSize = 10 * configMINIMAL_STACK_SIZE,
+        .priority = 1,
+        .core = 1,
+    };
+
     constexpr TaskParams syncClock = {
         .name = "syncClock",
         .stackSize = 6 * configMINIMAL_STACK_SIZE,

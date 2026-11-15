@@ -25,6 +25,7 @@ namespace Str {
         constexpr char DECLINE[] PROGMEM = "Decline";
         constexpr char DONT_SHOW_AGAIN[] PROGMEM = "Don't show again";
         constexpr char WIFI_SETUP[] PROGMEM = "Wi-Fi Setup";
+        constexpr char ASK_AGAIN[] PROGMEM = "Ask again";
     }  // namespace Action
 
     // ── QR / Loading screen text
@@ -213,6 +214,36 @@ namespace Str {
         // session. The optional reason is drawn beneath it.
         constexpr char FROZEN_BY_CHASTER[] PROGMEM = "Frozen by Chaster";
 
+        // A Chaster session asks the dashboard before it opens for a break or
+        // unlocks. These pages are shown while it asks and for each answer.
+        constexpr char ASKING_CHASTER_TITLE[] PROGMEM = "Asking Chaster";
+        constexpr char ASKING_CHASTER_DESC[] PROGMEM =
+            "Checking with Chaster first. The box stays locked while it "
+            "waits for the answer.";
+        constexpr char UNLOCK_REFUSED_TITLE[] PROGMEM = "Waiting for Chaster";
+        constexpr char UNLOCK_REFUSED_DEFAULT[] PROGMEM =
+            "Chaster does not allow unlocking yet.";
+        constexpr char UNLOCK_REFUSED_SUFFIX[] PROGMEM =
+            " The box stays locked until Chaster allows it.";
+        constexpr char BREAK_REFUSED_TITLE[] PROGMEM = "Break Refused";
+        constexpr char BREAK_REFUSED_DEFAULT[] PROGMEM =
+            "Chaster did not allow this break.";
+        constexpr char BREAK_REFUSED_SUFFIX[] PROGMEM =
+            " The box stays locked.";
+        constexpr char CHASTER_NO_ANSWER_TITLE[] PROGMEM =
+            "Can't Reach Chaster";
+        constexpr char UNLOCK_NO_ANSWER_DESC[] PROGMEM =
+            "Chaster decides when this lock opens, and the box could not "
+            "ask. It stays locked. Check Wi-Fi, then ask again.";
+        constexpr char BREAK_NO_ANSWER_DESC[] PROGMEM =
+            "Chaster decides breaks on this lock, and the box could not "
+            "ask. It stays locked. Check Wi-Fi, then try again.";
+        // Headings of the held-session page (see drawLockedActions).
+        constexpr char HELD_FROZEN[] PROGMEM = "FROZEN";
+        constexpr char HELD_FROZEN_BY[] PROGMEM = "by Chaster";
+        constexpr char HELD_WAITING[] PROGMEM = "WAITING";
+        constexpr char HELD_WAITING_FOR[] PROGMEM = "for Chaster";
+
         // Timer unit defaults
         constexpr char TIMER_DEFAULT[] PROGMEM = "10 minutes";
     }  // namespace Screen
@@ -336,6 +367,8 @@ namespace Str {
         constexpr char IS_FROZEN[] PROGMEM = "isFrozen";
         constexpr char FROZEN_AT[] PROGMEM = "frozenAt";
         constexpr char FREEZE_REASON[] PROGMEM = "freezeReason";
+        // True while Chaster controls the session (HTTP state + MQTT sync).
+        constexpr char CHASTER_CONTROLLED[] PROGMEM = "chasterControlled";
         constexpr char VERSION_KEY[] PROGMEM = "version";
         constexpr char MAJOR[] PROGMEM = "major";
         constexpr char MINOR[] PROGMEM = "minor";
@@ -375,6 +408,9 @@ namespace Str {
         constexpr char LOCKBOX_V2_AUTH[] PROGMEM = "/api/lockbox/v2/auth";
         constexpr char LOCKBOX_V2_IS_PAIRED[] PROGMEM = "/api/lockbox/v2/is-paired";
         constexpr char LOCKBOX_V2_STATE[] PROGMEM = "/api/lockbox/v2/state";
+        // A Chaster session asks here before it opens for a break or unlocks.
+        constexpr char LOCKBOX_ASK[] PROGMEM = "/api/lockbox/ask";
+        constexpr char LOCKBOX_V2_ASK[] PROGMEM = "/api/lockbox/v2/ask";
         constexpr char HEALTH_CHECK[] PROGMEM = "/api/health-check";
         constexpr char VERSION_JSON[] PROGMEM = "version.json";
         constexpr char FIRMWARE_BIN[] PROGMEM = "firmware.bin";

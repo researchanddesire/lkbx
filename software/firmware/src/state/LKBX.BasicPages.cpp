@@ -288,9 +288,16 @@ void LKBX::drawLockedActions() {
     // stock red the moment the animation hands over. Read it before taking the
     // display mutex, in the same order as drawLockAnimationTask.
     int hueShiftAmount = 0;
+    // A session Chaster would refuse to unlock is held through the freeze
+    // fields. It is waiting for Chaster, not frozen, and says so.
+    bool waitingForChaster = false;
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
         preferences.begin(Keys::base);
         hueShiftAmount = preferences.getInt(Keys::Base::hueShift, 0);
+        preferences.end();
+        preferences.begin(Keys::session);
+        waitingForChaster = isUnlockHoldReason(
+            preferences.getString(Keys::Session::freezeReason, "").c_str());
         preferences.end();
         xSemaphoreGive(preferencesMutex);
     }
@@ -298,7 +305,9 @@ void LKBX::drawLockedActions() {
     if (xSemaphoreTake(displayMutex, 100) == pdTRUE) {
         clearScreen(display);
         if (sm->is("locked.frozen"_s)) {
+            heldPageShowsWaiting = waitingForChaster;
             constexpr uint16_t ice = 0x5EFF;
+            constexpr uint16_t amber = 0xFD20;
             auto centered = [&](const char* text, const GFXfont* font,
                                 int baseline, uint16_t color) {
                 int16_t x, y;
@@ -309,13 +318,32 @@ void LKBX::drawLockedActions() {
                 display.setCursor((Display::WIDTH - w) / 2 - x, baseline);
                 display.print(text);
             };
-            centered("FROZEN", &FreeSansBold18pt7b, 62, ice);
-            centered("by Chaster", &FreeSans9pt7b, 84, Colors::white);
+            constexpr int cx = Display::WIDTH / 2;
+            constexpr int cy = 178;
+            if (waitingForChaster) {
+                centered(Str::Screen::HELD_WAITING, &FreeSansBold18pt7b, 62,
+                         amber);
+                centered(Str::Screen::HELD_WAITING_FOR, &FreeSans9pt7b, 84,
+                         Colors::white);
+                // An hourglass: the timer is done and Chaster is not.
+                for (int inset = 0; inset < 2; inset++) {
+                    display.drawTriangle(cx - 18 + inset, cy - 24, cx + 18 - inset,
+                                         cy - 24, cx, cy - inset, amber);
+                    display.drawTriangle(cx - 18 + inset, cy + 24, cx + 18 - inset,
+                                         cy + 24, cx, cy + inset, amber);
+                }
+                display.fillRect(cx - 22, cy - 28, 44, 3, amber);
+                display.fillRect(cx - 22, cy + 25, 44, 3, amber);
+                drawButtons(display, {Str::Menu::MENU}, Action{.visible = false});
+                xSemaphoreGive(displayMutex);
+                return;
+            }
+            centered(Str::Screen::HELD_FROZEN, &FreeSansBold18pt7b, 62, ice);
+            centered(Str::Screen::HELD_FROZEN_BY, &FreeSans9pt7b, 84,
+                     Colors::white);
 
             // A snowflake identifies the held session at a glance. The status
             // bar still shows the physical lock; avoid the ordinary red icon.
-            constexpr int cx = Display::WIDTH / 2;
-            constexpr int cy = 178;
             const int rays[][2] = {{0, -26}, {23, -13}, {23, 13},
                                   {0, 26}, {-23, 13}, {-23, -13}};
             auto stroke = [&](int x1, int y1, int x2, int y2) {
@@ -354,6 +382,21 @@ void LKBX::drawLockedActions() {
         drawButtons(display, {Str::Menu::MENU}, Action{.visible = false});
         xSemaphoreGive(displayMutex);
     }
+}
+
+// A plain page for the Chaster questions: a heading, a few lines and the two
+// buttons. It has no QR code, so the whole width is left for the reason.
+void LKBX::drawChasterNotice(const char* title, const String& body,
+                             const Action& right, const Action& left) {
+    if (xSemaphoreTake(displayMutex, 100) != pdTRUE) return;
+    clearScreen(display);
+    const int top = drawHeading(display, title);
+    display.setFont(&FreeSans9pt7b);
+    display.setTextColor(Colors::white);
+    wrapText(display, body.c_str(), Display::Padding::P2, top + 14,
+             Display::WIDTH - Display::Padding::P4);
+    drawButtons(display, right, left);
+    xSemaphoreGive(displayMutex);
 }
 
 void LKBX::drawReadyToUnlock() {

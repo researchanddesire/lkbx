@@ -19,6 +19,7 @@
 #include "services/wm.h"
 #include "state/Guard.h"
 #include "utils/breakTiming.h"
+#include "utils/chasterAsk.h"
 #include "utils/freezeState.h"
 #include "utils/generateId.h"
 #include "utils/lockReportReconcile.h"
@@ -185,6 +186,11 @@ struct SyncMessage {
     // Only the keyholder may start a break. Missing in older payloads, which
     // keeps the wearer's break button working as before.
     bool breakKeyholderOnly;
+    // Chaster controls the session: the box asks the dashboard before it
+    // opens for a break or unlocks. hasChasterControlled records whether the
+    // payload carried the field, as for the freeze fields above.
+    bool chasterControlled;
+    bool hasChasterControlled;
 };
 
 // Separate persisted metadata from physical transitions. Runtime callers use
@@ -226,6 +232,16 @@ inline void applyFreezeSync(const TJsonObject& document, SyncMessage& message) {
     message.hasFreezeReason = sync.hasReason;
     message.freezeReason =
         sync.reason != nullptr ? String(sync.reason) : String();
+}
+
+// Apply the Chaster-controlled flag of a parsed payload. Templated so the HTTP
+// (`data`) object and the MQTT sync document use one implementation.
+template <typename TJsonObject>
+inline void applyChasterSync(const TJsonObject& document, SyncMessage& message) {
+    bool controlled = false;
+    message.hasChasterControlled = chasterControlledFromJson(
+        document, Str::Json::CHASTER_CONTROLLED, controlled);
+    message.chasterControlled = controlled;
 }
 
 // Read the persisted freeze state. The caller must already hold
@@ -271,6 +287,11 @@ static SyncResult saveState(SyncMessage lockSession,
     const String savedId = preferences.getString(Keys::Session::sessionId, "");
     const String savedState = preferences.getString(Keys::Session::lockState, "");
     const bool sameSession = !savedId.isEmpty() && savedId == lockSession.sessionId;
+    // Read before the namespace is cleared for a new session below.
+    const bool chasterControlled = mergeChasterControlled(
+        savedId != lockSession.sessionId,
+        preferences.getBool(Keys::Session::chasterControlled, false),
+        lockSession.hasChasterControlled, lockSession.chasterControlled);
 
     // The box's own deadline for the session it holds. The server learns the
     // dates only from the box's reports; when the accept report was lost it
@@ -403,6 +424,7 @@ static SyncResult saveState(SyncMessage lockSession,
     preferences.putBool(Keys::Session::isBreak, lockSession.isBreak);
     preferences.putBool(Keys::Session::breakKeyholderOnly,
                         lockSession.breakKeyholderOnly);
+    preferences.putBool(Keys::Session::chasterControlled, chasterControlled);
     preferences.putBool(Keys::Session::isEUnlock, lockSession.isEUnlock);
     preferences.putBool(Keys::Session::isTimeDisp, lockSession.isTimeDisp);
     preferences.putBool(Keys::Session::displayElapsedTime,
@@ -573,6 +595,7 @@ static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
             lockSession[Str::Json::DISPLAY_ELAPSED_TIME].as<bool>(),
     };
     applyFreezeSync(lockSession, session);
+    applyChasterSync(lockSession, session);
     session.breakKeyholderOnly =
         lockSession[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
 

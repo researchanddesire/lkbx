@@ -19,6 +19,7 @@
 #include "structs/Version.h"
 #include "utils/dashboard.hpp"
 #include "utils/heldSession.h"
+#include "utils/lastWill.h"
 #include "utils/lockedReport.h"
 #include "utils/serverClear.h"
 
@@ -64,6 +65,13 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
     ParsedMessage message;
 
     switch (event->event_id) {
+        case MQTT_EVENT_BEFORE_CONNECT:
+            // Every connection attempt gets its own last will: a new seal for
+            // a box that signs, a new id otherwise. Built once per boot, the
+            // dashboard saw the second disconnect of a boot as a repeat of the
+            // first, and refused the plain will of a box that signs.
+            applyLastWill(buildLastWill(mqttClientId()));
+            break;
         case MQTT_EVENT_CONNECTED:
             hardwareHealthMqttConnected(mqtt_server);
             Serial.println(Str::Protocol::MQTT_CONNECTED);
@@ -209,6 +217,7 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                     .displayElapsedTime = doc[Str::Json::DISPLAY_ELAPSED_TIME].as<bool>(),
                 };
                 applyFreezeSync(doc, session);
+                applyChasterSync(doc, session);
                 session.breakKeyholderOnly =
                     doc[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
 

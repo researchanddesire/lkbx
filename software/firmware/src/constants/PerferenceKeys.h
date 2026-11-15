@@ -83,6 +83,9 @@ namespace Keys {
         constexpr char isFrozen[] = "isFrozen";
         constexpr char frozenAt[] = "frozenAt";
         constexpr char freezeReason[] = "freezeReason";
+        // Chaster controls this session: the box asks the dashboard before it
+        // opens for a break or unlocks. Cleared with the session.
+        constexpr char chasterControlled[] = "chaster";
     }
 }
 

@@ -273,6 +273,17 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
     bool isFrozen = false;
     uint64_t frozenAtMs = 0;
     char freezeReason[kFreezeReasonDisplayBytes] = "";
+    // The dashboard also holds a session Chaster would refuse to unlock, with
+    // a reason that says so. That page reads "waiting", and its reason line
+    // shows only the detail.
+    bool isUnlockHold = false;
+    auto readHeldReason = [&]() {
+        const String stored =
+            preferences.getString(Keys::Session::freezeReason, "");
+        isUnlockHold = isUnlockHoldReason(stored.c_str());
+        boundedFreezeReason(heldReasonLine(stored.c_str()), freezeReason,
+                            sizeof(freezeReason));
+    };
     uint32_t seenCorrectionVersion = UINT32_MAX;
     uint32_t seenFreezeVersion = freezeDisplayVersion();
     uint32_t refreshedAt = 0;
@@ -314,9 +325,7 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             preferences.getBool(Keys::Session::displayElapsedTime, false);
         isFrozen = preferences.getBool(Keys::Session::isFrozen, false);
         frozenAtMs = preferences.getULong64(Keys::Session::frozenAt, 0);
-        boundedFreezeReason(
-            preferences.getString(Keys::Session::freezeReason, "").c_str(),
-            freezeReason, sizeof(freezeReason));
+        readHeldReason();
         preferences.end();
 
         xSemaphoreGive(preferencesMutex);
@@ -354,10 +363,7 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
                         preferences.getBool(Keys::Session::isTimeDisp, true);
                     displayElapsedTime = preferences.getBool(
                         Keys::Session::displayElapsedTime, false);
-                    boundedFreezeReason(
-                        preferences.getString(Keys::Session::freezeReason, "")
-                            .c_str(),
-                        freezeReason, sizeof(freezeReason));
+                    readHeldReason();
                     preferences.end();
                     xSemaphoreGive(preferencesMutex);
                     seenCorrectionVersion = correctionVersion;
@@ -371,17 +377,6 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             }
         }
 
-        // Only the main timer pages reconcile automatically. Menus, break
-        // acceptance and emergency screens keep their focus until user input.
-        if (!isEmergencyBlocked &&
-            ((isFrozen && (plkbx->sm->is("locked.timer"_s) ||
-                           plkbx->sm->is("locked.ready"_s) ||
-                           plkbx->sm->is("locked.ready.addTime"_s))) ||
-             (!isFrozen && plkbx->sm->is("locked.frozen"_s)))) {
-            plkbx->sm->process_event(FreezeChange{});
-        }
-        if (!shouldDrawCountdown(plkbx)) lastFrozenDisplay.valid = false;
-
         struct timeval tv{};
         lockboxGetTimeOfDay(&tv, nullptr);
         currentDatetimeMs =
@@ -393,21 +388,47 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
         // unlock is unaffected.
         const bool freezeHolds =
             freezeHoldsCountdown(isFrozen) && !isEmergencyBlocked;
+        // Whether the hold has its own page. With a hidden timer an unlock
+        // hold stays off the screen until the deadline has passed: shown
+        // earlier, it would say the end is near. It holds all the same.
+        const bool freezeShown =
+            freezeHolds &&
+            holdShownOnScreen(true, isUnlockHold, isTimeDisp, isTimeSynced,
+                              lockEndDatetimeMs, currentDatetimeMs);
+
+        // Only the main timer pages reconcile automatically. Menus, break
+        // acceptance and emergency screens keep their focus until user input.
+        if (!isEmergencyBlocked &&
+            ((freezeShown && (plkbx->sm->is("locked.timer"_s) ||
+                              plkbx->sm->is("locked.ready"_s) ||
+                              plkbx->sm->is("locked.ready.addTime"_s))) ||
+             (!freezeShown && plkbx->sm->is("locked.frozen"_s)))) {
+            plkbx->sm->process_event(FreezeChange{});
+        }
+        // A freeze can turn into an unlock hold, or back, without leaving the
+        // page: repaint its heading. The repaint also redraws the band below.
+        if (freezeShown && plkbx->sm->is("locked.frozen"_s) &&
+            plkbx->heldPageShowsWaiting != isUnlockHold) {
+            plkbx->drawLockedActions();
+        }
+        if (!shouldDrawCountdown(plkbx)) lastFrozenDisplay.valid = false;
+
         // Only a visible timer with a server-supplied anchor may show a paused
         // value: the anchor is the same before and after a reboot, and a hidden
         // timer is never revealed.
         const bool freezeShowsTime =
-            freezeHolds && freezeShowsPausedTime(isTimeDisp, frozenAtMs);
+            freezeShown && freezeShowsPausedTime(isTimeDisp, frozenAtMs);
 
-        // ms remaining, held while frozen
+        // ms remaining, held while a freeze is shown
         const uint64_t remainingTimeMs =
-            freezeHolds ? frozenRemainingAtAnchor(frozenAtMs, lockEndDatetimeMs)
+            freezeShown ? frozenRemainingAtAnchor(frozenAtMs, lockEndDatetimeMs)
                         : (lockEndDatetimeMs > currentDatetimeMs
                                ? lockEndDatetimeMs - currentDatetimeMs
                                : 0);
 
-        // if there's less than 30 seconds remaining, then set "notIdle"
-        if (!freezeHolds && remainingTimeMs > 0 && remainingTimeMs < 30000) {
+        // Light the screen for the last 30 seconds of a visible countdown. A
+        // hidden timer stays dark: waking by itself would say the end is near.
+        if (wakesScreenNearExpiry(isTimeDisp, freezeHolds, remainingTimeMs)) {
             setNotIdle(Str::Input::UNLOCK_TIMER);
         }
 
@@ -441,7 +462,7 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             y = Display::HEIGHT - 24;
         }
 
-        if (freezeHolds) {
+        if (freezeShown) {
             // Keep the paused value and reason in their own 48-pixel band,
             // below the dedicated frozen heading and above the snowflake.
             y = 96;
@@ -509,7 +530,9 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
                 timeStr = Str::Screen::TIME_HIDDEN;
             }
 
-            if (remainingTimeMs > 365 * 24 * 60 * 60 * 1000ULL) {
+            // The smaller face is for a long visible countdown only: a hidden
+            // timer's page must look the same however much time is left.
+            if (isTimeDisp && remainingTimeMs > 365 * 24 * 60 * 60 * 1000ULL) {
                 timeRemainingCanvas.setFont(
                     &Workbench_Regular_VariableFont_BLED_SCAN16pt7b);
             } else {
@@ -537,15 +560,15 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             FrozenDisplay snapshot;
             snapshot.valid = true;
             snapshot.isEmergencyBlocked = isEmergencyBlocked;
-            snapshot.freezeHolds = freezeHolds;
+            snapshot.freezeHolds = freezeShown;
             snapshot.isTimeDisp = isTimeDisp;
             snapshot.displayElapsedTime = displayElapsedTime;
-            snapshot.remainingTimeMs = freezeHolds
+            snapshot.remainingTimeMs = freezeShown
                 ? frozenPausedDisplayMs(frozenAtMs, lockEndDatetimeMs,
                                         lockStartDatetimeMs, displayElapsedTime)
                 : remainingTimeMs;
             snapshot.counter = freezeDisplayVersion();
-            if (freezeHolds) {
+            if (freezeShown) {
                 strncpy(snapshot.reason, freezeReason,
                         sizeof(snapshot.reason) - 1);
             }

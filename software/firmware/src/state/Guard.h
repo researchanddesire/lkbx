@@ -10,6 +10,7 @@
 #include "services/serverOnline.h"
 #include "services/settings.h"
 #include "services/wm.h"
+#include "utils/chasterAsk.h"
 #include "utils/freezeState.h"
 
 static auto isOnline = []() { return WiFiClass::status() == WL_CONNECTED; };
@@ -137,22 +138,71 @@ static auto isLockedTimer = []() {
     return lockState && lockTimer;
 };
 
-// True while Chaster holds the lock session frozen. The freeze lives in the
-// session namespace, so it is only meaningful for a locked session. Used by the
-// state table to route a locked session into the explicit "locked.frozen" state
-// instead of "locked.timer"/"locked.ready": a held countdown never expires and
-// never reports ready-to-unlock, even after a reboot with a passed deadline.
+// True while the box shows a held session on its own page. Chaster holds a
+// session either with a freeze or, through the same fields, with an unlock
+// hold ("Chaster would refuse this unlock"). The freeze lives in the session
+// namespace, so it is only meaningful for a locked session. Used by the state
+// table to route a locked session into the explicit "locked.frozen" state
+// instead of "locked.timer"/"locked.ready".
+//
+// With a hidden timer an unlock hold is not shown before the box's own
+// deadline, because it would say the end is near (holdShownOnScreen). Whether
+// a session may open never depends on this guard: isReadyToUnlock and
+// acceptExpiredTimer read the stored flag, so a held countdown never expires
+// and never reports ready-to-unlock, even after a reboot with a passed
+// deadline.
 static auto isFrozen = []() {
     bool frozen = false;
+    bool isTimeDisp = true;
+    uint64_t lockEnd = 0;
+    String reason;
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
         preferences.begin(Keys::session);
         frozen = preferences.getBool(Keys::Session::isFrozen, false);
+        if (frozen) {
+            isTimeDisp = preferences.getBool(Keys::Session::isTimeDisp, true);
+            lockEnd = preferences.getULong64(Keys::Session::lockEnd, 0);
+            reason = preferences.getString(Keys::Session::freezeReason, "");
+        }
         preferences.end();
         xSemaphoreGive(preferencesMutex);
     }
 
     ESP_LOGD(GUARD_TAG, "isFrozen: %d", frozen);
-    return freezeHoldsCountdown(frozen);
+    if (!freezeHoldsCountdown(frozen)) return false;
+
+    struct timeval tv{};
+    lockboxGetTimeOfDay(&tv, nullptr);
+    const uint64_t now = uint64_t(tv.tv_sec) * 1000 + tv.tv_usec / 1000;
+    return holdShownOnScreen(true, isUnlockHoldReason(reason.c_str()),
+                             isTimeDisp, isTimeSynced, lockEnd, now);
+};
+
+// True while Chaster controls the session. Such a session asks the dashboard
+// before it opens for a break or unlocks at the end of its timer.
+static auto isChasterSession = []() {
+    bool chaster = false;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::session);
+        chaster = preferences.getBool(Keys::Session::chasterControlled, false);
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+
+    ESP_LOGD(GUARD_TAG, "isChasterSession: %d", chaster);
+    return chaster;
+};
+
+// False while the session hides its timer from the wearer.
+static auto isTimerDisplayed = []() {
+    bool displayed = true;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::session);
+        displayed = preferences.getBool(Keys::Session::isTimeDisp, true);
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+    return displayed;
 };
 
 static auto isLocalPlay = []() {
