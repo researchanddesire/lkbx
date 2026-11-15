@@ -384,10 +384,10 @@ void LKBX::drawLockedActions() {
     }
 }
 
-// A plain page for the Chaster questions: a heading, a few lines and the two
-// buttons. It has no QR code, so the whole width is left for the reason.
+// A plain page for the Chaster questions: a heading, a few lines and one
+// button. It has no QR code, so the whole width is left for the reason.
 void LKBX::drawChasterNotice(const char* title, const String& body,
-                             const Action& right, const Action& left) {
+                             const Action& right) {
     if (xSemaphoreTake(displayMutex, 100) != pdTRUE) return;
     clearScreen(display);
     const int top = drawHeading(display, title);
@@ -395,8 +395,32 @@ void LKBX::drawChasterNotice(const char* title, const String& body,
     display.setTextColor(Colors::white);
     wrapText(display, body.c_str(), Display::Padding::P2, top + 14,
              Display::WIDTH - Display::Padding::P4);
-    drawButtons(display, right, left);
+    drawButtons(display, right, Action{.visible = false});
     xSemaphoreGive(displayMutex);
+}
+
+// The answer to a Chaster question that did not open the box: Chaster's
+// refusal with its reason, or that nobody could be asked. Either button opens
+// the lock menu.
+void LKBX::drawAskAnswer() {
+    const bool refused = askOutcome == AskOutcome::REFUSED;
+    const bool forBreak = askAction == AskAction::BREAK;
+    const char* title = Str::Screen::CHASTER_NO_ANSWER_TITLE;
+    String body = forBreak ? Str::Screen::BREAK_NO_ANSWER_DESC
+                           : Str::Screen::UNLOCK_NO_ANSWER_DESC;
+    if (refused) {
+        title = forBreak ? Str::Screen::BREAK_REFUSED_TITLE
+                         : Str::Screen::UNLOCK_REFUSED_TITLE;
+        if (askReason[0] != '\0') {
+            body = askReason;
+        } else {
+            body = forBreak ? Str::Screen::BREAK_REFUSED_DEFAULT
+                            : Str::Screen::UNLOCK_REFUSED_DEFAULT;
+        }
+        body += forBreak ? Str::Screen::BREAK_REFUSED_SUFFIX
+                         : Str::Screen::UNLOCK_REFUSED_SUFFIX;
+    }
+    drawChasterNotice(title, body, {Str::Menu::MENU});
 }
 
 void LKBX::drawReadyToUnlock() {

@@ -356,7 +356,7 @@ void LKBX::startBreakPreflight() const {
     // Chaster decides a break on a session it controls. The box's own rules
     // passed, so ask the dashboard; it opens only on a granted answer.
     if (isChasterSession()) {
-        sm->process_event(AskChaster{});
+        sm->process_event(Error{.error = ErrorT::ASK_CHASTER});
         return;
     }
 

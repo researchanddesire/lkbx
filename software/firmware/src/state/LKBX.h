@@ -69,14 +69,19 @@ class LKBX {
     void checkBreakCooldown();
     uint32_t breakCooldownUpdatedMs = 0;
     // A Chaster session asks the dashboard before a break or an unlock.
-    void startChasterAsk(AskAction action);
+    void startChasterAsk();
     static void chasterAskTask(void *pvParameters);
     void drawChasterNotice(const char *title, const String &body,
-                           const Action &right, const Action &left);
+                           const Action &right);
+    void drawAskAnswer();
     // Only the newest question may answer; an older task's result is dropped.
     std::atomic<uint32_t> askGeneration{0};
-    // Why Chaster refused, as the dashboard worded it. Written by the asking
-    // task just before it reports the answer, read by the page it leads to.
+    // What the box is asking, set by the transition into "locked.asking".
+    AskAction askAction = AskAction::UNLOCK;
+    // The answer and why Chaster refused, as the dashboard worded it. Written
+    // by the asking task just before it reports the answer, read by the page
+    // it leads to.
+    AskOutcome askOutcome = AskOutcome::UNANSWERED;
     char askReason[kAskReasonBytes] = "";
     // Which heading the held-session page was last drawn with, so a freeze
     // that turns into an unlock hold (or back) repaints it.
@@ -572,44 +577,15 @@ class LKBX {
             };
 
             // A Chaster session asks the dashboard before it opens.
+            auto setAskUnlock = [](LKBX &o) { o.askAction = AskAction::UNLOCK; };
+            auto setAskBreak = [](LKBX &o) { o.askAction = AskAction::BREAK; };
             auto drawAskingChaster = [](LKBX &o) {
                 o.drawChasterNotice(Str::Screen::ASKING_CHASTER_TITLE,
                                     Str::Screen::ASKING_CHASTER_DESC,
-                                    Action{.visible = false},
                                     Action{.visible = false});
             };
-            auto startUnlockAsk = [](LKBX &o) {
-                o.startChasterAsk(AskAction::UNLOCK);
-            };
-            auto startBreakAsk = [](LKBX &o) {
-                o.startChasterAsk(AskAction::BREAK);
-            };
-            auto drawUnlockRefused = [](LKBX &o) {
-                const String reason = o.askReason[0] != '\0'
-                    ? String(o.askReason)
-                    : String(Str::Screen::UNLOCK_REFUSED_DEFAULT);
-                o.drawChasterNotice(Str::Screen::UNLOCK_REFUSED_TITLE,
-                                    reason + Str::Screen::UNLOCK_REFUSED_SUFFIX,
-                                    {Str::Action::ASK_AGAIN}, {Str::Menu::MENU});
-            };
-            auto drawUnlockNoAnswer = [](LKBX &o) {
-                o.drawChasterNotice(Str::Screen::CHASTER_NO_ANSWER_TITLE,
-                                    Str::Screen::UNLOCK_NO_ANSWER_DESC,
-                                    {Str::Action::ASK_AGAIN}, {Str::Menu::MENU});
-            };
-            auto drawBreakRefused = [](LKBX &o) {
-                const String reason = o.askReason[0] != '\0'
-                    ? String(o.askReason)
-                    : String(Str::Screen::BREAK_REFUSED_DEFAULT);
-                o.drawChasterNotice(Str::Screen::BREAK_REFUSED_TITLE,
-                                    reason + Str::Screen::BREAK_REFUSED_SUFFIX,
-                                    continueAction, backAction);
-            };
-            auto drawBreakNoAnswer = [](LKBX &o) {
-                o.drawChasterNotice(Str::Screen::CHASTER_NO_ANSWER_TITLE,
-                                    Str::Screen::BREAK_NO_ANSWER_DESC,
-                                    {Str::Action::RETRY}, backAction);
-            };
+            auto startChasterAsk = [](LKBX &o) { o.startChasterAsk(); };
+            auto drawAskAnswer = [](LKBX &o) { o.drawAskAnswer(); };
             auto deepSleep = [](LKBX &o) {
                 enterSleep(savedTimerSleepDelayMs(), [&o]() {
                     o.sendMessage(Str::Protocol::DISCONNECTED);
@@ -817,8 +793,6 @@ class LKBX {
                 "pairing.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
                 "pairing.wifi"_s + buttonPress = "home.settings"_s,
                 "pairing.wifi"_s + backPress = "home.settings"_s,
-                "pairing.wifi"_s + buttonPress[isOnline] = "pairing"_s,
-                "pairing.wifi"_s + buttonPress[isOffline] = "wmConfig.error"_s,
                 "pairing.wifi"_s + wifiConnected = "pairing"_s,
                 
                 "home.sleep"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
@@ -977,8 +951,6 @@ class LKBX {
                 "lockMenu.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
                 "lockMenu.wifi"_s + buttonPress = "lockMenu"_s,
                 "lockMenu.wifi"_s + backPress = "lockMenu"_s,
-                "lockMenu.wifi"_s + buttonPress[isOnline] = "lockMenu"_s,
-                "lockMenu.wifi"_s + buttonPress[isOffline] = "lockMenu"_s,
                 "lockMenu.wifi"_s + wifiConnected = "lockMenu"_s,
                 "lockMenu.wifi"_s + forceUpdate = "update"_s,
 
@@ -1017,8 +989,6 @@ class LKBX {
                 "emergency.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
                 "emergency.wifi"_s + buttonPress = "emergency.blocked"_s,
                 "emergency.wifi"_s + backPress = "emergency.blocked"_s,
-                "emergency.wifi"_s + buttonPress[isOnline] = "emergency.blocked"_s,
-                "emergency.wifi"_s + buttonPress[isOffline] = "emergency.blocked"_s,
                 "emergency.wifi"_s + wifiConnected = "emergency.blocked"_s,
                 "emergency.wifi"_s + unlock / (clearEBlock, clearLocalPlay, unlockAction) = "home"_s,
                 "emergency.wifi"_s + lock / (clearEBlock, clearLocalPlay, lockAction) = "locking"_s,
@@ -1032,9 +1002,6 @@ class LKBX {
                 "wmConfig"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
                 "wmConfig"_s + locktimer / (clearLocalPlay, lockTimerAction) = "locking"_s,
                 "wmConfig"_s + wifiConnected = "home"_s,
-                // Reached from the lock menu too: a break the dashboard
-                // starts opens a locked box from this page as well.
-                "wmConfig"_s + breakE[isLocked] = "locked.break"_s,
                 "wmConfig"_s + forceUpdate = "update"_s,
 
                 "wmConfig.error"_s + on_entry<_> / (drawCouldNotConnectQR),

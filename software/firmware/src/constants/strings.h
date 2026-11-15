@@ -25,7 +25,6 @@ namespace Str {
         constexpr char DECLINE[] PROGMEM = "Decline";
         constexpr char DONT_SHOW_AGAIN[] PROGMEM = "Don't show again";
         constexpr char WIFI_SETUP[] PROGMEM = "Wi-Fi Setup";
-        constexpr char ASK_AGAIN[] PROGMEM = "Ask again";
     }  // namespace Action
 
     // ── QR / Loading screen text
@@ -234,7 +233,7 @@ namespace Str {
             "Can't Reach Chaster";
         constexpr char UNLOCK_NO_ANSWER_DESC[] PROGMEM =
             "Chaster decides when this lock opens, and the box could not "
-            "ask. It stays locked. Check Wi-Fi, then ask again.";
+            "ask. It stays locked. Check Wi-Fi, then press Unlock again.";
         constexpr char BREAK_NO_ANSWER_DESC[] PROGMEM =
             "Chaster decides breaks on this lock, and the box could not "
             "ask. It stays locked. Check Wi-Fi, then try again.";
@@ -369,6 +368,8 @@ namespace Str {
         constexpr char FREEZE_REASON[] PROGMEM = "freezeReason";
         // True while Chaster controls the session (HTTP state + MQTT sync).
         constexpr char CHASTER_CONTROLLED[] PROGMEM = "chasterControlled";
+        // The older name for "ask before opening"; either one makes the box ask.
+        constexpr char REQUIRES_PERMISSION[] PROGMEM = "requiresPermission";
         constexpr char VERSION_KEY[] PROGMEM = "version";
         constexpr char MAJOR[] PROGMEM = "major";
         constexpr char MINOR[] PROGMEM = "minor";

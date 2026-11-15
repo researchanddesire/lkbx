@@ -101,7 +101,7 @@ inline bool sessionResponse(JsonVariantConst value, bool allowPending = false,
     }
     for (const auto* key : {"isBreak", "isEUnlock", "isTestLock", "isTimeDisp",
                             "displayElapsedTime", "breakKeyholderOnly",
-                            "chasterControlled"}) {
+                            "chasterControlled", "requiresPermission"}) {
         if (!value[key].isNull() && !value[key].is<bool>()) return false;
     }
     return true;

@@ -127,6 +127,11 @@ void session_types_and_ranges_are_checked_before_persistence() {
     doc["chasterControlled"] = "false";
     TEST_ASSERT_FALSE(sessionResponse(doc.as<JsonVariantConst>()));
     doc.remove("chasterControlled");
+    doc["requiresPermission"] = true;
+    TEST_ASSERT_TRUE(sessionResponse(doc.as<JsonVariantConst>()));
+    doc["requiresPermission"] = 1;
+    TEST_ASSERT_FALSE(sessionResponse(doc.as<JsonVariantConst>()));
+    doc.remove("requiresPermission");
     doc["lockState"] = "pending";
     TEST_ASSERT_FALSE(sessionResponse(doc.as<JsonVariantConst>()));
     TEST_ASSERT_TRUE(sessionResponse(doc.as<JsonVariantConst>(), true));

@@ -239,9 +239,15 @@ inline void applyFreezeSync(const TJsonObject& document, SyncMessage& message) {
 template <typename TJsonObject>
 inline void applyChasterSync(const TJsonObject& document, SyncMessage& message) {
     bool controlled = false;
-    message.hasChasterControlled = chasterControlledFromJson(
+    bool permission = false;
+    const bool hasControlled = sessionFlagFromJson(
         document, Str::Json::CHASTER_CONTROLLED, controlled);
-    message.chasterControlled = controlled;
+    const bool hasPermission = sessionFlagFromJson(
+        document, Str::Json::REQUIRES_PERMISSION, permission);
+    const AskFlag flag =
+        combineAskFlags(hasControlled, controlled, hasPermission, permission);
+    message.hasChasterControlled = flag.present;
+    message.chasterControlled = flag.asks;
 }
 
 // Read the persisted freeze state. The caller must already hold

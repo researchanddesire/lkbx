@@ -63,6 +63,8 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
     String mqtt_data_string;
     JsonDocument doc;
     ParsedMessage message;
+    // Whether the held session shows its timer (MQTT_EVENT_DATA only).
+    bool timerDisplayed = true;
 
     switch (event->event_id) {
         case MQTT_EVENT_BEFORE_CONNECT:
@@ -132,7 +134,14 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                 break;
             }
 
-            setNotIdle(Str::Input::MQTT_DATA);
+            // A message lights the screen, except a sync while the session
+            // hides its timer: that one waits until it is known to change the
+            // page (syncWakesScreen), so a silent change of the end date
+            // cannot say the end is near.
+            timerDisplayed = isTimerDisplayed();
+            if (timerDisplayed || message.type != MessageType::SYNC) {
+                setNotIdle(Str::Input::MQTT_DATA);
+            }
 
             if (message.type == MessageType::SYNC) {
                 auto isLocalPlay = false;
@@ -224,6 +233,11 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                 SyncOutcome outcome;
                 saveState(session, &outcome);
                 if (outcome.freezeChanged) bumpFreezeDisplayVersion();
+                // The sync may have revealed the timer; read it again.
+                if (!timerDisplayed &&
+                    syncWakesScreen(outcome.effect, isTimerDisplayed())) {
+                    setNotIdle(Str::Input::MQTT_DATA);
+                }
 
                 // Metadata changes reconcile the main display only. Identical
                 // syncs emit no event and no acknowledgement echo.

@@ -115,6 +115,21 @@ inline AskAnswer classifyAskAnswer(int httpStatus, const TJsonObject& body,
     return answer;
 }
 
+// What a granted unlock does when the answer lands. The question may have been
+// overtaken (the wearer was moved off the asking page by the dashboard), and
+// the session is checked once more: time may have been added, or a freeze may
+// have landed, while the box was asking.
+enum class UnlockGrant : uint8_t {
+    UNLOCK,  // open
+    RETURN,  // no longer ready to unlock: back to the lock page
+    DROP,    // nobody is waiting for this answer
+};
+
+inline UnlockGrant unlockGrantStep(bool stillAsking, bool sessionStillReady) {
+    if (!stillAsking) return UnlockGrant::DROP;
+    return sessionStillReady ? UnlockGrant::UNLOCK : UnlockGrant::RETURN;
+}
+
 // Whether Chaster controls the session after a sync. A payload that leaves the
 // field out (older dashboard, BLE session write) never turns asking off for
 // the session the box already holds; a new session starts without it.
@@ -124,15 +139,33 @@ inline bool mergeChasterControlled(bool newSession, bool stored,
     return newSession ? false : stored;
 }
 
-// Reads the flag from a sync payload. False when the key is absent or is not a
-// boolean, which leaves the stored value alone.
+// Reads one boolean flag from a sync payload. False when the key is absent or
+// is not a boolean, which leaves the stored value alone.
 template <typename TJsonObject>
-inline bool chasterControlledFromJson(const TJsonObject& document,
-                                      const char* key, bool& value) {
+inline bool sessionFlagFromJson(const TJsonObject& document, const char* key,
+                                bool& value) {
     const auto field = document[key];
     if (!freezeFieldPresent(field) || !field.template is<bool>()) return false;
     value = field.template as<bool>();
     return true;
+}
+
+// The dashboard says "ask before opening" with two fields: `chasterControlled`
+// and the older `requiresPermission`. Either one being true makes the box ask;
+// the payload carries the answer when it carries either field.
+struct AskFlag {
+    bool present = false;
+    bool asks = false;
+};
+
+inline AskFlag combineAskFlags(bool hasChasterControlled, bool chasterControlled,
+                               bool hasRequiresPermission,
+                               bool requiresPermission) {
+    AskFlag flag{};
+    flag.present = hasChasterControlled || hasRequiresPermission;
+    flag.asks = (hasChasterControlled && chasterControlled) ||
+                (hasRequiresPermission && requiresPermission);
+    return flag;
 }
 
 // The dashboard publishes "Chaster would refuse this unlock" through the freeze

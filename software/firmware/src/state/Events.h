@@ -26,6 +26,13 @@ enum class ErrorT : uint8_t {
     AUTH_RATE_LIMITED,
     DASHBOARD_SIGN_IN_FAILED,
     DEVICE_KEY_FAILED,
+    // A Chaster session asks the dashboard before it opens for a break or
+    // unlocks at the end of its timer (utils/chasterAsk.h). They reuse the
+    // Error event so the transition table gains no event type: its compile
+    // already needs most of a build runner's memory.
+    ASK_CHASTER,   // the box's own break rules passed: ask Chaster next
+    ASK_ANSWERED,  // refused, or no answer: show the answer page
+    ASK_RETURN,    // granted, but the session is no longer ready: go back
 };
 
 /**
@@ -69,13 +76,6 @@ struct TimerExpired {};
 struct LockOffered {};
 struct Decline {};
 struct Break {};
-// A Chaster session asks the dashboard before it opens for a break or unlocks
-// at the end of its timer (utils/chasterAsk.h). AskChaster starts the question
-// for a break; the three answers come from the task that asked.
-struct AskChaster {};
-struct AskGranted {};
-struct AskRefused {};
-struct AskUnanswered {};
 struct ForceUpdate {};
 struct Recalibrate {};
 struct WiFiSync {
@@ -107,10 +107,6 @@ static auto timerExpired = sml::event<TimerExpired>;
 static auto lockOffered = sml::event<LockOffered>;
 static auto decline = sml::event<Decline>;
 static auto breakE = sml::event<Break>;
-static auto askChaster = sml::event<AskChaster>;
-static auto askGranted = sml::event<AskGranted>;
-static auto askRefused = sml::event<AskRefused>;
-static auto askUnanswered = sml::event<AskUnanswered>;
 static auto wifi = sml::event<WiFiSync>;
 static auto encoder = sml::event<EncoderValue>;
 

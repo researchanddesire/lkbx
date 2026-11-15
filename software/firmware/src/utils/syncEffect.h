@@ -24,4 +24,17 @@ inline SyncEffect classifySyncEffect(bool sameSession, const char* savedState,
     return SyncEffect::MOTOR_LOCK;
 }
 
+// Whether a sync from the dashboard lights the screen. With a visible timer
+// every sync does, as it always has. While the timer is hidden only a sync
+// that changes the page does: the dashboard can move a hidden timer's end
+// shortly before it runs out, and a screen that lights up for that says the
+// end is near. A sync that changes the page through the state machine (a
+// freeze, a clear) still wakes the screen with that state change.
+inline bool syncWakesScreen(SyncEffect effect, bool timerDisplayed) {
+    if (timerDisplayed) return true;
+    return effect == SyncEffect::MOTOR_LOCK ||
+           effect == SyncEffect::MOTOR_UNLOCK ||
+           effect == SyncEffect::OFFER || effect == SyncEffect::BREAK;
+}
+
 #endif

@@ -92,6 +92,7 @@ void LKBX::chasterAskTask(void *pvParameters) {
         return;
     }
 
+    plkbx->askOutcome = answer.outcome;
     copyBoundedString(plkbx->askReason, sizeof(plkbx->askReason),
                       answer.reason);
 
@@ -99,18 +100,37 @@ void LKBX::chasterAskTask(void *pvParameters) {
         case AskOutcome::GRANTED:
             ESP_LOGI(CHASTER_ASK_TAG, "Chaster allows the %s",
                      askActionText(action));
-            // A granted break is the dashboard starting the break: it opens
-            // through the same event, from whatever locked page is up.
             if (action == AskAction::BREAK) {
+                // A granted break is the dashboard starting the break: it
+                // opens through the same event, from whatever locked page is
+                // up.
                 plkbx->sm->process_event(Break{});
-            } else {
-                plkbx->sm->process_event(AskGranted{});
+                break;
+            }
+            // The deadline, a freeze and a pending offer are checked again
+            // before the motor moves. acceptNaturalUnlock records the session
+            // as completed, so it runs only for a question still waiting.
+            switch (unlockGrantStep(plkbx->sm->is("locked.asking"_s),
+                                    plkbx->sm->is("locked.asking"_s) &&
+                                        acceptNaturalUnlock())) {
+                case UnlockGrant::UNLOCK:
+                    plkbx->sm->process_event(Unlock{});
+                    break;
+                case UnlockGrant::RETURN:
+                    plkbx->sm->process_event(
+                        Error{.error = ErrorT::ASK_RETURN});
+                    break;
+                case UnlockGrant::DROP:
+                default:
+                    ESP_LOGW(CHASTER_ASK_TAG,
+                             "Nobody is waiting for the unlock answer");
+                    break;
             }
             break;
         case AskOutcome::REFUSED:
             ESP_LOGI(CHASTER_ASK_TAG, "Chaster refuses the %s: %s",
                      askActionText(action), answer.reason);
-            plkbx->sm->process_event(AskRefused{});
+            plkbx->sm->process_event(Error{.error = ErrorT::ASK_ANSWERED});
             break;
         case AskOutcome::STALE_SESSION:
             // The dashboard holds no such session. Its own state says what
@@ -118,26 +138,27 @@ void LKBX::chasterAskTask(void *pvParameters) {
             ESP_LOGW(CHASTER_ASK_TAG,
                      "The dashboard does not know this session -- reading its "
                      "state");
-            plkbx->sm->process_event(AskUnanswered{});
+            plkbx->sm->process_event(Error{.error = ErrorT::ASK_ANSWERED});
             plkbx->confirmServerClear();
             break;
         case AskOutcome::UNANSWERED:
         default:
-            ESP_LOGW(CHASTER_ASK_TAG, "The %s question got no answer; staying "
-                                      "locked",
+            ESP_LOGW(CHASTER_ASK_TAG,
+                     "The %s question got no answer; staying locked",
                      askActionText(action));
-            plkbx->sm->process_event(AskUnanswered{});
+            plkbx->sm->process_event(Error{.error = ErrorT::ASK_ANSWERED});
             break;
     }
 
     vTaskDelete(nullptr);
 }
 
-void LKBX::startChasterAsk(AskAction action) {
+void LKBX::startChasterAsk() {
     askReason[0] = '\0';
+    askOutcome = AskOutcome::UNANSWERED;
     auto *request = new (std::nothrow) ChasterAskRequest{
         .lkbx = this,
-        .action = action,
+        .action = askAction,
         .generation = askGeneration.fetch_add(1) + 1,
     };
     ESP_LOGD(TASKDEBUG_TAG, "Creating Chaster ask task");
@@ -154,5 +175,5 @@ void LKBX::startChasterAsk(AskAction action) {
     // says so instead of waiting on this one forever.
     delete request;
     ESP_LOGE(CHASTER_ASK_TAG, "Could not start the Chaster question");
-    sm->process_event(AskUnanswered{});
+    sm->process_event(Error{.error = ErrorT::ASK_ANSWERED});
 }

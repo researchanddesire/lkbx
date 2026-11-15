@@ -6,6 +6,7 @@
 
 #include "../../src/state/Events.h"
 #include "../../src/utils/chasterAsk.h"
+#include "../../src/utils/syncEffect.h"
 
 using namespace sml;
 
@@ -18,42 +19,33 @@ struct Context {
     bool chaster = true;
     // The box's own timer is complete and nothing holds it.
     bool ready = true;
-    // The deadline, freeze and pending checks repeated when the answer lands.
-    bool acceptance = true;
-    bool timed = true;
+    // What the transition into "locked.asking" said the box is asking.
+    AskAction asked = AskAction::UNLOCK;
     int unlocks = 0;        // the motor opened to end the session
     int paddleOpens = 0;    // the motor opened for a break or an offer
     int breakTimers = 0;
     int reports = 0;
-    int unlockAsks = 0;
-    int breakAsks = 0;
+    int asks = 0;
     int askingPages = 0;
-    int unlockRefusedPages = 0;
-    int unlockNoAnswerPages = 0;
-    int breakRefusedPages = 0;
-    int breakNoAnswerPages = 0;
+    int answerPages = 0;
 };
 
 struct Fixture {
     auto operator()() const {
         auto isChasterSession = [](Context& c) { return c.chaster; };
-        auto isReadyToUnlock = [](Context& c) { return c.ready; };
-        auto acceptNaturalUnlock = [](Context& c) {
-            return c.ready && c.acceptance;
+        auto acceptNaturalUnlock = [](Context& c) { return c.ready; };
+        auto isError = [](ErrorT expected) {
+            return [expected](const auto& e) { return e.error == expected; };
         };
         auto clearLocalPlay = [](Context&) {};
         auto clearActiveBreak = [](Context&) {};
         auto unlockAction = [](Context& c) { ++c.unlocks; };
         auto movePaddleToUnlock = [](Context& c) { ++c.paddleOpens; };
-        auto switchToTimer = [](Context& c) { c.timed = true; };
-        auto switchToLock = [](Context& c) { c.timed = false; };
+        auto setAskUnlock = [](Context& c) { c.asked = AskAction::UNLOCK; };
+        auto setAskBreak = [](Context& c) { c.asked = AskAction::BREAK; };
         auto drawAskingChaster = [](Context& c) { ++c.askingPages; };
-        auto startUnlockAsk = [](Context& c) { ++c.unlockAsks; };
-        auto startBreakAsk = [](Context& c) { ++c.breakAsks; };
-        auto drawUnlockRefused = [](Context& c) { ++c.unlockRefusedPages; };
-        auto drawUnlockNoAnswer = [](Context& c) { ++c.unlockNoAnswerPages; };
-        auto drawBreakRefused = [](Context& c) { ++c.breakRefusedPages; };
-        auto drawBreakNoAnswer = [](Context& c) { ++c.breakNoAnswerPages; };
+        auto startChasterAsk = [](Context& c) { ++c.asks; };
+        auto drawAskAnswer = [](Context& c) { ++c.answerPages; };
         auto startBreakTimer = [](Context& c) { ++c.breakTimers; };
         auto clearLockedReport = [](Context&) {};
         auto sendMessage = [](const char*) {
@@ -72,16 +64,24 @@ using Machine = sml::sm<Fixture, sml::testing>;
 void setUp() {}
 void tearDown() {}
 
+namespace {
+const Error kAnswered{.error = ErrorT::ASK_ANSWERED};
+const Error kReturn{.error = ErrorT::ASK_RETURN};
+const Error kAskChaster{.error = ErrorT::ASK_CHASTER};
+}  // namespace
+
 // --- unlocking at the end of the timer ---------------------------------------
 
 void test_chaster_session_asks_instead_of_unlocking() {
     Context c;
+    c.asked = AskAction::BREAK;
     Machine machine{c};
     machine.set_current_states("locked.ready"_s);
     TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
-    TEST_ASSERT_TRUE(machine.is("locked.unlockAsk"_s));
+    TEST_ASSERT_TRUE(machine.is("locked.asking"_s));
+    TEST_ASSERT_TRUE(c.asked == AskAction::UNLOCK);
     TEST_ASSERT_EQUAL_INT(0, c.unlocks);
-    TEST_ASSERT_EQUAL_INT(1, c.unlockAsks);
+    TEST_ASSERT_EQUAL_INT(1, c.asks);
     TEST_ASSERT_EQUAL_INT(1, c.askingPages);
 }
 
@@ -93,112 +93,92 @@ void test_other_sessions_unlock_as_before() {
     TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
     TEST_ASSERT_TRUE(machine.is("locking"_s));
     TEST_ASSERT_EQUAL_INT(1, c.unlocks);
-    TEST_ASSERT_EQUAL_INT(0, c.unlockAsks);
+    TEST_ASSERT_EQUAL_INT(0, c.asks);
 }
 
+// The asking task reports a granted unlock as Unlock, after it has checked
+// the session again (unlockGrantStep).
 void test_granted_unlock_opens_once() {
     Context c;
     Machine machine{c};
-    machine.set_current_states("locked.unlockAsk"_s);
-    TEST_ASSERT_TRUE(machine.process_event(AskGranted{}));
+    machine.set_current_states("locked.asking"_s);
+    TEST_ASSERT_TRUE(machine.process_event(Unlock{}));
     TEST_ASSERT_TRUE(machine.is("locking"_s));
-    TEST_ASSERT_EQUAL_INT(1, c.unlocks);
-    // A repeated answer finds no question waiting.
-    TEST_ASSERT_FALSE(machine.process_event(AskGranted{}));
     TEST_ASSERT_EQUAL_INT(1, c.unlocks);
 }
 
 void test_granted_unlock_rechecks_the_session() {
-    Context c;
+    // Nobody is waiting any more: the answer is dropped.
+    TEST_ASSERT_TRUE(unlockGrantStep(false, true) == UnlockGrant::DROP);
+    TEST_ASSERT_TRUE(unlockGrantStep(false, false) == UnlockGrant::DROP);
     // Time was added, or a freeze landed, while the box was asking.
-    c.acceptance = false;
+    TEST_ASSERT_TRUE(unlockGrantStep(true, false) == UnlockGrant::RETURN);
+    TEST_ASSERT_TRUE(unlockGrantStep(true, true) == UnlockGrant::UNLOCK);
+
+    Context c;
     Machine machine{c};
-    machine.set_current_states("locked.unlockAsk"_s);
-    TEST_ASSERT_TRUE(machine.process_event(AskGranted{}));
+    machine.set_current_states("locked.asking"_s);
+    TEST_ASSERT_TRUE(machine.process_event(kReturn));
     TEST_ASSERT_TRUE(machine.is("locked.return"_s));
     TEST_ASSERT_EQUAL_INT(0, c.unlocks);
+    TEST_ASSERT_EQUAL_INT(0, c.answerPages);
 }
 
-void test_refused_unlock_stays_locked_and_can_ask_again() {
-    Context c;
-    Machine machine{c};
-    machine.set_current_states("locked.unlockAsk"_s);
-    TEST_ASSERT_TRUE(machine.process_event(AskRefused{}));
-    TEST_ASSERT_TRUE(machine.is("locked.unlockRefused"_s));
-    TEST_ASSERT_EQUAL_INT(1, c.unlockRefusedPages);
-    TEST_ASSERT_EQUAL_INT(0, c.unlocks);
-
-    TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
-    TEST_ASSERT_TRUE(machine.is("locked.unlockAsk"_s));
-    TEST_ASSERT_EQUAL_INT(1, c.unlockAsks);
-    TEST_ASSERT_EQUAL_INT(0, c.unlocks);
-}
-
+// Refused and unanswered share one page: the box stays locked either way.
 // Offline, a Chaster session never opens on its own timer.
-void test_unanswered_unlock_never_opens() {
+void test_refused_or_unanswered_unlock_never_opens() {
     Context c;
     Machine machine{c};
-    machine.set_current_states("locked.unlockAsk"_s);
-    TEST_ASSERT_TRUE(machine.process_event(AskUnanswered{}));
-    TEST_ASSERT_TRUE(machine.is("locked.unlockNoAnswer"_s));
-    TEST_ASSERT_EQUAL_INT(1, c.unlockNoAnswerPages);
-
-    for (int attempt = 1; attempt <= 3; attempt++) {
-        TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
-        TEST_ASSERT_TRUE(machine.is("locked.unlockAsk"_s));
-        TEST_ASSERT_TRUE(machine.process_event(AskUnanswered{}));
-        TEST_ASSERT_TRUE(machine.is("locked.unlockNoAnswer"_s));
-        TEST_ASSERT_EQUAL_INT(attempt, c.unlockAsks);
-    }
+    machine.set_current_states("locked.asking"_s);
+    TEST_ASSERT_TRUE(machine.process_event(kAnswered));
+    TEST_ASSERT_TRUE(machine.is("locked.askAnswer"_s));
+    TEST_ASSERT_EQUAL_INT(1, c.answerPages);
+    // The same answer again finds nobody asking.
+    TEST_ASSERT_FALSE(machine.process_event(kAnswered));
+    TEST_ASSERT_FALSE(machine.process_event(kReturn));
+    TEST_ASSERT_TRUE(machine.is("locked.askAnswer"_s));
     TEST_ASSERT_EQUAL_INT(0, c.unlocks);
     TEST_ASSERT_EQUAL_INT(0, c.paddleOpens);
 }
 
-// The lock menu, and with it emergency unlock, stays one press away.
-void test_answer_pages_lead_to_the_lock_menu() {
+// The lock menu, and with it emergency unlock and Wi-Fi settings, is one press
+// away from the answer page with either button.
+void test_answer_page_leads_to_the_lock_menu() {
     Context c;
     Machine machine{c};
-    machine.set_current_states("locked.unlockRefused"_s);
-    TEST_ASSERT_TRUE(machine.process_event(BackPress{}));
+    machine.set_current_states("locked.askAnswer"_s);
+    TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
     TEST_ASSERT_TRUE(machine.is("lockMenu"_s));
-    machine.set_current_states("locked.unlockNoAnswer"_s);
-    TEST_ASSERT_TRUE(machine.process_event(BackPress{}));
-    TEST_ASSERT_TRUE(machine.is("lockMenu"_s));
-    machine.set_current_states("locked.breakRefused"_s);
-    TEST_ASSERT_TRUE(machine.process_event(BackPress{}));
-    TEST_ASSERT_TRUE(machine.is("lockMenu"_s));
-    machine.set_current_states("locked.breakNoAnswer"_s);
+    machine.set_current_states("locked.askAnswer"_s);
     TEST_ASSERT_TRUE(machine.process_event(BackPress{}));
     TEST_ASSERT_TRUE(machine.is("lockMenu"_s));
     TEST_ASSERT_EQUAL_INT(0, c.unlocks);
+    TEST_ASSERT_EQUAL_INT(0, c.asks);
 }
 
-void test_added_time_or_a_freeze_leaves_the_answer_page() {
+void test_buttons_do_nothing_while_the_box_is_asking() {
     Context c;
     Machine machine{c};
-    machine.set_current_states("locked.unlockRefused"_s);
-    TEST_ASSERT_TRUE(machine.process_event(FreezeChange{}));
-    TEST_ASSERT_TRUE(machine.is("locked.return"_s));
-
-    // The timer is running again: the button does not ask, it goes back.
-    c.ready = false;
-    machine.set_current_states("locked.unlockNoAnswer"_s);
-    TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
-    TEST_ASSERT_TRUE(machine.is("locked.return"_s));
-    TEST_ASSERT_EQUAL_INT(0, c.unlockAsks);
+    machine.set_current_states("locked.asking"_s);
+    TEST_ASSERT_FALSE(machine.process_event(ButtonPress{}));
+    TEST_ASSERT_FALSE(machine.process_event(BackPress{}));
+    TEST_ASSERT_TRUE(machine.is("locked.asking"_s));
+    TEST_ASSERT_EQUAL_INT(0, c.unlocks);
+    TEST_ASSERT_EQUAL_INT(0, c.asks);
 }
 
 void test_an_answer_with_no_question_waiting_is_ignored() {
     Context c;
     Machine machine{c};
     machine.set_current_states("locked.ready"_s);
-    TEST_ASSERT_FALSE(machine.process_event(AskGranted{}));
-    TEST_ASSERT_FALSE(machine.process_event(AskRefused{}));
-    TEST_ASSERT_FALSE(machine.process_event(AskUnanswered{}));
+    TEST_ASSERT_FALSE(machine.process_event(kAnswered));
+    TEST_ASSERT_FALSE(machine.process_event(kReturn));
+    TEST_ASSERT_FALSE(machine.process_event(kAskChaster));
     TEST_ASSERT_TRUE(machine.is("locked.ready"_s));
     machine.set_current_states("lockMenu"_s);
-    TEST_ASSERT_FALSE(machine.process_event(AskGranted{}));
+    TEST_ASSERT_FALSE(machine.process_event(kAnswered));
     TEST_ASSERT_EQUAL_INT(0, c.unlocks);
+    TEST_ASSERT_EQUAL_INT(0, c.answerPages);
 }
 
 // --- breaks from the wearer's menu ------------------------------------------
@@ -207,9 +187,10 @@ void test_break_asks_before_the_box_opens() {
     Context c;
     Machine machine{c};
     machine.set_current_states("locked.breakPreflight"_s);
-    TEST_ASSERT_TRUE(machine.process_event(AskChaster{}));
-    TEST_ASSERT_TRUE(machine.is("locked.breakAsk"_s));
-    TEST_ASSERT_EQUAL_INT(1, c.breakAsks);
+    TEST_ASSERT_TRUE(machine.process_event(kAskChaster));
+    TEST_ASSERT_TRUE(machine.is("locked.asking"_s));
+    TEST_ASSERT_TRUE(c.asked == AskAction::BREAK);
+    TEST_ASSERT_EQUAL_INT(1, c.asks);
     TEST_ASSERT_EQUAL_INT(1, c.askingPages);
     TEST_ASSERT_EQUAL_INT(0, c.paddleOpens);
     TEST_ASSERT_EQUAL_INT(0, c.reports);
@@ -218,7 +199,7 @@ void test_break_asks_before_the_box_opens() {
 void test_granted_break_opens_and_reports_once() {
     Context c;
     Machine machine{c};
-    machine.set_current_states("locked.breakAsk"_s);
+    machine.set_current_states("locked.asking"_s);
     // The asking task reports a granted break as the break itself.
     TEST_ASSERT_TRUE(machine.process_event(Break{}));
     TEST_ASSERT_TRUE(machine.is("locked.break"_s));
@@ -231,29 +212,18 @@ void test_granted_break_opens_and_reports_once() {
     TEST_ASSERT_EQUAL_INT(1, c.reports);
 }
 
-void test_refused_break_never_opens() {
+void test_refused_or_unanswered_break_never_opens() {
     Context c;
     Machine machine{c};
-    machine.set_current_states("locked.breakAsk"_s);
-    TEST_ASSERT_TRUE(machine.process_event(AskRefused{}));
-    TEST_ASSERT_TRUE(machine.is("locked.breakRefused"_s));
-    TEST_ASSERT_EQUAL_INT(1, c.breakRefusedPages);
+    machine.set_current_states("locked.breakPreflight"_s);
+    TEST_ASSERT_TRUE(machine.process_event(kAskChaster));
+    TEST_ASSERT_TRUE(machine.process_event(kAnswered));
+    TEST_ASSERT_TRUE(machine.is("locked.askAnswer"_s));
+    TEST_ASSERT_EQUAL_INT(1, c.answerPages);
     TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
     TEST_ASSERT_TRUE(machine.is("lockMenu"_s));
     TEST_ASSERT_EQUAL_INT(0, c.paddleOpens);
-    TEST_ASSERT_EQUAL_INT(0, c.reports);
-}
-
-void test_unanswered_break_never_opens_and_can_retry() {
-    Context c;
-    Machine machine{c};
-    machine.set_current_states("locked.breakAsk"_s);
-    TEST_ASSERT_TRUE(machine.process_event(AskUnanswered{}));
-    TEST_ASSERT_TRUE(machine.is("locked.breakNoAnswer"_s));
-    TEST_ASSERT_EQUAL_INT(1, c.breakNoAnswerPages);
-    TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
-    TEST_ASSERT_TRUE(machine.is("locked.breakPreflight"_s));
-    TEST_ASSERT_EQUAL_INT(0, c.paddleOpens);
+    TEST_ASSERT_EQUAL_INT(0, c.breakTimers);
     TEST_ASSERT_EQUAL_INT(0, c.reports);
 }
 
@@ -283,43 +253,32 @@ void test_dashboard_break_opens_from_every_locked_page() {
     assertDashboardBreakOpensFrom("locked.breaking"_s);
     assertDashboardBreakOpensFrom("locked.breakError"_s);
     assertDashboardBreakOpensFrom("locked.breakCooldown"_s);
-    assertDashboardBreakOpensFrom("lockMenu.wifi"_s);
     // The pages added for asking.
-    assertDashboardBreakOpensFrom("locked.unlockAsk"_s);
-    assertDashboardBreakOpensFrom("locked.unlockRefused"_s);
-    assertDashboardBreakOpensFrom("locked.unlockNoAnswer"_s);
-    assertDashboardBreakOpensFrom("locked.breakAsk"_s);
-    assertDashboardBreakOpensFrom("locked.breakRefused"_s);
-    assertDashboardBreakOpensFrom("locked.breakNoAnswer"_s);
+    assertDashboardBreakOpensFrom("locked.asking"_s);
+    assertDashboardBreakOpensFrom("locked.askAnswer"_s);
 }
 
 // --- messages from the dashboard on the new pages ----------------------------
 
-template <class State> void assertClearUnlocksFrom(State state) {
+void test_dashboard_clear_still_unlocks_from_the_new_pages() {
     Context c;
     Machine machine{c};
-    machine.set_current_states(state);
+    machine.set_current_states("locked.askAnswer"_s);
     TEST_ASSERT_TRUE(machine.process_event(Unlock{}));
     TEST_ASSERT_TRUE(machine.is("locking"_s));
     TEST_ASSERT_EQUAL_INT(1, c.unlocks);
 }
 
-void test_dashboard_clear_still_unlocks_from_the_new_pages() {
-    assertClearUnlocksFrom("locked.unlockAsk"_s);
-    assertClearUnlocksFrom("locked.unlockRefused"_s);
-    assertClearUnlocksFrom("locked.unlockNoAnswer"_s);
-    assertClearUnlocksFrom("locked.breakAsk"_s);
-    assertClearUnlocksFrom("locked.breakRefused"_s);
-    assertClearUnlocksFrom("locked.breakNoAnswer"_s);
-}
-
 void test_new_offer_is_shown_from_the_new_pages() {
     Context c;
     Machine machine{c};
-    machine.set_current_states("locked.unlockNoAnswer"_s);
+    machine.set_current_states("locked.asking"_s);
     TEST_ASSERT_TRUE(machine.process_event(LockOffered{}));
     TEST_ASSERT_TRUE(machine.is("acceptLock"_s));
-    TEST_ASSERT_EQUAL_INT(1, c.paddleOpens);
+    machine.set_current_states("locked.askAnswer"_s);
+    TEST_ASSERT_TRUE(machine.process_event(LockOffered{}));
+    TEST_ASSERT_TRUE(machine.is("acceptLock"_s));
+    TEST_ASSERT_EQUAL_INT(2, c.paddleOpens);
 }
 
 // --- reading the dashboard's answer ------------------------------------------
@@ -474,11 +433,11 @@ void test_chaster_flag_is_read_only_from_a_boolean() {
     bool value = false;
 
     deserializeJson(doc, R"({"chasterControlled":true})");
-    TEST_ASSERT_TRUE(chasterControlledFromJson(doc, "chasterControlled", value));
+    TEST_ASSERT_TRUE(sessionFlagFromJson(doc, "chasterControlled", value));
     TEST_ASSERT_TRUE(value);
 
     deserializeJson(doc, R"({"chasterControlled":false})");
-    TEST_ASSERT_TRUE(chasterControlledFromJson(doc, "chasterControlled", value));
+    TEST_ASSERT_TRUE(sessionFlagFromJson(doc, "chasterControlled", value));
     TEST_ASSERT_FALSE(value);
 
     // Absent, null or malformed: the stored value is left alone.
@@ -488,9 +447,27 @@ void test_chaster_flag_is_read_only_from_a_boolean() {
           R"({"chasterControlled":"false"})", R"({"chasterControlled":0})"}) {
         deserializeJson(doc, json);
         TEST_ASSERT_FALSE_MESSAGE(
-            chasterControlledFromJson(doc, "chasterControlled", value), json);
+            sessionFlagFromJson(doc, "chasterControlled", value), json);
         TEST_ASSERT_TRUE(value);
     }
+}
+
+void test_either_ask_field_makes_the_box_ask() {
+    // Neither field: the payload says nothing, the stored value stays.
+    TEST_ASSERT_FALSE(combineAskFlags(false, false, false, false).present);
+    // chasterControlled alone.
+    TEST_ASSERT_TRUE(combineAskFlags(true, true, false, false).present);
+    TEST_ASSERT_TRUE(combineAskFlags(true, true, false, false).asks);
+    TEST_ASSERT_FALSE(combineAskFlags(true, false, false, false).asks);
+    // requiresPermission alone, or true next to a false chasterControlled.
+    TEST_ASSERT_TRUE(combineAskFlags(false, false, true, true).present);
+    TEST_ASSERT_TRUE(combineAskFlags(false, false, true, true).asks);
+    TEST_ASSERT_TRUE(combineAskFlags(true, false, true, true).asks);
+    // Both present and false: the box stops asking.
+    TEST_ASSERT_TRUE(combineAskFlags(true, false, true, false).present);
+    TEST_ASSERT_FALSE(combineAskFlags(true, false, true, false).asks);
+    // A value without its field counts for nothing.
+    TEST_ASSERT_FALSE(combineAskFlags(false, true, false, true).asks);
 }
 
 // --- the held-session page ---------------------------------------------------
@@ -573,6 +550,24 @@ void test_hidden_timer_sleep_item_behaves_the_same_near_the_end() {
     TEST_ASSERT_FALSE(sleepReturnsToTimer(false, false, false));
 }
 
+// The dashboard moves a hidden timer's end shortly before it runs out. That
+// sync changes nothing on the page, so it must not light the screen.
+void test_hidden_timer_sync_wakes_the_screen_only_for_a_new_page() {
+    TEST_ASSERT_FALSE(syncWakesScreen(SyncEffect::TIMER_META, false));
+    TEST_ASSERT_FALSE(syncWakesScreen(SyncEffect::NONE, false));
+    // A new lock, a clear, an offer and a break all change the page.
+    TEST_ASSERT_TRUE(syncWakesScreen(SyncEffect::MOTOR_LOCK, false));
+    TEST_ASSERT_TRUE(syncWakesScreen(SyncEffect::MOTOR_UNLOCK, false));
+    TEST_ASSERT_TRUE(syncWakesScreen(SyncEffect::OFFER, false));
+    TEST_ASSERT_TRUE(syncWakesScreen(SyncEffect::BREAK, false));
+    // With a visible timer every sync wakes the screen, as before.
+    for (SyncEffect effect :
+         {SyncEffect::NONE, SyncEffect::TIMER_META, SyncEffect::MOTOR_LOCK,
+          SyncEffect::MOTOR_UNLOCK, SyncEffect::OFFER, SyncEffect::BREAK}) {
+        TEST_ASSERT_TRUE(syncWakesScreen(effect, true));
+    }
+}
+
 // --- a break on a Chaster session --------------------------------------------
 
 void test_chaster_break_does_not_end_at_the_boxs_deadline() {
@@ -592,15 +587,13 @@ int main() {
     RUN_TEST(test_other_sessions_unlock_as_before);
     RUN_TEST(test_granted_unlock_opens_once);
     RUN_TEST(test_granted_unlock_rechecks_the_session);
-    RUN_TEST(test_refused_unlock_stays_locked_and_can_ask_again);
-    RUN_TEST(test_unanswered_unlock_never_opens);
-    RUN_TEST(test_answer_pages_lead_to_the_lock_menu);
-    RUN_TEST(test_added_time_or_a_freeze_leaves_the_answer_page);
+    RUN_TEST(test_refused_or_unanswered_unlock_never_opens);
+    RUN_TEST(test_answer_page_leads_to_the_lock_menu);
+    RUN_TEST(test_buttons_do_nothing_while_the_box_is_asking);
     RUN_TEST(test_an_answer_with_no_question_waiting_is_ignored);
     RUN_TEST(test_break_asks_before_the_box_opens);
     RUN_TEST(test_granted_break_opens_and_reports_once);
-    RUN_TEST(test_refused_break_never_opens);
-    RUN_TEST(test_unanswered_break_never_opens_and_can_retry);
+    RUN_TEST(test_refused_or_unanswered_break_never_opens);
     RUN_TEST(test_dashboard_break_opens_from_every_locked_page);
     RUN_TEST(test_dashboard_clear_still_unlocks_from_the_new_pages);
     RUN_TEST(test_new_offer_is_shown_from_the_new_pages);
@@ -612,6 +605,7 @@ int main() {
     RUN_TEST(test_unknown_session_rereads_the_state);
     RUN_TEST(test_chaster_flag_follows_the_dashboard);
     RUN_TEST(test_chaster_flag_is_read_only_from_a_boolean);
+    RUN_TEST(test_either_ask_field_makes_the_box_ask);
     RUN_TEST(test_unlock_hold_is_told_apart_from_a_freeze);
     RUN_TEST(test_hidden_timer_does_not_show_an_unlock_hold_before_the_end);
     RUN_TEST(test_visible_timer_shows_the_hold_at_once);
@@ -619,6 +613,7 @@ int main() {
     RUN_TEST(test_hold_display_without_a_usable_clock_or_deadline);
     RUN_TEST(test_hidden_timer_never_wakes_the_screen_near_the_end);
     RUN_TEST(test_hidden_timer_sleep_item_behaves_the_same_near_the_end);
+    RUN_TEST(test_hidden_timer_sync_wakes_the_screen_only_for_a_new_page);
     RUN_TEST(test_chaster_break_does_not_end_at_the_boxs_deadline);
     return UNITY_END();
 }
