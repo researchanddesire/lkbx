@@ -1313,6 +1313,26 @@ class LKBX {
             emergencyAckToRecord = false;
         }
 
+        // A report for a dashboard session waits for the dashboard's state.
+        // The boot reads it and so does every reconnect, but if that read
+        // failed nothing would ask again while the connection holds. So
+        // after half a minute of waiting on a live connection the state read
+        // is asked for once; it is tried until one has completed.
+        if (!mqttConnected || !emergencyReport::owed.isWaitingForState()) {
+            emergencyWaitSinceMs = 0;
+            emergencyStateAsked = false;
+        } else if (emergencyWaitSinceMs == 0) {
+            emergencyWaitSinceMs = millis() | 1;
+        } else if (!emergencyStateAsked &&
+                   static_cast<uint32_t>(millis() - emergencyWaitSinceMs) >=
+                       30000) {
+            emergencyStateAsked = true;
+            ESP_LOGI(EMERGENCY_TAG,
+                     "The emergency report is waiting for the dashboard's "
+                     "state; reading it");
+            confirmServerClear();
+        }
+
         if (!mqttConnected || !client || !isTimeSynced ||
             !emergencyReport::owed.due(millis())) {
             return;
@@ -1540,6 +1560,10 @@ class LKBX {
     // the activity log task and the emergency unlock itself touch these.
     std::atomic<bool> emergencyReportLoaded{false};
     bool emergencyAckToRecord = false;
+    // Since when a report has waited for the dashboard's state on a live
+    // connection (0: it is not waiting), and whether the state was asked for.
+    uint32_t emergencyWaitSinceMs = 0;
+    bool emergencyStateAsked = false;
 };
 
 #endif  // LOCKBOX_LKBX_H

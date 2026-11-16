@@ -291,9 +291,9 @@ static SyncResult saveState(SyncMessage lockSession,
 
     // A session this box ended by emergency unlock is never taken up again
     // (utils/emergencyRecord.h). The dashboard still names it when the
-    // emergency report never arrived; stored as any other answer, it locked
-    // the box again at the next boot, or when the lockout ran out. Nothing
-    // is stored and nothing moves; the report is sent again.
+    // emergency report never arrived; taken as any other answer, it locked
+    // the box again at the next boot. Nothing is stored and nothing moves;
+    // the report is sent again.
     if (refusesEmergencyEndedSessionLocked(lockSession.sessionId)) {
         xSemaphoreGive(preferencesMutex);
         return SyncResult::NO_CHANGE;
