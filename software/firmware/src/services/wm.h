@@ -26,4 +26,10 @@ void serviceWifiPortal();
 // (utils/stationKeeper.h). Never while a setup portal is open or wanted.
 void serviceWifiStation();
 
+// Called often from the activity log task. Brings back a box that has lost
+// the broker and the dashboard while its Wi-Fi station is still up, in steps:
+// it asks the dashboard, connects the station again, and as a last step
+// restarts the box when it is at rest (utils/networkRecovery.h).
+void serviceNetworkRecovery();
+
 #endif  // LOCKBOX_WM_H

@@ -22,6 +22,11 @@
 #include "mqtt.h"
 #define RAD_HIL_LOCKBOX_MQTT
 #endif
+#if __has_include("tlsTurn.h")
+// The Lockbox sets up one secure connection at a time (utils/tlsGate.h).
+#include "tlsTurn.h"
+#define RAD_HIL_TLS_TURN
+#endif
 #if __has_include("CertificateDateClient.h")
 #include "CertificateDateClient.h"
 #include <HTTPClient.h>
@@ -107,6 +112,12 @@ bool checkInternet() {
         }
         return false;
     }
+#if defined(RAD_HIL_TLS_TURN)
+    // The probe opens a secure connection of its own, which production builds
+    // never do. It waits for the firmware's connections and then goes ahead,
+    // so the observation keeps its cadence.
+    const TlsTurn turn(TlsUser::PROBE, tlsGate::kProbeWaitMs);
+#endif
     // A read-only request with full certificate/hostname validation. Never
     // follow a redirect to a different environment or send device credentials.
 #if defined(RAD_HIL_ARDUINO_HTTP)

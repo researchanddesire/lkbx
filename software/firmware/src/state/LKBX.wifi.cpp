@@ -601,9 +601,10 @@ void LKBX::startMqttConnection() {
 // The state read (utils/stateRead.h). A clear without a session id comes from
 // a dashboard older than this firmware: the box unlocks only if the
 // dashboard's own state says it has no active session, and any other answer
-// keeps the session it holds. The same read follows a reconnect after the
-// Wi-Fi setup portal, a sync that names another session, and an answer from
-// Chaster that does not know the session.
+// keeps the session it holds. The same read follows every MQTT connection
+// after a drop or a stop (the Wi-Fi setup portal, network recovery), a sync
+// that names another session, and an answer from Chaster that does not know
+// the session.
 //
 // One pass of the delay task; never waits for the network. The read used to
 // run on a task of its own (confirmClear, 8.3 KB stack), which after a
@@ -643,7 +644,17 @@ void LKBX::serviceStateRead() {
         if (outcome.freezeChanged) bumpFreezeDisplayVersion();
         ESP_LOGI(MQTT_TAG, "Confirmed clear: result=%d effect=%d",
                  static_cast<int>(result), static_cast<int>(outcome.effect));
-        applyReconciledEffect(this, outcome.effect);
+        // The read now follows every reconnect, so it can land right after
+        // the box has ended a break, before the dashboard has heard of it.
+        // That stale "break" must not open the box again: the same rule as
+        // for a break that arrives by MQTT.
+        if (outcome.effect == SyncEffect::BREAK && serverBreakOnCooldown()) {
+            ESP_LOGW(MQTT_TAG,
+                     "Ignoring the break in the state read -- within "
+                     "post-break cooldown");
+        } else {
+            applyReconciledEffect(this, outcome.effect);
+        }
         // The server never recorded the lock this box holds: its accept
         // report was lost. Repeat it; the report carries the box's dates.
         if (outcome.serverMissedLock && isLocked()) {

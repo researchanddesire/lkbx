@@ -11,11 +11,15 @@
 #include "portal_guard.h"
 
 #include "constants/LogTags.h"
+#include "constants/dashboard.h"
 #include "constants/strings.h"
 #include "machine.h"
+#include "motor/Motor.h"
+#include "services/lastInteraction.h"
 #include "services/mqtt.h"
 #include "services/serverOnline.h"
 #include "tasks/TaskStart.h"
+#include "utils/networkRecovery.h"
 #include "utils/stationKeeper.h"
 
 WiFiManager wm;
@@ -276,4 +280,153 @@ void serviceWifiStation() {
              "Wi-Fi station has been down for %u s; connecting again",
              static_cast<unsigned>(stationKeeper::kDownBeforeBeginMs / 1000));
     WiFi.begin();
+}
+
+namespace {
+// Only the activity log task touches these.
+NetworkRecovery networkRecoveryPlan;
+// The question to the dashboard, until its answer has been taken.
+HttpPending *networkCheck = nullptr;
+uint32_t networkRecoveryLookedMs = 0;
+
+// Every step is logged with the memory picture: a box that was cut off on the
+// rig had internal RAM in pieces the whole time.
+void logNetworkRecovery(const char *step) {
+    ESP_LOGW(WIFI_CONNECT_TAG,
+             "Network recovery: %s (largest free internal block %u bytes, "
+             "%u bytes free, lowest ever %u bytes)",
+             step,
+             static_cast<unsigned>(
+                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(
+                 heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(
+                 heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)));
+}
+
+// Whether the box may restart now to get its network back. A restart goes
+// through the boot sequence, which restores a lock, its session and its
+// deadline from flash, as it does every time the box wakes from deep sleep.
+// The box still only restarts when nothing is going on.
+bool atRestForRestart() {
+    // A button, the dial, a cable or a message within the last 30 seconds.
+    if (idleState == IdleState::NOT_IDLE) return false;
+    // The motor is being driven.
+    if (TaskHandles::currentWatch != nullptr) return false;
+    // A setup portal is open, closing or about to open.
+    if (portalTaskAlive.load() || portalEntries.load() != portalEntryHandled) {
+        return false;
+    }
+    // Only from a page the boot sequence leads back to by itself: the home
+    // menu or a locked page. Never while the box is locking or unlocking,
+    // asking Chaster, on a break, in a menu, on a setup or pairing page,
+    // updating or still starting. And never during an emergency lockout: the
+    // wearer has just used the safety release, and if its report did not
+    // reach the dashboard, the boot sequence would be told the session is
+    // still locked.
+    const bool restingPage =
+        lkbx->sm->is("home.idle"_s) || lkbx->sm->is("locked"_s) ||
+        lkbx->sm->is("locked.timer"_s) || lkbx->sm->is("locked.ready"_s) ||
+        lkbx->sm->is("locked.frozen"_s);
+    if (!restingPage) return false;
+    // A local session is the box's own and needs no network. The boot
+    // sequence asks the dashboard for the session, and the dashboard knows
+    // of none, so the box does not restart by itself while it holds one. A
+    // value that cannot be read counts as a local session.
+    bool localSession = true;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::base);
+        localSession = preferences.getBool(Keys::Base::isLocalPlay, false);
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+    return !localSession;
+}
+}  // namespace
+
+void serviceNetworkRecovery() {
+    // The dashboard was asked: its answer first.
+    if (networkCheck != nullptr) {
+        int status = -1;
+        if (!takeHttpResult(networkCheck, status, nullptr)) return;
+        // Any HTTP response at all means the network carries traffic.
+        const bool answered = status > 0;
+        networkRecoveryPlan.checked(answered, millis());
+        if (answered) {
+            ESP_LOGW(WIFI_CONNECT_TAG,
+                     "Network recovery: the dashboard answers (HTTP %d), so "
+                     "only the broker is out of reach; nothing to do",
+                     status);
+        } else if (networkRecoveryPlan.restartWanted()) {
+            logNetworkRecovery(
+                "step 2, the dashboard still does not answer; restarting "
+                "once the box is at rest");
+        } else {
+            logNetworkRecovery("the dashboard does not answer either");
+        }
+        return;
+    }
+
+    // Once a second is plenty.
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - networkRecoveryLookedMs) < 1000) return;
+    networkRecoveryLookedMs = now;
+
+    RecoveryInputs in;
+    in.brokerUp = mqttConnected;
+    in.stationUp = WiFi.status() == WL_CONNECTED;
+    in.brokerExpected = mqttClientExpected();
+    // Looked at only while the box is off the broker: a setup page owns the
+    // Wi-Fi mode, as for the station keeper.
+    in.held = !in.brokerUp &&
+              (portalTaskAlive.load() ||
+               portalEntries.load() != portalEntryHandled || onWifiSetupPage());
+    in.atRest = networkRecoveryPlan.restartWanted() && atRestForRestart();
+
+    const bool wasStepped = networkRecoveryPlan.stepped();
+    const RecoveryStep step = networkRecoveryPlan.next(in, now);
+    if (wasStepped && in.brokerUp) {
+        logNetworkRecovery("back on the broker");
+    }
+
+    switch (step) {
+        case RecoveryStep::CHECK:
+            logNetworkRecovery(
+                "off the broker with Wi-Fi up; asking the dashboard");
+            networkCheck =
+                getDetached(String(RAD_SERVER) + Str::Api::HEALTH_CHECK,
+                            networkRecovery::kCheckTimeoutMs);
+            // A question that cannot even be handed over is no answer.
+            if (networkCheck == nullptr) {
+                networkRecoveryPlan.checked(false, now);
+            }
+            break;
+        case RecoveryStep::RECONNECT: {
+            logNetworkRecovery(
+                "step 1, cut off; stopping MQTT and connecting Wi-Fi again");
+            // Gives back the client's task stack and its TLS session. The
+            // activity log task starts it again two seconds later
+            // (serviceMqttPause) and the state is read once it has connected.
+            restartMqttForRecovery();
+            // Drops the association and connects with the saved credentials.
+            // If that fails the station stays down, and the station keeper
+            // begins it again.
+            const bool begun = WiFi.reconnect();
+            ESP_LOGW(WIFI_CONNECT_TAG,
+                     "Network recovery: Wi-Fi station %s",
+                     begun ? "is connecting again"
+                           : "could not be told to connect again");
+            break;
+        }
+        case RecoveryStep::RESTART:
+            logNetworkRecovery("step 2, restarting now to get the network back");
+            Motor::clear();
+            // Lets the line above reach the serial port.
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
+            break;
+        case RecoveryStep::NONE:
+        default:
+            break;
+    }
 }

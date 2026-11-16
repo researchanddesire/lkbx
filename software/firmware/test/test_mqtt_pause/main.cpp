@@ -214,6 +214,45 @@ void test_waits_survive_the_millisecond_counter_wrapping() {
                      MqttPauseStep::START_CLIENT);
 }
 
+// The boot sequence reads the state itself after the first connection.
+void test_the_first_connection_since_boot_is_not_a_reconnection() {
+    MqttReconnect reconnect;
+    TEST_ASSERT_FALSE(reconnect.seen(false));
+    TEST_ASSERT_FALSE(reconnect.seen(true));
+    TEST_ASSERT_FALSE(reconnect.seen(true));
+}
+
+// The fault: a command the dashboard sent during a short drop was never
+// delivered, and nothing made the box ask for its state.
+void test_every_connection_after_a_drop_is_reported_once() {
+    MqttReconnect reconnect;
+    TEST_ASSERT_FALSE(reconnect.seen(true));
+    for (int drop = 0; drop < 5; ++drop) {
+        TEST_ASSERT_FALSE(reconnect.seen(false));
+        TEST_ASSERT_FALSE(reconnect.seen(false));
+        TEST_ASSERT_TRUE(reconnect.seen(true));
+        // Once per connection, however often it is asked.
+        TEST_ASSERT_FALSE(reconnect.seen(true));
+        TEST_ASSERT_FALSE(reconnect.seen(true));
+    }
+}
+
+// The same pass that sees the client connected again after a portal also
+// gets RECONCILE from the pause: the caller asks for one state read.
+void test_a_start_after_the_portal_is_a_reconnection_too() {
+    MqttReconnect reconnect;
+    TEST_ASSERT_FALSE(reconnect.seen(true));
+    MqttPause pause = pausedForPortal();
+    TEST_ASSERT_FALSE(reconnect.seen(false));
+    pause.portalClosed(0);
+    TEST_ASSERT_TRUE(pause.next(kStart, false) == MqttPauseStep::START_CLIENT);
+    pause.startTried(true, kStart);
+    TEST_ASSERT_FALSE(reconnect.seen(false));
+    TEST_ASSERT_TRUE(pause.next(kStart + 3000, true) ==
+                     MqttPauseStep::RECONCILE);
+    TEST_ASSERT_TRUE(reconnect.seen(true));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_nothing_happens_without_a_portal);
@@ -231,5 +270,8 @@ int main() {
     RUN_TEST(test_a_portal_without_a_stopped_client_starts_nothing);
     RUN_TEST(test_a_client_removed_for_an_update_is_not_started_again);
     RUN_TEST(test_waits_survive_the_millisecond_counter_wrapping);
+    RUN_TEST(test_the_first_connection_since_boot_is_not_a_reconnection);
+    RUN_TEST(test_every_connection_after_a_drop_is_reported_once);
+    RUN_TEST(test_a_start_after_the_portal_is_a_reconnection_too);
     return UNITY_END();
 }

@@ -53,6 +53,10 @@ struct HttpPending;
 HttpPending *postDetached(const String &url, const JsonDocument &doc,
                           int timeoutMs);
 
+// The same for a plain GET that carries no identity: the network check asking
+// whether the dashboard answers at all (services/wm.cpp).
+HttpPending *getDetached(const String &url, int timeoutMs);
+
 // The same for a GET that carries the device's identity, as
 // getWithDeviceSecret and getWithDeviceToken do: the delay task reading the
 // box's state. Only the configured RAD server may receive either value.
