@@ -171,6 +171,12 @@ namespace Tasks {
         // Done runs locking preflight and its nested Done synchronously,
         // including the MQTT confirmation and provenance/NVS logging.
         // The former stack overflowed when restoring a saved lock.
+        //
+        // The Chaster question runs here too (LKBX::serviceChasterAsk),
+        // between Done dispatches and never inside one: a task of its own
+        // needed a free 8.3 KB block of internal RAM, which R8 hardware
+        // often does not have. Measured on its own task the question used
+        // at most 4.1 KB, a granted break included.
         .stackSize = 12 * configMINIMAL_STACK_SIZE,
         .priority = 1,
         .core = 1,
@@ -219,23 +225,6 @@ namespace Tasks {
     constexpr TaskParams syncLockState = {
         .name = "syncLockState",
         .stackSize = 10 * configMINIMAL_STACK_SIZE,  // The v2 state payload parse overflowed 6x.
-        .priority = 1,
-        .core = 1,
-    };
-
-    constexpr TaskParams confirmClear = {
-        .name = "confirmClear",
-        .stackSize = 10 * configMINIMAL_STACK_SIZE,  // Same state pull as syncLockState.
-        .priority = 1,
-        .core = 1,
-    };
-
-    constexpr TaskParams chasterAsk = {
-        .name = "chasterAsk",
-        // Builds one small request and parses one small answer; the HTTPS
-        // itself runs on the HTTP worker. A granted answer then runs the
-        // unlock or break transition on this stack, as confirmClear does.
-        .stackSize = 10 * configMINIMAL_STACK_SIZE,
         .priority = 1,
         .core = 1,
     };
@@ -309,7 +298,6 @@ namespace TaskHandles {
     extern TaskHandle_t pairingCheck;
     extern TaskHandle_t pairingPoll;
     extern TaskHandle_t syncLockState;
-    extern TaskHandle_t confirmClear;
     extern TaskHandle_t syncClock;
     extern TaskHandle_t wifiConnect;
     extern TaskHandle_t mqttConnect;

@@ -87,6 +87,9 @@ void drawTimerConfigTask(void *pvParameters) {
         ESP_LOGE(TIMER_TAG, "Failed to allocate timer canvas");
         delete timerCanvas;
         timerCanvas = nullptr;
+        // Say so instead of leaving a blank page. No duration was shown, so
+        // Lock is refused (LocalTimerTransitions.inc).
+        if (isInCorrectState(lkbx)) lkbx->drawTimerUnavailable();
         TaskHandles::timerConfig = nullptr;
         vTaskDelete(nullptr);
         return;
@@ -102,7 +105,22 @@ void drawTimerConfigTask(void *pvParameters) {
         int encoderValue =
             constrain(maxYears - lkbx->encoder.readEncoder(), 30, maxYears);
 
-        if (!isFirstRun && encoderValue == lastEncoderValue) {
+        // The page was entered again while this task was still running, or
+        // a notice was drawn over the dial: paint the whole page again. A
+        // notice stays up until the dial is turned.
+        const LKBX::TimerPage shown = lkbx->timerPage.load();
+        const bool turned = encoderValue != lastEncoderValue;
+        if (shown == LKBX::TimerPage::REDRAW ||
+            (shown == LKBX::TimerPage::NOTICE && turned)) {
+            if (xSemaphoreTake(displayMutex, 100) == pdTRUE) {
+                clearScreen(lkbx->display);
+                xSemaphoreGive(displayMutex);
+            }
+            lkbx->timerPage.store(LKBX::TimerPage::DIAL);
+            isFirstRun = true;
+        }
+
+        if (!isFirstRun && !turned) {
             vTaskDelay(250 / portTICK_PERIOD_MS);
             continue;
         }
@@ -208,19 +226,39 @@ void drawTimerConfigTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
+// The timer page could not be drawn, or the timer's end could not be saved.
+// Nothing is locked: whatever duration the page held no longer counts, so a
+// second press cannot lock for a duration that is not on the screen.
+void LKBX::drawTimerUnavailable() {
+    duration = 0;
+    timerPage.store(TimerPage::NOTICE);
+    drawNotice(Str::Screen::TIMER_UNAVAILABLE_TITLE,
+               Str::Screen::TIMER_UNAVAILABLE_DESC, Action{.visible = false},
+               backAction);
+}
+
 void LKBX::drawTimerConfig() {
-    if (TaskHandles::timerConfig != nullptr) {
-        ESP_LOGW(TIMER_TAG, "Timer config task already running, skipping");
-        return;
-    }
+    // Only a duration this visit to the page has put on the screen may be
+    // locked for. The dial task sets it when it draws.
+    duration = 0;
+    timerPage.store(TimerPage::REDRAW);
 
     encoder.setAcceleration(100);
     encoder.setBoundaries(30, maxYears, false);
     encoder.setEncoderValue(maxYears - 120);
 
+    if (TaskHandles::timerConfig != nullptr) {
+        // The task of the previous visit has not ended yet: it repaints the
+        // page for this one (TimerPage::REDRAW).
+        ESP_LOGW(TIMER_TAG, "Timer config task already running, reusing it");
+        return;
+    }
+
     ESP_LOGD(TASKDEBUG_TAG, "Creating timer config task");
-    xTaskCreatePinnedToCore(drawTimerConfigTask, Tasks::timerConfig.name,
-                            Tasks::timerConfig.stackSize, this,
-                            Tasks::timerConfig.priority,
-                            &TaskHandles::timerConfig, Tasks::timerConfig.core);
+    if (!startTaskWithRetry(drawTimerConfigTask, Tasks::timerConfig, this,
+                            &TaskHandles::timerConfig)) {
+        // Without the task the page would stay blank and hold no duration.
+        ESP_LOGE(TIMER_TAG, "Could not start the timer page");
+        drawTimerUnavailable();
+    }
 }

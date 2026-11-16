@@ -347,20 +347,20 @@ void httpWorkerTask(void *) {
     }
 }
 
-int enqueue(const String &url, const String &body, bool isPost,
-            String *responsePayload, int timeoutMs, int retries,
-            uint64_t *serverTimeMs = nullptr, const String *deviceSecret = nullptr,
-            bool deviceSecretIsToken = false) {
-    if (responsePayload) responsePayload->clear();
-    if (serverTimeMs) *serverTimeMs = 0;
+// Checks, builds and queues one request. The returned reference is the
+// caller's to release; null means nothing was queued (an invalid request, no
+// memory, a full queue or a stopped worker).
+HttpRequest *submit(const String &url, const String &body, bool isPost,
+                    int timeoutMs, int retries, bool clockProbe,
+                    const String *deviceSecret, bool deviceSecretIsToken) {
     if (!allowedUrl(url) || body.length() > MAX_BODY_BYTES || timeoutMs <= 0 ||
         retries < 0 || retries > 2 ||
-        (deviceSecret && !configuredServerUrl(url))) return -1;
+        (deviceSecret && !configuredServerUrl(url))) return nullptr;
     HttpRequest *req = new (std::nothrow) HttpRequest;
-    if (!req) return -1;
+    if (!req) return nullptr;
     if (!req->completed) {
         req->release();
-        return -1;
+        return nullptr;
     }
     req->url = url;
     req->body = body;
@@ -369,11 +369,11 @@ int enqueue(const String &url, const String &body, bool isPost,
     if (req->url.length() != url.length() || req->body.length() != body.length() ||
         (deviceSecret && req->deviceSecret.length() != deviceSecret->length())) {
         req->release();
-        return -1;
+        return nullptr;
     }
     req->isPost = isPost;
     req->serverOperation = configuredServerUrl(url);
-    req->clockProbe = serverTimeMs != nullptr;
+    req->clockProbe = clockProbe;
     req->retries = retries;
     req->deadlineUs = esp_timer_get_time() +
                       static_cast<int64_t>(std::min(timeoutMs, MAX_REQUEST_MS)) * 1000;
@@ -387,27 +387,52 @@ int enqueue(const String &url, const String &body, bool isPost,
             if (!queued) req->release();
         }
     }
+    if (!queued) {
+        req->release();
+        return nullptr;
+    }
+    return req;
+}
+
+// The caller stops waiting for a queued request. The worker keeps its
+// reference and owns all later result writes.
+void giveUp(HttpRequest *req) {
+    req->cancelled.store(true, std::memory_order_release);
+    // An abandoned local operation is a failure now. Invalidate its
+    // generation so a late transport result cannot report success.
+    if (req->serverOperation) clearServerOnline();
+}
+
+int enqueue(const String &url, const String &body, bool isPost,
+            String *responsePayload, int timeoutMs, int retries,
+            uint64_t *serverTimeMs = nullptr, const String *deviceSecret = nullptr,
+            bool deviceSecretIsToken = false) {
+    if (responsePayload) responsePayload->clear();
+    if (serverTimeMs) *serverTimeMs = 0;
+    HttpRequest *req = submit(url, body, isPost, timeoutMs, retries,
+                              serverTimeMs != nullptr, deviceSecret,
+                              deviceSecretIsToken);
+    if (!req) return -1;
     int code = -1;
-    if (queued) {
-        const int waitMs = remainingMs(*req);
-        const TickType_t waitTicks = waitMs > 0
-            ? std::max<TickType_t>(1, pdMS_TO_TICKS(waitMs)) : 0;
-        if (xSemaphoreTake(req->completed, waitTicks) == pdTRUE) {
-            code = req->responseCode;
-            if (responsePayload) *responsePayload = std::move(req->responsePayload);
-            if (serverTimeMs && code == 200 && req->serverTimeMs && !expired(*req))
-                *serverTimeMs = req->serverTimeMs +
-                    static_cast<uint64_t>(esp_timer_get_time() - req->dateReceivedUs) / 1000;
-        } else {
-            // The worker keeps its reference and owns all later result writes.
-            req->cancelled.store(true, std::memory_order_release);
-            // An abandoned local operation is a failure now. Invalidate its
-            // generation so a late transport result cannot report success.
-            if (req->serverOperation) clearServerOnline();
-        }
+    const int waitMs = remainingMs(*req);
+    const TickType_t waitTicks = waitMs > 0
+        ? std::max<TickType_t>(1, pdMS_TO_TICKS(waitMs)) : 0;
+    if (xSemaphoreTake(req->completed, waitTicks) == pdTRUE) {
+        code = req->responseCode;
+        if (responsePayload) *responsePayload = std::move(req->responsePayload);
+        if (serverTimeMs && code == 200 && req->serverTimeMs && !expired(*req))
+            *serverTimeMs = req->serverTimeMs +
+                static_cast<uint64_t>(esp_timer_get_time() - req->dateReceivedUs) / 1000;
+    } else {
+        giveUp(req);
     }
     req->release();
     return code;
+}
+
+// A polled request is handed out as an opaque pointer to its HttpRequest.
+HttpRequest *pendingRequest(HttpPending *pending) {
+    return reinterpret_cast<HttpRequest *>(pending);
 }
 }  // namespace
 
@@ -486,4 +511,57 @@ int post(const String &url, const JsonDocument &doc, String *responsePayload,
         return -1;
     }
     return post(url, body, responsePayload, timeoutMs, retries);
+}
+
+HttpPending *postDetached(const String &url, const JsonDocument &doc,
+                          int timeoutMs) {
+    const size_t expectedLength = measureJson(doc);
+    if (expectedLength > MAX_BODY_BYTES) return nullptr;
+    String body;
+    serializeJson(doc, body);
+    if (body.length() != expectedLength) return nullptr;
+    return reinterpret_cast<HttpPending *>(
+        submit(url, body, true, timeoutMs, 0, false, nullptr, false));
+}
+
+HttpPending *getDetachedWithDeviceSecret(const String &url,
+                                         const String &deviceSecret,
+                                         int timeoutMs) {
+    return reinterpret_cast<HttpPending *>(
+        submit(url, String(), false, timeoutMs, 0, false,
+               deviceSecret.length() > 0 ? &deviceSecret : nullptr, false));
+}
+
+HttpPending *getDetachedWithDeviceToken(const String &url,
+                                        const String &deviceToken,
+                                        int timeoutMs) {
+    if (deviceToken.length() == 0) return nullptr;
+    return reinterpret_cast<HttpPending *>(
+        submit(url, String(), false, timeoutMs, 0, false, &deviceToken, true));
+}
+
+bool takeHttpResult(HttpPending *&pending, int &code, String *responsePayload) {
+    code = -1;
+    if (responsePayload) responsePayload->clear();
+    HttpRequest *req = pendingRequest(pending);
+    if (!req) return true;
+    if (xSemaphoreTake(req->completed, 0) == pdTRUE) {
+        code = req->responseCode;
+        if (responsePayload) *responsePayload = std::move(req->responsePayload);
+    } else if (remainingMs(*req) > 0) {
+        return false;
+    } else {
+        giveUp(req);
+    }
+    req->release();
+    pending = nullptr;
+    return true;
+}
+
+void abandonHttp(HttpPending *&pending) {
+    HttpRequest *req = pendingRequest(pending);
+    pending = nullptr;
+    if (!req) return;
+    giveUp(req);
+    req->release();
 }

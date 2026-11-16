@@ -206,20 +206,38 @@ bool saveLocalLockTimerDuration(uint64_t durationMs) {
         return false;
     }
 
-    preferences.begin(Keys::base, false);
-    preferences.putBool(Keys::Base::isLocalPlay, true);
-    preferences.putBool(Keys::Base::isLockTimer, true);
+    // The deadline goes in first and is read back. The flags that make this a
+    // local timed lock follow only once it is stored, so a failed write can
+    // never leave a timed lock without an end.
+    preferences.begin(Keys::session, false);
+    const bool stored =
+        preferences.putULong64(Keys::Session::lockEnd, lockEndDatetime) ==
+            sizeof(uint64_t) &&
+        preferences.getULong64(Keys::Session::lockEnd, 0) == lockEndDatetime;
     preferences.end();
 
-    preferences.begin(Keys::session, false);
-    preferences.putULong64(Keys::Session::lockEnd, lockEndDatetime);
-    preferences.end();
+    if (stored) {
+        preferences.begin(Keys::base, false);
+        preferences.putBool(Keys::Base::isLocalPlay, true);
+        preferences.putBool(Keys::Base::isLockTimer, true);
+        preferences.end();
+    }
 
     portENTER_CRITICAL(&correctionMux);
     localTimerSaveInProgress = false;
+    if (!stored) {
+        localTimerCreatedMonotonicMs = previousCreatedMonotonicMs;
+        localTimerAppliedThrough = previousAppliedThrough;
+    }
     portEXIT_CRITICAL(&correctionMux);
 
     xSemaphoreGive(preferencesMutex);
+
+    if (!stored) {
+        ESP_LOGW(CLOCK_CORRECTION_TAG,
+                 "Could not save local timer: the deadline was not stored");
+        return false;
+    }
 
     processPendingLocalTimerClockCorrections();
 

@@ -269,10 +269,10 @@ void LKBX::startBreakTimer() {
         xSemaphoreGive(preferencesMutex);
     }
 
-    xTaskCreatePinnedToCore(startBreakTimerTask, Tasks::breakTimer.name,
-                            Tasks::breakTimer.stackSize, this,
-                            Tasks::breakTimer.priority,
-                            &TaskHandles::breakTimer, Tasks::breakTimer.core);
+    // Without the task the break page never draws and the break never ends
+    // by itself. The box is open meanwhile; End Break still re-locks it.
+    startTaskWithRetry(startBreakTimerTask, Tasks::breakTimer, this,
+                       &TaskHandles::breakTimer);
 }
 void LKBX::checkBreakCooldown() {
     if (sm->is("locked.breakCooldown"_s) &&

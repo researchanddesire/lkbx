@@ -101,12 +101,15 @@ void LKBX::drawMenu() {
     // if the task is already running, don't start it again
     if (TaskHandles::drawMenu != nullptr) {
         vTaskDelete(TaskHandles::drawMenu);
+        // Not left pointing at the deleted task if the new one cannot start.
+        TaskHandles::drawMenu = nullptr;
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating draw menu task");
-    xTaskCreatePinnedToCore(
-        drawMenuTask, Tasks::drawMenu.name, Tasks::drawMenu.stackSize, this,
-        Tasks::drawMenu.priority, &TaskHandles::drawMenu, Tasks::drawMenu.core);
+    // The stack of the task deleted above is freed a moment later, so a first
+    // attempt can fail where a second succeeds.
+    startTaskWithRetry(drawMenuTask, Tasks::drawMenu, this,
+                       &TaskHandles::drawMenu);
 }
 
 void LKBX::drawEmergencyMenu() {
@@ -147,7 +150,8 @@ void LKBX::drawEmergencyMenu() {
     encoder.setEncoderValue(0);
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating draw emergency menu task");
-    xTaskCreatePinnedToCore(
-        drawMenuTask, Tasks::drawMenu.name, Tasks::drawMenu.stackSize, this,
-        Tasks::drawMenu.priority, &TaskHandles::drawMenu, Tasks::drawMenu.core);
+    // The lock menu leads to Emergency Unlock: it must not stay blank because
+    // the page before it had not yet given its stack back.
+    startTaskWithRetry(drawMenuTask, Tasks::drawMenu, this,
+                       &TaskHandles::drawMenu);
 }

@@ -20,7 +20,9 @@ void applyAuthCommandKey(const String& commandKey);
 // topic takes v3 envelopes bound to the device id, the MAC topic v2 envelopes
 // bound to the MAC. Returns false, with nothing to process, when the frame is
 // not a valid envelope for a box that holds a key or has a burned one, or was
-// already accepted once (the replay ring survives reboots and sign-ins).
+// already accepted once (the replay ring survives reboots and sign-ins). Also
+// false, without a log line, for one of this box's own state reports: the
+// broker returns them on the topic they were published to (utils/ownReports.h).
 bool openCloudCommand(const char* topic, const char* frame, size_t size,
                       String& command);
 

@@ -2,6 +2,7 @@
 #include <unity.h>
 
 #include "../../src/state/Events.h"
+#include "../../src/utils/lockMenuCountdown.h"
 
 using namespace sml;
 
@@ -149,6 +150,32 @@ void test_session_change_before_acceptance_prevents_release() {
     TEST_ASSERT_EQUAL_INT(0, c.unlocks);
 }
 
+// The lock menu runs the countdown again when it is entered without one
+// (from the break pages, say), so it still moves on at the deadline.
+void test_lock_menu_counts_down_a_timer_that_has_not_run_out() {
+    TEST_ASSERT_TRUE(lockMenuCountsDown(true, false, false));
+    TEST_ASSERT_TRUE(lockMenuCountsDown(true, true, false));
+}
+
+// A session that is ready to unlock must not be sent back to Ready to unlock
+// the moment the menu opens: the menu, with its emergency unlock, is where
+// the page that says Chaster refused leads.
+void test_lock_menu_stays_open_for_a_session_ready_to_unlock() {
+    TEST_ASSERT_FALSE(lockMenuCountsDown(true, false, true));
+}
+
+// A local timer that has run out is released wherever the wearer is.
+void test_lock_menu_releases_a_local_timer_that_has_run_out() {
+    TEST_ASSERT_TRUE(lockMenuCountsDown(true, true, true));
+}
+
+// A lock without a timer has nothing to count.
+void test_lock_menu_has_no_countdown_without_a_timer() {
+    TEST_ASSERT_FALSE(lockMenuCountsDown(false, false, false));
+    TEST_ASSERT_FALSE(lockMenuCountsDown(false, true, true));
+    TEST_ASSERT_FALSE(lockMenuCountsDown(false, false, true));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_local_timer_releases_paddle_once);
@@ -160,5 +187,9 @@ int main() {
     RUN_TEST(test_chaster_break_outlives_lock_window);
     RUN_TEST(test_ineligible_timer_does_not_move_motor);
     RUN_TEST(test_session_change_before_acceptance_prevents_release);
+    RUN_TEST(test_lock_menu_counts_down_a_timer_that_has_not_run_out);
+    RUN_TEST(test_lock_menu_stays_open_for_a_session_ready_to_unlock);
+    RUN_TEST(test_lock_menu_releases_a_local_timer_that_has_run_out);
+    RUN_TEST(test_lock_menu_has_no_countdown_without_a_timer);
     return UNITY_END();
 }

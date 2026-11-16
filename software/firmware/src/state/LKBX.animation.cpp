@@ -110,10 +110,9 @@ void LKBX::drawLockAnimation() {
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating draw lock animation task");
-    xTaskCreatePinnedToCore(
-        drawLockAnimationTask, Tasks::drawLockAnim.name,
-        Tasks::drawLockAnim.stackSize, this, Tasks::drawLockAnim.priority,
-        &TaskHandles::drawLockAnim, Tasks::drawLockAnim.core);
+    // Only the animation: the delay task moves the box on to preflight.
+    startTaskChecked(drawLockAnimationTask, Tasks::drawLockAnim, this,
+                     &TaskHandles::drawLockAnim);
 }
 
 // ── Preflight loading animation ─────────────────────────────────────────────
@@ -236,10 +235,9 @@ void LKBX::drawLoadingAnimation() {
     sLoadingTextDirty = true;
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating loading animation task");
-    xTaskCreatePinnedToCore(loadingAnimationTask, Tasks::loadingAnim.name,
-                            Tasks::loadingAnim.stackSize, this,
-                            Tasks::loadingAnim.priority,
-                            &TaskHandles::loadingAnim, Tasks::loadingAnim.core);
+    // Only the spinner: the preflight steps do not wait for it.
+    startTaskChecked(loadingAnimationTask, Tasks::loadingAnim, this,
+                     &TaskHandles::loadingAnim);
 }
 
 void LKBX::pauseLoadingAnimation() {

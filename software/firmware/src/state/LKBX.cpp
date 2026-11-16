@@ -152,10 +152,12 @@ void LKBX::drawHello() {
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating draw hello task");
-    xTaskCreatePinnedToCore(drawHelloTask, Tasks::drawHello.name,
-                            Tasks::drawHello.stackSize, this,
-                            Tasks::drawHello.priority, &TaskHandles::drawHello,
-                            Tasks::drawHello.core);
+    if (!startTaskChecked(drawHelloTask, Tasks::drawHello, this,
+                          &TaskHandles::drawHello)) {
+        // Boot carries on without the logo: the delay task sends the Done
+        // this task would have sent.
+        delayTimeout = 2500;
+    }
 }
 
 void LKBX::delayTask(void *pvParameters) {
@@ -175,15 +177,28 @@ void LKBX::delayTask(void *pvParameters) {
             }
         }
 
+        // A Chaster session's question runs here, one step per pass, so
+        // asking never depends on memory for a task of its own. So does the
+        // state read from the dashboard.
+        plkbx->serviceChasterAsk();
+        plkbx->serviceStateRead();
+
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
 
 void LKBX::initDelayTask() {
-    xTaskCreatePinnedToCore(
-        delayTask, Tasks::delayDispatch.name, Tasks::delayDispatch.stackSize,
-        this, Tasks::delayDispatch.priority, &TaskHandles::delayDispatch,
-        Tasks::delayDispatch.core);
+    if (startTaskChecked(delayTask, Tasks::delayDispatch, this,
+                         &TaskHandles::delayDispatch)) {
+        return;
+    }
+    // Every timed step (the lock animation, preflight, the boot fallbacks)
+    // and the Chaster question run on this task: without it a locked box
+    // would stop on its first page. This runs in setup(), before TLS and the
+    // page tasks take memory, so starting again is the way out.
+    ESP_LOGE(TASKDEBUG_TAG, "Could not start the delay task; restarting");
+    delay(1000);
+    esp_restart();
 }
 
 void LKBX::drawPreflightTask(void *pvParameters) {
@@ -205,10 +220,11 @@ void LKBX::startPreflightScreen() {
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating preflight screen task");
-    xTaskCreatePinnedToCore(
-        drawPreflightTask, Tasks::preflightScreen.name,
-        Tasks::preflightScreen.stackSize, this, Tasks::preflightScreen.priority,
-        &TaskHandles::preflightScreen, Tasks::preflightScreen.core);
+    if (!startTaskChecked(drawPreflightTask, Tasks::preflightScreen, this,
+                          &TaskHandles::preflightScreen)) {
+        // The delay task sends the Done this task would have sent.
+        delayTimeout = 500;
+    }
 }
 
 void LKBX::startPreflight() const {
@@ -613,17 +629,62 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
 }
 
 void LKBX::startUnlockTimer() {
+    // A page being entered and restoreUnlockTimer can both get here.
+    std::lock_guard<std::mutex> lock(unlockTimerStart);
     if (TaskHandles::unlockTimer != nullptr) {
         ESP_LOGW(UNLOCK_TIMER_TAG, "UnlockTimer already running");
         return;
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating unlock timer task");
-    xTaskCreatePinnedToCore(startUnlockTimerTask, Tasks::unlockTimer.name,
-                            Tasks::unlockTimer.stackSize, this,
-                            Tasks::unlockTimer.priority,
-                            &TaskHandles::unlockTimer, Tasks::unlockTimer.core);
+    startTaskWithRetry(startUnlockTimerTask, Tasks::unlockTimer, this,
+                       &TaskHandles::unlockTimer);
 }
+
+// A locked timer needs its countdown task: it draws the time left, and at the
+// end it releases a local timer, moves a session to Ready to unlock or lifts
+// the emergency block. If the task could not be created when its page was
+// entered (no free block of internal RAM for its stack), or ended just as the
+// page was entered again, the box would stay on that page with nothing
+// counting. So the task is started again here for as long as it is missing.
+// Called from the activity log task.
+void LKBX::restoreUnlockTimer() {
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - unlockTimerCheckedMs) < 2000) return;
+    unlockTimerCheckedMs = now;
+
+    const bool onCountdownPage =
+        sm->is("locked.timer"_s) || sm->is("locked.ready"_s) ||
+        sm->is("locked.ready.addTime"_s) || sm->is("locked.frozen"_s) ||
+        sm->is("emergency.blocked"_s);
+    // The lock menu and its sleep page keep a countdown too, when the session
+    // has one that still has to act (lockMenuNeedsCountdown).
+    const bool onLockMenu = sm->is("lockMenu"_s) || sm->is("lockMenu.sleep"_s);
+    const bool missing =
+        TaskHandles::unlockTimer == nullptr &&
+        (onCountdownPage || (onLockMenu && lockMenuNeedsCountdown()));
+    // Two looks in a row, so a page that is just being entered starts its own
+    // task first.
+    if (!missing) {
+        unlockTimerMissing = false;
+        return;
+    }
+    if (!unlockTimerMissing) {
+        unlockTimerMissing = true;
+        return;
+    }
+
+    ESP_LOGW(UNLOCK_TIMER_TAG, "The countdown task is not running; starting it");
+    startUnlockTimer();
+}
+
+// Whether the lock menu must run the session's countdown. See
+// utils/lockMenuCountdown.h.
+bool LKBX::lockMenuNeedsCountdown() const {
+    if (!isLockedTimer()) return false;
+    return lockMenuCountsDown(true, isLocalPlay(), isReadyToUnlock());
+}
+
 void LKBX::calibrate() {
     if (TaskHandles::calibrate != nullptr) {
         ESP_LOGW(CALIBRATE_TAG, "Calibration task already running");
