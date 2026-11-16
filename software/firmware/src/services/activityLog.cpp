@@ -28,6 +28,8 @@ void initActivityLogTask() {
                     // the box reads the dashboard's state once for whatever
                     // was published while it could not listen.
                     if (serviceMqttPause()) lkbx->confirmServerClear();
+                    // A Wi-Fi station that has stayed down is begun again.
+                    serviceWifiStation();
                 }
                 vTaskDelay(50 / portTICK_PERIOD_MS);
             }

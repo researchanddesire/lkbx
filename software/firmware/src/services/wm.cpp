@@ -16,6 +16,7 @@
 #include "services/mqtt.h"
 #include "services/serverOnline.h"
 #include "tasks/TaskStart.h"
+#include "utils/stationKeeper.h"
 
 WiFiManager wm;
 
@@ -256,4 +257,23 @@ void serviceWifiPortal() {
     if (portalEntries.load() == entry && onWifiSetupPage()) {
         lkbx->drawWifiSetupUnavailable();
     }
+}
+
+void serviceWifiStation() {
+    // Only the activity log task comes here.
+    static StationKeeper keeper;
+    const bool connected = WiFi.status() == WL_CONNECTED;
+    // Looked at only while the station is down: a portal that is open, about
+    // to be opened, or still closing owns the Wi-Fi mode.
+    const bool held =
+        !connected &&
+        (portalTaskAlive.load() || portalEntries.load() != portalEntryHandled ||
+         onWifiSetupPage());
+    if (!keeper.due(connected, held, millis())) return;
+    // Nothing to connect to before the box has been given a network.
+    if (!wm.getWiFiIsSaved()) return;
+    ESP_LOGW(WIFI_CONNECT_TAG,
+             "Wi-Fi station has been down for %u s; connecting again",
+             static_cast<unsigned>(stationKeeper::kDownBeforeBeginMs / 1000));
+    WiFi.begin();
 }

@@ -21,4 +21,9 @@ void requestWifiPortal();
 // that does not exist.
 void serviceWifiPortal();
 
+// Called often from the activity log task. Begins the Wi-Fi station again,
+// with its saved credentials, when it has stayed down for 30 seconds
+// (utils/stationKeeper.h). Never while a setup portal is open or wanted.
+void serviceWifiStation();
+
 #endif  // LOCKBOX_WM_H

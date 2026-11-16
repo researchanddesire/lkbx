@@ -183,13 +183,14 @@ The core logic lives in `src/state/LKBX.h`. The state machine has ~62 states wit
 
 ### FreeRTOS Tasks
 
-3 tasks created in `main.cpp`:
+Tasks created in `setup()` (`main.cpp`) that run for as long as the box is up:
 
 | Task    | Core | Purpose                                      |
 |---------|------|----------------------------------------------|
-| WiFi    | 1    | Monitor/reconnect WiFi every 30s             |
+| Delay   | 1    | Timed steps (`Done`), the Chaster question, the state read |
 | Button  | 0    | Process button inputs (25ms tick, max prio)  |
 | Idle    | 0    | Power management (idle → sleep transitions)  |
+| Activity log | 0 | Sensor and state logs, countdown restore, report retries, Wi-Fi setup portal, MQTT restart, Wi-Fi station keeper |
 
 ### Idle/Sleep States
 
@@ -253,7 +254,7 @@ On first boot, the motor calibration routine auto-detects:
 - WiFiManager captive portal: AP name "Lockbox Setup". The setup network is open, so the portal serves only the root page, the network form, its save and exit; WiFiManager's other routes (`/erase`, `/restart`, `/info`, `/param`, `/paramsave`, `/close`, `/status`, `/update`, `/u`) answer 404 (`lib/LockboxSecurity/src/PortalRoutes.h`).
 - Power saving: `WIFI_PS_MAX_MODEM`
 - The setup portal and the MQTT client do not fit in R8's internal RAM together, and the portal's own task (8.3 KB stack) does not always fit beside the client either. So a Wi-Fi setup page only asks for its portal (`requestWifiPortal`, from the page's entry action), and the activity log task opens it (`serviceWifiPortal`, `services/wm.cpp`): it stops the client (`pauseMqttForPortal`), then creates the portal task, retrying while the client's stack is being freed. If the task still cannot be created the client starts again and the page shows "Wi-Fi Setup Not Open" instead of a QR code for a network that does not exist. One portal at a time: a page left and entered again gets a new portal after the old one has closed. The activity log task starts the client again two seconds after the last portal closed (or timed out with its page still up), retrying until the client task fits (`serviceMqttPause`, `utils/mqttPause.h`). Each start is a new connection with its own last will. Once connected again the box asks for one state read (`confirmServerClear`), for whatever was published while it could not listen. The stop is a clean MQTT disconnect, so the broker publishes no last will for it. Never call `pauseMqttForPortal` from the MQTT task or a state machine action, and never create the portal task before the client has stopped.
-- Nothing in the firmware re-begins Wi-Fi when the station stays disconnected; it relies on the Arduino core's reconnect on each disconnect event. The disconnect reason and the memory picture are logged (`Wi-Fi station disconnected (reason N)`, at most every 10 s) so a lost network can be told from a lost link.
+- The Arduino core connects the station again once per disconnect event, and not at all in three cases: that attempt fails without a further event, the access point sends the station away with reason 8 (which the core takes for the box's own wish), or the setup portal was opened while the box was offline (WiFiManager turns the station off and on closing reconnects only from `WL_IDLE_STATUS`, which the core does not report there). So the activity log task begins a station that has stayed down for 30 s again with its saved credentials, every 30 s (`serviceWifiStation`, `utils/stationKeeper.h`), never while a setup portal is open or wanted. The disconnect reason and the memory picture are logged (`Wi-Fi station disconnected (reason N)`, at most every 10 s). The firmware never turns Wi-Fi off on purpose; if that changes, the keeper must be told.
 
 ### NVS Preferences
 
