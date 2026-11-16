@@ -98,7 +98,7 @@ void test_nothing_is_sent_while_nothing_is_owed() {
 
 void test_an_owed_report_is_sent_at_once_and_then_every_ten_seconds() {
     emergencyReport::Owed owed;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     TEST_ASSERT_TRUE(owed.isOwed());
     TEST_ASSERT_TRUE(owed.due(1000));
     TEST_ASSERT_EQUAL_STRING(kReport.c_str(), owed.report().c_str());
@@ -110,7 +110,7 @@ void test_an_owed_report_is_sent_at_once_and_then_every_ten_seconds() {
 
 void test_the_brokers_acknowledgement_ends_it() {
     emergencyReport::Owed owed;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     owed.onAttempt(7, 1000);
     // Another report's acknowledgement changes nothing.
     owed.onPublished(8);
@@ -129,7 +129,7 @@ void test_the_brokers_acknowledgement_ends_it() {
 // the interval, without spending the budget.
 void test_an_attempt_that_could_not_be_sent_is_not_counted() {
     emergencyReport::Owed owed;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     owed.onAttempt(-1, 1000);
     TEST_ASSERT_EQUAL_UINT8(0, owed.attemptCount());
     TEST_ASSERT_FALSE(owed.due(1000 + kInterval - 1));
@@ -141,7 +141,7 @@ void test_an_attempt_that_could_not_be_sent_is_not_counted() {
 
 void test_the_attempts_are_bounded_per_connection() {
     emergencyReport::Owed owed;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     uint32_t now = 0;
     for (uint8_t attempt = 0; attempt < emergencyReport::kMaxAttempts;
          ++attempt) {
@@ -162,11 +162,11 @@ void test_the_attempts_are_bounded_per_connection() {
 // again, and sent at once.
 void test_a_report_the_dashboard_has_not_applied_is_owed_again() {
     emergencyReport::Owed owed;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     owed.onAttempt(7, 1000);
     owed.onPublished(7);
     TEST_ASSERT_TRUE(owed.takeAcknowledgement());
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     TEST_ASSERT_TRUE(owed.isOwed());
     TEST_ASSERT_FALSE(owed.isAcknowledged());
     TEST_ASSERT_TRUE(owed.due(1001));
@@ -179,7 +179,7 @@ void test_a_report_the_dashboard_has_not_applied_is_owed_again() {
 // it is not sent twice within the interval, and gets a new round.
 void test_owing_the_same_report_again_keeps_its_timing() {
     emergencyReport::Owed owed;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     uint32_t now = 0;
     for (uint8_t attempt = 0; attempt < emergencyReport::kMaxAttempts;
          ++attempt) {
@@ -188,7 +188,7 @@ void test_owing_the_same_report_again_keeps_its_timing() {
     }
     TEST_ASSERT_FALSE(owed.due(now));
     const uint32_t last = now - kInterval;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     TEST_ASSERT_EQUAL_UINT8(0, owed.attemptCount());
     TEST_ASSERT_FALSE(owed.due(last + kInterval - 1));
     TEST_ASSERT_TRUE(owed.due(last + kInterval));
@@ -200,7 +200,7 @@ void test_owing_the_same_report_again_keeps_its_timing() {
 // The dashboard ended the session by itself: the report is not sent.
 void test_a_dropped_report_is_not_sent() {
     emergencyReport::Owed owed;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     owed.onAttempt(7, 1000);
     owed.drop();
     TEST_ASSERT_FALSE(owed.isOwed());
@@ -213,11 +213,78 @@ void test_a_dropped_report_is_not_sent() {
 
 void test_the_interval_survives_the_millisecond_counter_wrapping() {
     emergencyReport::Owed owed;
-    owed.owe(kReport);
+    owed.owe(kReport, false);
     const uint32_t sent = UINT32_MAX - 2000;
     owed.onAttempt(7, sent);
     TEST_ASSERT_FALSE(owed.due(sent + kInterval - 1));
     TEST_ASSERT_TRUE(owed.due(sent + kInterval));
+}
+
+// A report for a dashboard session goes out at the emergency unlock itself.
+void test_a_session_report_is_sent_at_the_emergency_unlock() {
+    emergencyReport::Owed owed;
+    owed.owe(kReport, true);
+    TEST_ASSERT_TRUE(owed.due(1000));
+    TEST_ASSERT_FALSE(owed.isWaitingForState());
+    owed.onAttempt(7, 1000);
+    TEST_ASSERT_TRUE(owed.due(1000 + kInterval));
+}
+
+// The dashboard may have ended the session while the box was away, and that
+// lifts the lockout only while the report has not gone out. So after every
+// new connection the report waits for the state the box reads.
+void test_a_session_report_waits_for_the_state_after_a_new_connection() {
+    emergencyReport::Owed owed;
+    owed.owe(kReport, true);
+    owed.onAttempt(-1, 1000);
+    owed.onConnected();
+    TEST_ASSERT_TRUE(owed.isOwed());
+    TEST_ASSERT_TRUE(owed.isWaitingForState());
+    TEST_ASSERT_FALSE(owed.due(1000 + 100 * kInterval));
+    // The state still names the session: sent.
+    owed.owe(kReport, true);
+    TEST_ASSERT_FALSE(owed.isWaitingForState());
+    TEST_ASSERT_TRUE(owed.due(1000 + 100 * kInterval));
+}
+
+// After a restart the same holds: nothing goes out before the boot's state
+// read has named the session.
+void test_a_restored_session_report_waits_for_the_state() {
+    emergencyReport::Owed owed;
+    owed.restore(kReport, true);
+    TEST_ASSERT_TRUE(owed.isOwed());
+    TEST_ASSERT_TRUE(owed.isWaitingForState());
+    TEST_ASSERT_FALSE(owed.due(0));
+    owed.onConnected();
+    TEST_ASSERT_FALSE(owed.due(60000));
+    // The dashboard ended the session meanwhile: dropped, never sent.
+    owed.drop();
+    TEST_ASSERT_FALSE(owed.isOwed());
+    TEST_ASSERT_FALSE(owed.due(120000));
+
+    // Or it still holds it: sent, and acknowledged.
+    owed.restore(kReport, true);
+    owed.onConnected();
+    owed.owe(kReport, true);
+    TEST_ASSERT_TRUE(owed.due(60000));
+    owed.onAttempt(9, 60000);
+    owed.onPublished(9);
+    TEST_ASSERT_FALSE(owed.isOwed());
+    TEST_ASSERT_TRUE(owed.isAcknowledged());
+}
+
+// The dashboard never held a local session, so there is no state to wait
+// for: the report goes out on any connection.
+void test_a_local_report_is_sent_on_any_connection() {
+    emergencyReport::Owed owed;
+    owed.restore(kReport, false);
+    TEST_ASSERT_FALSE(owed.isWaitingForState());
+    TEST_ASSERT_TRUE(owed.due(0));
+    owed.onConnected();
+    TEST_ASSERT_TRUE(owed.due(0));
+    owed.onAttempt(-1, 0);
+    owed.onConnected();
+    TEST_ASSERT_TRUE(owed.due(kInterval));
 }
 
 int main() {
@@ -240,5 +307,9 @@ int main() {
     RUN_TEST(test_owing_the_same_report_again_keeps_its_timing);
     RUN_TEST(test_a_dropped_report_is_not_sent);
     RUN_TEST(test_the_interval_survives_the_millisecond_counter_wrapping);
+    RUN_TEST(test_a_session_report_is_sent_at_the_emergency_unlock);
+    RUN_TEST(test_a_session_report_waits_for_the_state_after_a_new_connection);
+    RUN_TEST(test_a_restored_session_report_waits_for_the_state);
+    RUN_TEST(test_a_local_report_is_sent_on_any_connection);
     return UNITY_END();
 }

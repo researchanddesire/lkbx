@@ -104,7 +104,7 @@ inline bool refusesEmergencyEndedSessionLocked(const String &incomingSessionId) 
     const String report = emergencyStringLocked(Keys::Base::emergencyReport);
     preferences.end();
 
-    if (!report.isEmpty()) emergencyReport::owed.owe(report.c_str());
+    if (!report.isEmpty()) emergencyReport::owed.owe(report.c_str(), true);
     ESP_LOGW(EMERGENCY_TAG,
              "The dashboard still holds the session an emergency unlock "
              "ended: not locking, and the emergency report is sent again");

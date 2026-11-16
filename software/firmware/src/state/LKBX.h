@@ -1262,9 +1262,10 @@ class LKBX {
     // The wearer used the emergency unlock. The report is written to flash
     // before anything is sent and is owed until the broker has acknowledged
     // it: the activity log task sends it, now if the box is connected, and
-    // again after a reconnect or a restart (serviceEmergencyReport). Sent
-    // once, as it was, a report that was lost left the dashboard holding the
-    // session as locked for good.
+    // again after a reconnect or a restart for as long as the dashboard still
+    // holds the session (serviceEmergencyReport, utils/emergencyReport.h).
+    // Sent once, as it was, a report that was lost left the dashboard holding
+    // the session as locked for good.
     void reportEmergencyUnlock() {
         // The box has moved on from whatever it reported before.
         lockedReport::tracker.clear();
@@ -1273,17 +1274,22 @@ class LKBX {
         const String report =
             createStateMessage(Str::Protocol::EMERGENCY, true, "");
         bool stored = false;
+        // Whether it reports the end of a dashboard session, as
+        // emergencyUnlockAction has just recorded.
+        bool forSession = false;
         if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) ==
             pdTRUE) {
             preferences.begin(Keys::base, false);
             stored = preferences.putString(Keys::Base::emergencyReport,
                                            report) == report.length();
             preferences.putBool(Keys::Base::emergencyOwed, stored);
+            forSession =
+                !emergencyStringLocked(Keys::Base::emergencySession).isEmpty();
             preferences.end();
             xSemaphoreGive(preferencesMutex);
         }
         // Owed in RAM either way, so it is sent during this boot at least.
-        emergencyReport::owed.owe(report.c_str());
+        emergencyReport::owed.owe(report.c_str(), forSession);
         emergencyReportLoaded = true;
         if (!stored) {
             ESP_LOGE(EMERGENCY_TAG,
@@ -1341,15 +1347,21 @@ class LKBX {
         const String report =
             owed ? emergencyStringLocked(Keys::Base::emergencyReport)
                  : String();
+        const bool forSession =
+            !emergencyStringLocked(Keys::Base::emergencySession).isEmpty();
         preferences.end();
         xSemaphoreGive(preferencesMutex);
 
         emergencyReportLoaded = true;
+        // The boot's own state read may have been first: then it has already
+        // said whether the report is still owed.
         if (owed && !report.isEmpty() && !emergencyReport::owed.isOwed()) {
-            emergencyReport::owed.owe(report.c_str());
+            emergencyReport::owed.restore(report.c_str(), forSession);
             ESP_LOGW(EMERGENCY_TAG,
                      "An emergency report is still owed from before the "
-                     "restart; it is sent once the box is connected");
+                     "restart; it is sent %s",
+                     forSession ? "if the dashboard still holds the session"
+                                : "once the box is connected");
         }
         return true;
     }

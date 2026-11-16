@@ -15,9 +15,16 @@
 // flash in plain form (services write it; this is the part in RAM), so it
 // survives a restart, and the same bytes are sealed and sent again: the
 // dashboard knows a report by its id and takes a second copy as a duplicate.
-// It is sent when the box is connected, again every ten seconds without an
-// acknowledgement, twelve times per connection at most; a new connection, or
-// the dashboard showing that it still has not applied it, starts a new round.
+//
+// When it is sent matters for the lockout (utils/emergencyRecord.h, rule 2):
+// a dashboard that ended the session before it heard of the emergency lifts
+// the lockout, and that can only be told while the report has not gone out.
+// So a report for a dashboard session is sent at the emergency unlock itself,
+// and after that only while the dashboard is seen to still hold the session:
+// every new connection waits for the state the box reads after it. A report
+// for a local session, which the dashboard never held, is sent on any
+// connection. While it may be sent it goes out at once, again every ten
+// seconds without an acknowledgement, twelve times per connection at most.
 //
 // LOCKED has its own tracker (utils/lockedReport.h) and every other report
 // the unsent-report holder (utils/unsentReport.h), which keeps only the
@@ -33,9 +40,12 @@ namespace emergencyReport {
     // (acknowledgements); every operation holds the mutex.
     class Owed {
       public:
-        // The report is owed (again). The same report that is already owed
-        // keeps its place, with a new round of attempts.
-        void owe(const std::string &report) {
+        // The report is owed and may be sent now: the emergency unlock has
+        // just happened, or the dashboard still names the session it ended.
+        // `forSession`: it reports the end of a dashboard session. The same
+        // report that is already owed keeps its place, with a new round of
+        // attempts.
+        void owe(const std::string &report, bool forSession) {
             std::lock_guard<std::mutex> lock(m);
             if (!owed_ || stored_ != report) {
                 stored_ = report;
@@ -43,6 +53,23 @@ namespace emergencyReport {
                 sentOnce_ = false;
             }
             owed_ = true;
+            forSession_ = forSession;
+            mayBeSent_ = true;
+            acknowledged_ = false;
+            toRecord_ = false;
+            attempts_ = 0;
+        }
+
+        // A report that was owed when the box last stopped. One for a
+        // dashboard session waits until the dashboard's state has been read.
+        void restore(const std::string &report, bool forSession) {
+            std::lock_guard<std::mutex> lock(m);
+            stored_ = report;
+            msgId_ = -1;
+            sentOnce_ = false;
+            owed_ = true;
+            forSession_ = forSession;
+            mayBeSent_ = !forSession;
             acknowledged_ = false;
             toRecord_ = false;
             attempts_ = 0;
@@ -51,7 +78,8 @@ namespace emergencyReport {
         // Whether to send it now. Only spent while the box is connected.
         bool due(uint32_t nowMs) const {
             std::lock_guard<std::mutex> lock(m);
-            if (!owed_ || stored_.empty() || attempts_ >= kMaxAttempts) {
+            if (!owed_ || !mayBeSent_ || stored_.empty() ||
+                attempts_ >= kMaxAttempts) {
                 return false;
             }
             if (!sentOnce_) return true;
@@ -78,10 +106,15 @@ namespace emergencyReport {
             if (attempts_ < UINT8_MAX) ++attempts_;
         }
 
-        // A fresh connection gets a fresh budget; the report stays owed.
+        // A fresh connection gets a fresh budget; the report stays owed. The
+        // box was away, and the dashboard may have ended the session
+        // meanwhile: a report for a session waits for the state the box
+        // reads after every connection (owe() once it still names it).
         void onConnected() {
             std::lock_guard<std::mutex> lock(m);
-            if (owed_) attempts_ = 0;
+            if (!owed_) return;
+            attempts_ = 0;
+            if (forSession_) mayBeSent_ = false;
         }
 
         // The broker acknowledged a publish. Only the tracked id counts.
@@ -111,6 +144,7 @@ namespace emergencyReport {
         void drop() {
             std::lock_guard<std::mutex> lock(m);
             owed_ = false;
+            mayBeSent_ = false;
             acknowledged_ = false;
             toRecord_ = false;
             msgId_ = -1;
@@ -121,6 +155,11 @@ namespace emergencyReport {
         bool isOwed() const {
             std::lock_guard<std::mutex> lock(m);
             return owed_;
+        }
+        // Owed, and waiting for the dashboard's state before it is sent.
+        bool isWaitingForState() const {
+            std::lock_guard<std::mutex> lock(m);
+            return owed_ && !mayBeSent_;
         }
         // The broker has acknowledged the report that was last owed.
         bool isAcknowledged() const {
@@ -135,6 +174,10 @@ namespace emergencyReport {
       private:
         mutable std::mutex m;
         bool owed_ = false;
+        // It reports the end of a dashboard session.
+        bool forSession_ = false;
+        // Owed and free to go out: see the note on when it is sent.
+        bool mayBeSent_ = false;
         bool acknowledged_ = false;
         // An acknowledgement that has not been recorded in flash yet.
         bool toRecord_ = false;
