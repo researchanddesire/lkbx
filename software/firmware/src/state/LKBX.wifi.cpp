@@ -310,6 +310,44 @@ void LKBX::pollPairingTask(void *pvParameters) {
 void LKBX::syncLockStateOnBootTask(void *pvParameters) {
     LKBX *plkbx = static_cast<LKBX *>(pvParameters);
 
+    // A local session is the box's own, and the dashboard is not asked about
+    // it (utils/emergencyRecord.h, bootKeepsLocalSession). The dashboard has
+    // no session for a local lock and answers "no session", which cleared the
+    // stored lock and opened the box before its timer had run out (2026-11-16
+    // rig run on R2, on every restart with Wi-Fi up). The box carries on to
+    // its saved lock, as it does when it starts offline, and the timer ends
+    // it.
+    bool keepsLocalSession = true;
+    bool stateKnown = false;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::base);
+        keepsLocalSession = bootKeepsLocalSession(
+            preferences.getBool(Keys::Base::isLocalPlay, false),
+            preferences.getBool(Keys::Base::isLocked, false));
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+        stateKnown = true;
+    }
+    if (keepsLocalSession) {
+        if (stateKnown) {
+            ESP_LOGI(SYNC_LOCK_STATE_TAG,
+                     "Local session held - keeping it; the dashboard is not "
+                     "asked");
+        } else {
+            // Not known to be local: the stored state is restored untouched,
+            // which is safe for any session, and the dashboard is asked once
+            // the box is up. That read leaves a local session alone.
+            ESP_LOGW(SYNC_LOCK_STATE_TAG,
+                     "Could not read the stored session - restoring it and "
+                     "asking the dashboard later");
+            plkbx->confirmServerClear();
+        }
+        bootHttpDone = true;
+        plkbx->sm->process_event(Done{});
+        vTaskDelete(nullptr);
+        return;
+    }
+
     bool offline = isOffline();
     // The pairing endpoint can wait for a network route. Do not call it
     // before resuming a saved session when WiFi is unavailable.
@@ -340,6 +378,8 @@ void LKBX::syncLockStateOnBootTask(void *pvParameters) {
             plkbx->sm->process_event(Break{});
             break;
         case SyncResult::UNLOCKED:
+            // An emergency lockout that outlasts this answer is restored by
+            // the home state (utils/emergencyRecord.h).
             ESP_LOGI(SYNC_LOCK_STATE_TAG, "Server reports no active session");
             if (isPaddleLocked()) {
                 ESP_LOGW(SYNC_LOCK_STATE_TAG,

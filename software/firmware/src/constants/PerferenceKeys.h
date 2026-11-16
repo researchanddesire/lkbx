@@ -44,6 +44,14 @@ namespace Keys {
 
         constexpr char lastUpdated[] = "lastUpdated";
         constexpr char emergencyEnd[] = "emergencyEnd";
+        // The emergency unlock's record (utils/emergencyRecord.h). The
+        // session it ended, until the dashboard is seen to have ended it too;
+        // empty for a local session.
+        constexpr char emergencySession[] = "eSession";
+        // The EMERGENCY report in plain form, and whether the broker has yet
+        // to acknowledge it (utils/emergencyReport.h).
+        constexpr char emergencyReport[] = "eReport";
+        constexpr char emergencyOwed[] = "eOwed";
         constexpr char pairingCode[] = "pairingCode";
         constexpr char hueShift[] = "hueShift";
         constexpr char isPaired[] = "isPaired";

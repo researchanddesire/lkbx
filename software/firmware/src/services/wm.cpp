@@ -158,9 +158,12 @@ std::atomic<bool> portalTaskAlive{false};
 // The entry the activity log task last acted on. Only that task touches it.
 uint32_t portalEntryHandled = 0;
 
-// The portal task is created right after the MQTT client has stopped. Its
-// stack is freed by the idle task a moment later, so the first attempts can
-// fail where a later one fits.
+// The portal task is created right after the MQTT client has closed its
+// connection, which returns its TLS session to the heap over a moment, so
+// the first attempts can fail where a later one fits. If it still does not
+// fit beside the client's task, that task is stopped after all, and its stack
+// is freed by the idle task a moment later.
+constexpr int kPortalTaskAttemptsBesideClient = 4;
 constexpr int kPortalTaskAttempts = 8;
 constexpr uint32_t kPortalTaskWaitMs = 250;
 
@@ -230,24 +233,51 @@ void serviceWifiPortal() {
     // The page was left before the portal could open.
     if (!onWifiSetupPage()) return;
 
-    // The portal and the MQTT client do not fit in internal RAM together on
-    // R8 hardware (utils/mqttPause.h). Stop the client first, which gives
-    // back its task stack and TLS session, and only then create the portal's
-    // task: created first, that task had to fit beside the client, and on R8
-    // it once did not (largest free block 2,560 bytes). This waits for the
-    // MQTT task to end: about a second when connected, longer while the
-    // client is in the middle of a connection attempt.
+    // The portal and a connected MQTT client do not fit in internal RAM
+    // together on R8 hardware (utils/mqttPause.h). Take the client off the
+    // broker first, which gives back its TLS session, and only then create
+    // the portal's task: created first, that task had to fit beside the
+    // connected client, and on R8 it once did not (largest free block 2,560
+    // bytes). This waits for the MQTT task: about a second when connected,
+    // longer while the client is in the middle of a connection attempt.
     pauseMqttForPortal();
     portalTaskAlive.store(true);
-    if (startTaskWithRetry(processWifiTask, Tasks::wifi,
-                           reinterpret_cast<void *>(
-                               static_cast<uintptr_t>(entry)),
-                           &TaskHandles::wifi, kPortalTaskAttempts,
-                           kPortalTaskWaitMs)) {
+    void *argument =
+        reinterpret_cast<void *>(static_cast<uintptr_t>(entry));
+    bool opened = startTaskWithRetry(processWifiTask, Tasks::wifi, argument,
+                                     &TaskHandles::wifi,
+                                     kPortalTaskAttemptsBesideClient,
+                                     kPortalTaskWaitMs);
+    if (!opened) {
+        // No block for the portal's stack. The client's task is kept so that
+        // it never has to be created again, but its 10 KB stack is what the
+        // portal's 8.3 KB one fits into, so it is given up now. The client
+        // then needs a new task after the portal, and if that cannot be
+        // created for two minutes the box restarts at rest
+        // (utils/networkRecovery.h).
+        if (releaseMqttTaskForPortal()) {
+            ESP_LOGW(WIFI_SETUP_TAG,
+                     "Wi-Fi setup did not fit beside the MQTT task; that "
+                     "task was stopped for it");
+        }
+        opened = startTaskWithRetry(processWifiTask, Tasks::wifi, argument,
+                                    &TaskHandles::wifi, kPortalTaskAttempts,
+                                    kPortalTaskWaitMs);
+    }
+    if (opened) {
         ESP_LOGI(WIFI_SETUP_TAG,
                  "Wi-Fi setup opening: at least %u bytes of the activity log "
                  "task's stack have stayed free",
                  static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+        // The portal now runs beside the client's task, so what is left for
+        // it goes to the log for the rig.
+        ESP_LOGI(WIFI_SETUP_TAG,
+                 "Wi-Fi setup opening: largest free internal block %u bytes, "
+                 "%u bytes free",
+                 static_cast<unsigned>(
+                     heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned>(
+                     heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
         return;
     }
 
@@ -320,19 +350,19 @@ bool atRestForRestart() {
     // Only from a page the boot sequence leads back to by itself: the home
     // menu or a locked page. Never while the box is locking or unlocking,
     // asking Chaster, on a break, in a menu, on a setup or pairing page,
-    // updating or still starting. And never during an emergency lockout: the
-    // wearer has just used the safety release, and if its report did not
-    // reach the dashboard, the boot sequence would be told the session is
-    // still locked.
+    // updating or still starting. And not during an emergency lockout: the
+    // wearer has just used the safety release. A boot no longer locks the
+    // session an emergency unlock ended (utils/emergencyRecord.h), but that
+    // has to be seen on the rig before this page joins the list.
     const bool restingPage =
         lkbx->sm->is("home.idle"_s) || lkbx->sm->is("locked"_s) ||
         lkbx->sm->is("locked.timer"_s) || lkbx->sm->is("locked.ready"_s) ||
         lkbx->sm->is("locked.frozen"_s);
     if (!restingPage) return false;
-    // A local session is the box's own and needs no network. The boot
-    // sequence asks the dashboard for the session, and the dashboard knows
-    // of none, so the box does not restart by itself while it holds one. A
-    // value that cannot be read counts as a local session.
+    // A local session is the box's own and needs no network, so the box
+    // does not restart by itself while it holds one. A boot now keeps a local
+    // session (bootKeepsLocalSession); this stays until that has been seen
+    // on the rig. A value that cannot be read counts as a local session.
     bool localSession = true;
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
         preferences.begin(Keys::base);
@@ -352,7 +382,14 @@ void serviceNetworkRecovery() {
         // Any HTTP response at all means the network carries traffic.
         const bool answered = status > 0;
         networkRecoveryPlan.checked(answered, millis());
-        if (answered) {
+        if (answered && mqttClientCannotStart()) {
+            // Not the broker's fault either: the box's own client is what is
+            // missing, and that has its own clock (CLIENT_DOWN below).
+            ESP_LOGW(WIFI_CONNECT_TAG,
+                     "Network recovery: the dashboard answers (HTTP %d), but "
+                     "the box's own MQTT client cannot be started",
+                     status);
+        } else if (answered) {
             ESP_LOGW(WIFI_CONNECT_TAG,
                      "Network recovery: the dashboard answers (HTTP %d), so "
                      "only the broker is out of reach; nothing to do",
@@ -376,6 +413,7 @@ void serviceNetworkRecovery() {
     in.brokerUp = mqttConnected;
     in.stationUp = WiFi.status() == WL_CONNECTED;
     in.brokerExpected = mqttClientExpected();
+    in.clientDown = mqttClientCannotStart();
     // Looked at only while the box is off the broker: a setup page owns the
     // Wi-Fi mode, as for the station keeper.
     in.held = !in.brokerUp &&
@@ -418,8 +456,16 @@ void serviceNetworkRecovery() {
                            : "could not be told to connect again");
             break;
         }
+        case RecoveryStep::CLIENT_DOWN:
+            logNetworkRecovery(
+                "the MQTT client could not be started for two minutes; "
+                "restarting once the box is at rest");
+            break;
         case RecoveryStep::RESTART:
-            logNetworkRecovery("step 2, restarting now to get the network back");
+            logNetworkRecovery(
+                networkRecoveryPlan.forClient()
+                    ? "restarting now to start the MQTT client again"
+                    : "step 2, restarting now to get the network back");
             Motor::clear();
             // Lets the line above reach the serial port.
             vTaskDelay(pdMS_TO_TICKS(500));

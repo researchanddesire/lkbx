@@ -3,22 +3,30 @@
 
 #include <stdint.h>
 
-// The Wi-Fi setup portal and the MQTT client do not fit in internal RAM
-// together on R8 hardware. With both up (2026-11-15 rig run) free internal RAM
-// fell to 183 bytes: TLS handshakes failed for lack of memory and the
-// Bluetooth link dropped. So the client is stopped while a portal is open,
-// which gives back its 10 KB task stack and its TLS session, and started again
-// once the last portal has closed. Each start is a new connection, with its
-// own sealed last will.
+// The Wi-Fi setup portal and a connected MQTT client do not fit in internal
+// RAM together on R8 hardware. With both up (2026-11-15 rig run) free internal
+// RAM fell to 183 bytes: TLS handshakes failed for lack of memory and the
+// Bluetooth link dropped. So the client is taken off the broker while a
+// portal is open and connects again once the last portal has closed. Each
+// connection is a new one, with its own sealed last will.
 //
-// The client is stopped before the portal's own task is created, so that task
-// never has to fit beside it (services/wm.cpp).
+// "Paused" means the client's connection is closed, which gives back its TLS
+// session, while its task is kept (services/mqtt.cpp). The task and its 10 KB
+// stack used to be given back too, and then had to be created again after the
+// portal: on R8 that block was not always there in one piece, and the box
+// stayed off the broker for good (2026-11-16 rig run). The task is only
+// stopped as well when the portal's own task cannot be created beside it.
+//
+// The client is paused before the portal's own task is created, so that task
+// never has to fit beside a connected client (services/wm.cpp).
 //
 // The same retry starts a client whose task could not be created at boot
-// (startFailed): the box keeps trying every two seconds instead of staying
-// off the broker until it restarts.
+// (startFailed), or was stopped after all: the box keeps trying every two
+// seconds instead of staying off the broker until it restarts. A client that
+// cannot be started for two minutes is a fault of the box's own, and network
+// recovery restarts the box when it is at rest (utils/networkRecovery.h).
 //
-// While the client is stopped the box hears nothing the dashboard publishes,
+// While the client is paused the box hears nothing the dashboard publishes,
 // so after it has connected again the box reads its state from the dashboard
 // once (utils/stateRead.h).
 //

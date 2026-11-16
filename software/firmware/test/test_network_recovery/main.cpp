@@ -11,6 +11,7 @@ constexpr uint32_t kAfter = networkRecovery::kAfterReconnectMs;
 constexpr uint32_t kRecheck = networkRecovery::kBrokerOnlyRecheckMs;
 constexpr uint32_t kRest = networkRecovery::kAtRestMs;
 constexpr uint32_t kFresh = networkRecovery::kNoAnswerFreshMs;
+constexpr uint32_t kDown = networkRecovery::kClientDownMs;
 
 // On the broker.
 RecoveryInputs online() {
@@ -28,6 +29,14 @@ RecoveryInputs cutOff(bool atRest = false) {
     in.brokerExpected = true;
     in.brokerUp = false;
     in.atRest = atRest;
+    return in;
+}
+
+// The fault of the 2026-11-16 rig run: the box's own MQTT client cannot be
+// started, while the station is up and the dashboard answers.
+RecoveryInputs clientDown(bool atRest = false) {
+    RecoveryInputs in = cutOff(atRest);
+    in.clientDown = true;
     return in;
 }
 
@@ -362,6 +371,198 @@ void test_waits_survive_the_millisecond_counter_wrapping() {
                      RecoveryStep::CHECK);
 }
 
+// R8, 2026-11-16: after the Wi-Fi page the MQTT client's task could not be
+// created for more than ten minutes. The dashboard answered each time it was
+// asked, so the box did nothing and stayed off the broker.
+void test_a_client_that_cannot_start_restarts_the_box_whatever_the_dashboard_says() {
+    NetworkRecovery recovery = lostAt(0);
+    uint32_t now = 0;
+    // The first pass with the client down starts its clock.
+    TEST_ASSERT_TRUE(recovery.next(clientDown(), now) == RecoveryStep::NONE);
+    // A minute off the broker: the dashboard is asked, and answers.
+    now = kCheck;
+    TEST_ASSERT_TRUE(recovery.next(clientDown(), now) == RecoveryStep::CHECK);
+    recovery.checked(true, now + 2000);
+    TEST_ASSERT_FALSE(recovery.restartWanted());
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), kDown - 1) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_FALSE(recovery.restartWanted());
+    // Two minutes without a client: a restart is wanted, said once.
+    now = kDown;
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now) ==
+                     RecoveryStep::CLIENT_DOWN);
+    TEST_ASSERT_TRUE(recovery.restartWanted());
+    TEST_ASSERT_TRUE(recovery.forClient());
+    // At rest for a few seconds without a break, then it restarts.
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + 1000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + kRest) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + 1000 + kRest) ==
+                     RecoveryStep::RESTART);
+    TEST_ASSERT_TRUE(recovery.forClient());
+    // Nothing more is asked of the caller.
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + 2000 + kRest) ==
+                     RecoveryStep::NONE);
+}
+
+// The client is tried every two seconds. One that starts within the two
+// minutes was only short of memory for a moment.
+void test_a_client_that_starts_again_in_time_is_left_alone() {
+    NetworkRecovery recovery = lostAt(0);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), 1000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), kDown - 2000) ==
+                     RecoveryStep::CHECK);
+    recovery.checked(true, kDown - 1000);
+    // It has started: the box is off the broker, with a running client.
+    TEST_ASSERT_TRUE(recovery.next(cutOff(true), kDown - 500) ==
+                     RecoveryStep::NONE);
+    for (uint32_t later = 0; later < kDown; later += 1000) {
+        TEST_ASSERT_TRUE(recovery.next(cutOff(true), kDown + later) ==
+                         RecoveryStep::NONE);
+        TEST_ASSERT_FALSE(recovery.restartWanted());
+    }
+    // Down again later: the two minutes start over.
+    const uint32_t again = 2 * kDown;
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), again) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), again + kDown - 1) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), again + kDown) ==
+                     RecoveryStep::CLIENT_DOWN);
+}
+
+void test_a_client_that_starts_while_the_restart_waits_calls_it_off() {
+    NetworkRecovery recovery = lostAt(0);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(), 0) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(), kCheck) ==
+                     RecoveryStep::CHECK);
+    recovery.checked(true, kCheck);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(), kDown) ==
+                     RecoveryStep::CLIENT_DOWN);
+    // In use, so no restart yet. Then the client's task fits after all.
+    TEST_ASSERT_TRUE(recovery.next(clientDown(false), kDown + 1000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(true), kDown + 2000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_FALSE(recovery.restartWanted());
+    TEST_ASSERT_FALSE(recovery.forClient());
+    TEST_ASSERT_TRUE(recovery.next(cutOff(true), kDown + 2000 + kRest) ==
+                     RecoveryStep::NONE);
+    // On the broker again: all of it is over.
+    TEST_ASSERT_TRUE(recovery.next(online(), kDown + 20000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_FALSE(recovery.stepped());
+}
+
+// The same rules as for a box that is cut off: only at rest, for a few
+// seconds without a break.
+void test_the_restart_for_the_client_waits_until_the_box_is_at_rest() {
+    NetworkRecovery recovery = lostAt(0);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(), 0) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(), kCheck) ==
+                     RecoveryStep::CHECK);
+    recovery.checked(true, kCheck);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(), kDown) ==
+                     RecoveryStep::CLIENT_DOWN);
+    uint32_t now = kDown;
+    for (uint32_t later = 1000; later < 600000; later += 1000) {
+        TEST_ASSERT_TRUE(recovery.next(clientDown(false), now + later) ==
+                         RecoveryStep::NONE);
+    }
+    now += 600000;
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(false), now + kRest - 1000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + kRest) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + 2 * kRest - 1) ==
+                     RecoveryStep::NONE);
+    // No question to the dashboard first: the client is looked at on every
+    // pass, so the fault is never an old one.
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + 2 * kRest) ==
+                     RecoveryStep::RESTART);
+}
+
+// A restart that did not help must not be followed by another: a client that
+// cannot start at boot is tried every two seconds and the box stays up.
+void test_a_client_that_never_started_since_boot_never_restarts_the_box() {
+    NetworkRecovery recovery;
+    for (uint32_t now = 0; now < 20 * kDown; now += 1000) {
+        TEST_ASSERT_TRUE(recovery.next(clientDown(true), now) ==
+                         RecoveryStep::NONE);
+        TEST_ASSERT_FALSE(recovery.restartWanted());
+    }
+}
+
+// The clock for the client only runs while the station is up, and a setup
+// page owns the client.
+void test_the_client_clock_stops_for_a_station_that_is_down_or_a_setup_page() {
+    NetworkRecovery recovery = lostAt(0);
+    RecoveryInputs noStation = clientDown(true);
+    noStation.stationUp = false;
+    for (uint32_t now = 0; now < 5 * kDown; now += 1000) {
+        TEST_ASSERT_TRUE(recovery.next(noStation, now) == RecoveryStep::NONE);
+        TEST_ASSERT_FALSE(recovery.restartWanted());
+    }
+    // The station is back: two minutes from now, not from before.
+    uint32_t now = 5 * kDown;
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + kCheck) ==
+                     RecoveryStep::CHECK);
+    recovery.checked(true, now + kCheck);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + kDown - 1) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now + kDown) ==
+                     RecoveryStep::CLIENT_DOWN);
+    // The station drops while the restart waits: called off.
+    TEST_ASSERT_TRUE(recovery.next(noStation, now + kDown + 1000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_FALSE(recovery.restartWanted());
+
+    recovery = lostAt(0);
+    RecoveryInputs setupPage = clientDown(true);
+    setupPage.held = true;
+    for (uint32_t later = 0; later < 5 * kDown; later += 1000) {
+        TEST_ASSERT_TRUE(recovery.next(setupPage, later) ==
+                         RecoveryStep::NONE);
+        TEST_ASSERT_FALSE(recovery.restartWanted());
+    }
+}
+
+// Step 1 stops the client to get the network back. If its task then cannot
+// be created again, the dashboard answering changes nothing: the two minutes
+// for the client lead to the restart.
+void test_a_client_that_cannot_start_after_step_one_restarts_the_box() {
+    NetworkRecovery recovery = lostAt(0);
+    uint32_t now = untilFirstCheck(recovery, 0);
+    recovery.checked(false, now);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), now) == RecoveryStep::RECONNECT);
+    // The client was stopped and does not start again.
+    const uint32_t downAt = now + 4000;
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), downAt) ==
+                     RecoveryStep::NONE);
+    // Step 1 brought the network back: the dashboard answers now.
+    now += kAfter;
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), now) ==
+                     RecoveryStep::CHECK);
+    recovery.checked(true, now);
+    TEST_ASSERT_FALSE(recovery.restartWanted());
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), downAt + kDown - 1) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), downAt + kDown) ==
+                     RecoveryStep::CLIENT_DOWN);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true), downAt + kDown + 1000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(clientDown(true),
+                                   downAt + kDown + 1000 + kRest) ==
+                     RecoveryStep::RESTART);
+    TEST_ASSERT_TRUE(recovery.forClient());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_a_box_on_the_broker_is_left_alone);
@@ -382,5 +583,12 @@ int main() {
     RUN_TEST(test_a_setup_page_or_a_missing_client_stops_everything);
     RUN_TEST(test_an_answer_nobody_waits_for_is_dropped);
     RUN_TEST(test_waits_survive_the_millisecond_counter_wrapping);
+    RUN_TEST(test_a_client_that_cannot_start_restarts_the_box_whatever_the_dashboard_says);
+    RUN_TEST(test_a_client_that_starts_again_in_time_is_left_alone);
+    RUN_TEST(test_a_client_that_starts_while_the_restart_waits_calls_it_off);
+    RUN_TEST(test_the_restart_for_the_client_waits_until_the_box_is_at_rest);
+    RUN_TEST(test_a_client_that_never_started_since_boot_never_restarts_the_box);
+    RUN_TEST(test_the_client_clock_stops_for_a_station_that_is_down_or_a_setup_page);
+    RUN_TEST(test_a_client_that_cannot_start_after_step_one_restarts_the_box);
     return UNITY_END();
 }
