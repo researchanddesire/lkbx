@@ -318,14 +318,16 @@ bool atRestForRestart() {
         return false;
     }
     // Only from a page the boot sequence leads back to by itself: the home
-    // menu, a locked page, the emergency lockout. Never while the box is
-    // locking or unlocking, asking Chaster, on a break, in a menu, on a
-    // setup or pairing page, updating or still starting.
+    // menu or a locked page. Never while the box is locking or unlocking,
+    // asking Chaster, on a break, in a menu, on a setup or pairing page,
+    // updating or still starting. And never during an emergency lockout: the
+    // wearer has just used the safety release, and if its report did not
+    // reach the dashboard, the boot sequence would be told the session is
+    // still locked.
     const bool restingPage =
         lkbx->sm->is("home.idle"_s) || lkbx->sm->is("locked"_s) ||
         lkbx->sm->is("locked.timer"_s) || lkbx->sm->is("locked.ready"_s) ||
-        lkbx->sm->is("locked.frozen"_s) ||
-        lkbx->sm->is("emergency.blocked"_s);
+        lkbx->sm->is("locked.frozen"_s);
     if (!restingPage) return false;
     // A local session is the box's own and needs no network. The boot
     // sequence asks the dashboard for the session, and the dashboard knows
