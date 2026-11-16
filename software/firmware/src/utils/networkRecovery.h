@@ -29,6 +29,16 @@
 //
 // Being back on the broker ends all of it at any point.
 //
+// A dashboard that answers does not always mean the fault is the broker's.
+// The box's own MQTT client can be the part that is missing: it was stopped
+// and its task could not be created again, because no block of internal RAM
+// is large enough for its stack (2026-11-16 rig run on R8: `Error create mqtt
+// task` every two seconds for more than ten minutes, with at most 5.6 KB in
+// one piece, while the dashboard answered every time it was asked). Nothing
+// outside the box mends that. So a client that has not been able to start for
+// two minutes, with the station up, takes the box to the same restart at
+// rest, whatever the dashboard says.
+//
 // A restart is the last step because it is the only thing that has brought a
 // cut-off box back. It is safe for the same reason waking from deep sleep is:
 // the lock state, the session and its deadline are in flash and the boot
@@ -65,6 +75,10 @@ namespace networkRecovery {
     // failed to answer. Older than this, the question is asked once more
     // before the box restarts.
     constexpr uint32_t kNoAnswerFreshMs = 60000;
+    // The box's own MQTT client has not been able to start for this long,
+    // with the station up, before a restart is wanted. It is tried every two
+    // seconds meanwhile (utils/mqttPause.h).
+    constexpr uint32_t kClientDownMs = 120000;
 }  // namespace networkRecovery
 
 enum class RecoveryStep : uint8_t {
@@ -72,6 +86,9 @@ enum class RecoveryStep : uint8_t {
     CHECK,      // ask the dashboard; report the outcome with checked()
     RECONNECT,  // stop MQTT, connect the Wi-Fi station again, start MQTT
     RESTART,    // restart the box now
+    // The MQTT client has not been able to start for two minutes: a restart
+    // is wanted from here on. Reported once, for the log.
+    CLIENT_DOWN,
 };
 
 struct RecoveryInputs {
@@ -87,6 +104,11 @@ struct RecoveryInputs {
     // The box is at rest and may restart. Only looked at while
     // restartWanted().
     bool atRest = false;
+    // The MQTT client is meant to run and does not: its task could not be
+    // created (services/mqtt.cpp, mqttClientCannotStart). A client that is
+    // only waiting for its next start, or is stopped for a setup portal, is
+    // not down.
+    bool clientDown = false;
 };
 
 class NetworkRecovery {
@@ -101,6 +123,32 @@ class NetworkRecovery {
         if (!onBrokerBefore_ || !in.brokerExpected || in.held) {
             reset();
             return RecoveryStep::NONE;
+        }
+
+        // The box's own client cannot be started. That is the box's fault
+        // and not the broker's, so it does not wait for what the dashboard
+        // says. The clock only runs while the station is up, as below.
+        const bool down = in.clientDown && in.stationUp;
+        if (!down) {
+            downCounting_ = false;
+            // The client runs again, or the station dropped: looked at
+            // afresh.
+            if (stage_ == Stage::CLIENT_DOWN) reset();
+        } else if (stage_ == Stage::CLIENT_DOWN) {
+            if (!restAtLeast(in, nowMs)) return RecoveryStep::NONE;
+            stage_ = Stage::RESTARTING;
+            return RecoveryStep::RESTART;
+        } else if (stage_ != Stage::RESTARTING) {
+            if (!downCounting_) {
+                downCounting_ = true;
+                downSinceMs_ = nowMs;
+            } else if (static_cast<uint32_t>(nowMs - downSinceMs_) >=
+                       networkRecovery::kClientDownMs) {
+                stage_ = Stage::CLIENT_DOWN;
+                forClient_ = true;
+                resting_ = false;
+                return RecoveryStep::CLIENT_DOWN;
+            }
         }
 
         switch (stage_) {
@@ -159,19 +207,7 @@ class NetworkRecovery {
                     resting_ = false;
                     return RecoveryStep::NONE;
                 }
-                if (!in.atRest) {
-                    resting_ = false;
-                    return RecoveryStep::NONE;
-                }
-                if (!resting_) {
-                    resting_ = true;
-                    restingSinceMs_ = nowMs;
-                    return RecoveryStep::NONE;
-                }
-                if (static_cast<uint32_t>(nowMs - restingSinceMs_) <
-                    networkRecovery::kAtRestMs) {
-                    return RecoveryStep::NONE;
-                }
+                if (!restAtLeast(in, nowMs)) return RecoveryStep::NONE;
                 // The box restarts on a "no answer" that is recent.
                 if (elapsed(nowMs, networkRecovery::kNoAnswerFreshMs)) {
                     stage_ = Stage::SECOND_CHECK;
@@ -182,6 +218,7 @@ class NetworkRecovery {
 
             case Stage::FIRST_CHECK:
             case Stage::SECOND_CHECK:
+            case Stage::CLIENT_DOWN:
             case Stage::RESTARTING:
             default:
                 return RecoveryStep::NONE;
@@ -212,7 +249,12 @@ class NetworkRecovery {
     bool stepped() const { return stage_ != Stage::WATCHING; }
     // A restart is waiting for the box to be at rest: the caller works out
     // RecoveryInputs::atRest.
-    bool restartWanted() const { return stage_ == Stage::RESTART_WANTED; }
+    bool restartWanted() const {
+        return stage_ == Stage::RESTART_WANTED || stage_ == Stage::CLIENT_DOWN;
+    }
+    // The restart that is wanted, or was just asked for, is for a client that
+    // cannot start, not for a network that carries nothing.
+    bool forClient() const { return forClient_; }
 
   private:
     enum class Stage : uint8_t {
@@ -223,6 +265,8 @@ class NetworkRecovery {
         AFTER_RECONNECT,
         SECOND_CHECK,
         RESTART_WANTED,
+        // The MQTT client cannot be started: a restart is wanted.
+        CLIENT_DOWN,
         RESTARTING,
     };
 
@@ -230,6 +274,23 @@ class NetworkRecovery {
         stage_ = Stage::WATCHING;
         counting_ = false;
         resting_ = false;
+        downCounting_ = false;
+        forClient_ = false;
+    }
+
+    // Whether the box has been at rest on every pass for kAtRestMs.
+    bool restAtLeast(const RecoveryInputs &in, uint32_t nowMs) {
+        if (!in.atRest) {
+            resting_ = false;
+            return false;
+        }
+        if (!resting_) {
+            resting_ = true;
+            restingSinceMs_ = nowMs;
+            return false;
+        }
+        return static_cast<uint32_t>(nowMs - restingSinceMs_) >=
+               networkRecovery::kAtRestMs;
     }
 
     bool elapsed(uint32_t nowMs, uint32_t waitMs) const {
@@ -248,6 +309,12 @@ class NetworkRecovery {
     // At rest on every pass since restingSinceMs_.
     bool resting_ = false;
     uint32_t restingSinceMs_ = 0;
+    // The MQTT client has been unable to start, with the station up, on
+    // every pass since downSinceMs_.
+    bool downCounting_ = false;
+    uint32_t downSinceMs_ = 0;
+    // The restart is for the client (CLIENT_DOWN was reached).
+    bool forClient_ = false;
 };
 
 #endif  // LOCKBOX_NETWORK_RECOVERY_H

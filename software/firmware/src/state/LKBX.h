@@ -33,6 +33,9 @@
 #include "tasks/TaskStart.h"
 #include "utils/breakTiming.h"
 #include "utils/chasterAsk.h"
+#include "utils/countdownWatch.h"
+#include "utils/emergencyReport.h"
+#include "utils/emergencyStore.h"
 #include "utils/getPairingCode.h"
 #include "utils/lockMenuCountdown.h"
 #include "utils/lockedReport.h"
@@ -108,6 +111,12 @@ class LKBX {
     std::mutex unlockTimerStart;
     uint32_t unlockTimerCheckedMs = 0;
     bool unlockTimerMissing = false;
+    // While that task cannot be created, the delay task watches the deadline
+    // in its place (utils/countdownWatch.h). Set by restoreUnlockTimer on the
+    // activity log task, read by the delay task.
+    void serviceCountdownWatch();
+    std::atomic<bool> countdownNeedsWatch{false};
+    uint32_t countdownWatchedMs = 0;
     void checkOfferedLock();
     uint32_t offerStartedMs = 0;
     String offerSessionId;
@@ -483,11 +492,26 @@ class LKBX {
             auto movePaddleToLock = [](LKBX &o) { o.motor.lock(false); };
             auto movePaddleToUnlock = [](LKBX &o) { o.motor.unlock(false); };
             auto emergencyUnlockAction = [](LKBX &o) {
+                // Whose session this ends, read before the local flag goes.
+                const bool wasLocal = isLocalPlay();
                 clearLocalPlay();
                 o.motor.unlock();
 
                 if (xSemaphoreTake(preferencesMutex,
                                    portTICK_PERIOD_MS * 1000) == pdTRUE) {
+                    // The dashboard's session this ends, kept so that it is
+                    // never taken up again (utils/emergencyRecord.h). A local
+                    // session is not the dashboard's: none is recorded.
+                    String endedSession;
+                    if (!wasLocal) {
+                        preferences.begin(Keys::session);
+                        if (preferences.isKey(Keys::Session::sessionId)) {
+                            endedSession = preferences.getString(
+                                Keys::Session::sessionId, "");
+                        }
+                        preferences.end();
+                    }
+
                     struct timeval tv{};
                     lockboxGetTimeOfDay(&tv, nullptr);
                     uint64_t currentDatetimeMs = ((uint64_t)tv.tv_sec) * 1000 +
@@ -507,12 +531,20 @@ class LKBX {
                     preferences.putBool(Keys::Base::isEBlocked, true);
                     preferences.putULong64(Keys::Base::emergencyEnd,
                                            emergencyEndDatetimeMs);
+                    preferences.putString(Keys::Base::emergencySession,
+                                          endedSession);
                     preferences.end();
                     xSemaphoreGive(preferencesMutex);
 
                     ESP_LOGD(EMERGENCY_TAG, "emergencyEndDatetimeMs: %llu",
                              emergencyEndDatetimeMs);
                 }
+            };
+            // The EMERGENCY report is kept in flash and repeated until the
+            // broker has acknowledged it (utils/emergencyReport.h). Runs
+            // after emergencyUnlockAction, so the report carries the lockout.
+            auto reportEmergencyUnlock = [](LKBX &o) {
+                o.reportEmergencyUnlock();
             };
             auto calibrateButton = [](LKBX &o) { o.calibrate(); };
 
@@ -1013,7 +1045,7 @@ class LKBX {
                 "emergency.unlock"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "emergency.unlock"_s + on_entry<_> / (drawEUnlockQR),
                 "emergency.unlock"_s + backPress = "lockMenu"_s,
-                "emergency.unlock"_s + buttonPress / (emergencyUnlockAction, sendMessage(Str::Protocol::EMERGENCY)) = "locking"_s,
+                "emergency.unlock"_s + buttonPress / (emergencyUnlockAction, reportEmergencyUnlock) = "locking"_s,
                 "emergency.unlock"_s + lock / (switchToLock)= "locking"_s,
                 "emergency.unlock"_s + locktimer / (switchToTimer)= "locking"_s,
                 "emergency.unlock"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
@@ -1227,6 +1259,157 @@ class LKBX {
         ESP_LOGD(MQTT_TAG, "Message enqueue result: %d", result);
     }
 
+    // The wearer used the emergency unlock. The report is written to flash
+    // before anything is sent and is owed until the broker has acknowledged
+    // it: the activity log task sends it, now if the box is connected, and
+    // again after a reconnect or a restart for as long as the dashboard still
+    // holds the session (serviceEmergencyReport, utils/emergencyReport.h).
+    // Sent once, as it was, a report that was lost left the dashboard holding
+    // the session as locked for good.
+    void reportEmergencyUnlock() {
+        // The box has moved on from whatever it reported before.
+        lockedReport::tracker.clear();
+        unsentReport::holder.clear();
+
+        const String report =
+            createStateMessage(Str::Protocol::EMERGENCY, true, "");
+        bool stored = false;
+        // Whether it reports the end of a dashboard session, as
+        // emergencyUnlockAction has just recorded.
+        bool forSession = false;
+        if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) ==
+            pdTRUE) {
+            preferences.begin(Keys::base, false);
+            stored = preferences.putString(Keys::Base::emergencyReport,
+                                           report) == report.length();
+            preferences.putBool(Keys::Base::emergencyOwed, stored);
+            forSession =
+                !emergencyStringLocked(Keys::Base::emergencySession).isEmpty();
+            preferences.end();
+            xSemaphoreGive(preferencesMutex);
+        }
+        // Owed in RAM either way, so it is sent during this boot at least.
+        emergencyReport::owed.owe(report.c_str(), forSession);
+        emergencyReportLoaded = true;
+        if (!stored) {
+            ESP_LOGE(EMERGENCY_TAG,
+                     "The emergency report could not be stored; it is only "
+                     "repeated until the next restart");
+        }
+    }
+
+    // From the activity log task: sends the emergency report while it is
+    // owed, and records the broker's acknowledgement.
+    void serviceEmergencyReport() {
+        // Once per boot: a report that was still owed when the box restarted.
+        if (!emergencyReportLoaded) loadOwedEmergencyReport();
+
+        // The acknowledgement is noted on the MQTT task and written to flash
+        // here, where waiting for the preferences is harmless.
+        if (emergencyReport::owed.takeAcknowledgement()) {
+            emergencyAckToRecord = true;
+        }
+        if (emergencyAckToRecord && recordEmergencyReportDelivered()) {
+            emergencyAckToRecord = false;
+        }
+
+        // A report for a dashboard session waits for the dashboard's state.
+        // The boot reads it and so does every reconnect, but if that read
+        // failed nothing would ask again while the connection holds. So
+        // after half a minute of waiting on a live connection the state read
+        // is asked for once; it is tried until one has completed.
+        if (!mqttConnected || !emergencyReport::owed.isWaitingForState()) {
+            emergencyWaitSinceMs = 0;
+            emergencyStateAsked = false;
+        } else if (emergencyWaitSinceMs == 0) {
+            emergencyWaitSinceMs = millis() | 1;
+        } else if (!emergencyStateAsked &&
+                   static_cast<uint32_t>(millis() - emergencyWaitSinceMs) >=
+                       30000) {
+            emergencyStateAsked = true;
+            ESP_LOGI(EMERGENCY_TAG,
+                     "The emergency report is waiting for the dashboard's "
+                     "state; reading it");
+            confirmServerClear();
+        }
+
+        if (!mqttConnected || !client || !isTimeSynced ||
+            !emergencyReport::owed.due(millis())) {
+            return;
+        }
+        const std::string report = emergencyReport::owed.report();
+        const String topic = cloudTopic();
+        // Sealed afresh each time; the report inside keeps its id, so the
+        // dashboard takes a second copy as a duplicate.
+        const String sealed = sealCloudReport(
+            topic.c_str(), lockbox::security::ReportKind::state,
+            String(report.c_str()));
+        int result = -1;
+        if (!sealed.isEmpty()) {
+            result = esp_mqtt_client_enqueue(client, topic.c_str(),
+                                             sealed.c_str(), 0, 2, false, true);
+        }
+        emergencyReport::owed.onAttempt(result, millis());
+        ESP_LOGW(MQTT_TAG, "Emergency report %s (%u/%u), id %d",
+                 result >= 0 ? "sent" : "could not be sent yet",
+                 static_cast<unsigned>(emergencyReport::owed.attemptCount()),
+                 static_cast<unsigned>(emergencyReport::kMaxAttempts), result);
+    }
+
+    // Reads a report that was owed when the box last stopped. False when the
+    // preferences are busy; tried again on the next pass.
+    bool loadOwedEmergencyReport() {
+        if (xSemaphoreTake(preferencesMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            return false;
+        }
+        preferences.begin(Keys::base);
+        const bool owed = preferences.getBool(Keys::Base::emergencyOwed, false);
+        const String report =
+            owed ? emergencyStringLocked(Keys::Base::emergencyReport)
+                 : String();
+        const bool forSession =
+            !emergencyStringLocked(Keys::Base::emergencySession).isEmpty();
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+
+        emergencyReportLoaded = true;
+        // The boot's own state read may have been first: then it has already
+        // said whether the report is still owed.
+        if (owed && !report.isEmpty() && !emergencyReport::owed.isOwed()) {
+            emergencyReport::owed.restore(report.c_str(), forSession);
+            ESP_LOGW(EMERGENCY_TAG,
+                     "An emergency report is still owed from before the "
+                     "restart; it is sent %s",
+                     forSession ? "if the dashboard still holds the session"
+                                : "once the box is connected");
+        }
+        return true;
+    }
+
+    // The broker has the report. False when the preferences are busy.
+    bool recordEmergencyReportDelivered() {
+        if (xSemaphoreTake(preferencesMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            return false;
+        }
+        preferences.begin(Keys::base, false);
+        // Owed again meanwhile (the dashboard still showed the session):
+        // that newer fact stands.
+        if (!emergencyReport::owed.isOwed()) {
+            preferences.putBool(Keys::Base::emergencyOwed, false);
+            // The text is kept while the dashboard may still show the
+            // session it ended; without one it cannot be owed again.
+            if (emergencyStringLocked(Keys::Base::emergencySession).isEmpty() &&
+                preferences.isKey(Keys::Base::emergencyReport)) {
+                preferences.remove(Keys::Base::emergencyReport);
+            }
+        }
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+        ESP_LOGI(EMERGENCY_TAG,
+                 "The broker has acknowledged the emergency report");
+        return true;
+    }
+
     // Keeps a state report that could not be sealed or queued, for
     // retryUnsentReport (utils/unsentReport.h). This happens when internal
     // RAM is short, so the copy lives in PSRAM where there is any, and
@@ -1303,6 +1486,7 @@ class LKBX {
         checkOfferedLock();
         checkBreakCooldown();
         restoreUnlockTimer();
+        serviceEmergencyReport();
         if (logger.stateChangeMessagePending) {
             logger.stateChangeMessagePending = false;
             sendActivityLog(Str::Protocol::STATE_CHANGE);
@@ -1372,6 +1556,14 @@ class LKBX {
     }
 
     uint32_t clockRetryStartedMs = 0;
+    // The emergency report owed from before a restart has been read. Only
+    // the activity log task and the emergency unlock itself touch these.
+    std::atomic<bool> emergencyReportLoaded{false};
+    bool emergencyAckToRecord = false;
+    // Since when a report has waited for the dashboard's state on a live
+    // connection (0: it is not waiting), and whether the state was asked for.
+    uint32_t emergencyWaitSinceMs = 0;
+    bool emergencyStateAsked = false;
 };
 
 #endif  // LOCKBOX_LKBX_H

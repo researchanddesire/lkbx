@@ -182,6 +182,9 @@ void LKBX::delayTask(void *pvParameters) {
         // state read from the dashboard.
         plkbx->serviceChasterAsk();
         plkbx->serviceStateRead();
+        // And the deadline of a locked page whose countdown task could not
+        // be created.
+        plkbx->serviceCountdownWatch();
 
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
@@ -667,6 +670,7 @@ void LKBX::restoreUnlockTimer() {
     // task first.
     if (!missing) {
         unlockTimerMissing = false;
+        countdownNeedsWatch.store(false);
         return;
     }
     if (!unlockTimerMissing) {
@@ -676,6 +680,79 @@ void LKBX::restoreUnlockTimer() {
 
     ESP_LOGW(UNLOCK_TIMER_TAG, "The countdown task is not running; starting it");
     startUnlockTimer();
+    // Still no room for it. The page stays without its time for now, but the
+    // deadline must not: the delay task watches it until the task exists.
+    if (TaskHandles::unlockTimer == nullptr &&
+        !countdownNeedsWatch.exchange(true)) {
+        ESP_LOGW(UNLOCK_TIMER_TAG,
+                 "The countdown task still does not fit; the delay task "
+                 "watches the deadline until it does");
+    }
+}
+
+// The countdown task's work at the deadline, for as long as that task cannot
+// be created (utils/countdownWatch.h): release a local timer, show Ready to
+// unlock, end the emergency lockout. One look a second, from the delay task,
+// which sends the event on its own stack as it does every Done.
+void LKBX::serviceCountdownWatch() {
+    if (!countdownNeedsWatch.load()) return;
+    const uint32_t passMs = millis();
+    if (static_cast<uint32_t>(passMs - countdownWatchedMs) < 1000) return;
+    countdownWatchedMs = passMs;
+    // The task exists after all: it does this itself.
+    if (TaskHandles::unlockTimer != nullptr) return;
+
+    CountdownView view;
+    view.readyPage =
+        sm->is("locked.ready"_s) || sm->is("locked.ready.addTime"_s);
+    const bool onLockMenu = sm->is("lockMenu"_s) || sm->is("lockMenu.sleep"_s);
+    const bool countdownPage =
+        view.readyPage || sm->is("locked.timer"_s) ||
+        sm->is("locked.frozen"_s) || sm->is("emergency.blocked"_s) ||
+        (onLockMenu && lockMenuNeedsCountdown());
+    if (!countdownPage) return;
+
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) != pdTRUE) {
+        return;
+    }
+    preferences.begin(Keys::base);
+    view.lockout = preferences.getBool(Keys::Base::isEBlocked, false);
+    if (view.lockout) {
+        view.endMs = preferences.getULong64(Keys::Base::emergencyEnd, 0);
+    }
+    preferences.end();
+    preferences.begin(Keys::session);
+    // A lockout without an end of its own runs to the session's end, as on
+    // the countdown task.
+    if (!view.lockout || view.endMs == 0) {
+        view.endMs = preferences.getULong64(Keys::Session::lockEnd, view.endMs);
+    }
+    view.frozen = freezeHoldsCountdown(
+        preferences.getBool(Keys::Session::isFrozen, false));
+    preferences.end();
+    xSemaphoreGive(preferencesMutex);
+
+    // A local timer's end moves with corrections of the clock.
+    if (!view.lockout && processPendingLocalTimerClockCorrections()) return;
+
+    struct timeval tv{};
+    lockboxGetTimeOfDay(&tv, nullptr);
+    view.nowMs = ((uint64_t)tv.tv_sec) * 1000 + ((uint64_t)tv.tv_usec) / 1000;
+
+    switch (countdownDue(view)) {
+        case CountdownDue::TIMER_EXPIRED:
+            sm->process_event(TimerExpired{});
+            break;
+        case CountdownDue::LOCKOUT_OVER:
+            sm->process_event(Unlock{});
+            break;
+        case CountdownDue::BACK_TO_COUNTDOWN:
+            sm->process_event(LockTimer{});
+            break;
+        case CountdownDue::NOTHING:
+        default:
+            break;
+    }
 }
 
 // Whether the lock menu must run the session's countdown. See

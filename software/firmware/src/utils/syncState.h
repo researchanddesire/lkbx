@@ -20,6 +20,7 @@
 #include "state/Guard.h"
 #include "utils/breakTiming.h"
 #include "utils/chasterAsk.h"
+#include "utils/emergencyStore.h"
 #include "utils/freezeState.h"
 #include "utils/generateId.h"
 #include "utils/lockReportReconcile.h"
@@ -286,6 +287,16 @@ static SyncResult saveState(SyncMessage lockSession,
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) != pdTRUE) {
         ESP_LOGE(SYNC_STATE_TAG, "Failed to acquire preferencesMutex in saveState");
         return SyncResult::FAILED;
+    }
+
+    // A session this box ended by emergency unlock is never taken up again
+    // (utils/emergencyRecord.h). The dashboard still names it when the
+    // emergency report never arrived; taken as any other answer, it locked
+    // the box again at the next boot. Nothing is stored and nothing moves;
+    // the report is sent again.
+    if (refusesEmergencyEndedSessionLocked(lockSession.sessionId)) {
+        xSemaphoreGive(preferencesMutex);
+        return SyncResult::NO_CHANGE;
     }
 
     preferences.begin(Keys::session, false);
@@ -558,8 +569,18 @@ static SyncResult applySessionResponse(int httpResponseCode,
     bool shouldClear = data[Str::Json::CLEAR].as<bool>();
 
     if (shouldClear) {
+        // The dashboard has no active session for the box. That ends the
+        // session the box holds, but not every emergency lockout
+        // (utils/emergencyRecord.h): one that stays keeps its page, so no
+        // unlock is sent for it. The paddle is open already.
+        bool recordRead = false;
+        const bool lockoutStays = emergencyLockoutOutlastsClear(recordRead);
+        if (!recordRead) return SyncResult::FAILED;
         const SyncResult result = clearState();
-        if (outcome) outcome->effect = SyncEffect::MOTOR_UNLOCK;
+        if (outcome) {
+            outcome->effect =
+                lockoutStays ? SyncEffect::NONE : SyncEffect::MOTOR_UNLOCK;
+        }
         return result;
     }
 

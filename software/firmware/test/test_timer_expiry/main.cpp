@@ -2,6 +2,7 @@
 #include <unity.h>
 
 #include "../../src/state/Events.h"
+#include "../../src/utils/countdownWatch.h"
 #include "../../src/utils/lockMenuCountdown.h"
 
 using namespace sml;
@@ -176,6 +177,76 @@ void test_lock_menu_has_no_countdown_without_a_timer() {
     TEST_ASSERT_FALSE(lockMenuCountsDown(false, false, true));
 }
 
+// While the countdown task cannot be created, the delay task makes the same
+// decision once a second (utils/countdownWatch.h).
+namespace {
+CountdownView countdownAt(uint64_t endMs, uint64_t nowMs) {
+    CountdownView view;
+    view.endMs = endMs;
+    view.nowMs = nowMs;
+    return view;
+}
+}  // namespace
+
+void test_watch_leaves_a_running_countdown_alone() {
+    TEST_ASSERT_TRUE(countdownDue(countdownAt(60000, 1000)) ==
+                     CountdownDue::NOTHING);
+    TEST_ASSERT_TRUE(countdownDue(countdownAt(60000, 59999)) ==
+                     CountdownDue::NOTHING);
+}
+
+// R8, 2026-11-16: the countdown task could not be created 22 times in a row.
+// A local timer must still release at its deadline.
+void test_watch_reports_a_deadline_that_has_passed() {
+    TEST_ASSERT_TRUE(countdownDue(countdownAt(60000, 60000)) ==
+                     CountdownDue::TIMER_EXPIRED);
+    TEST_ASSERT_TRUE(countdownDue(countdownAt(60000, 90000)) ==
+                     CountdownDue::TIMER_EXPIRED);
+    // On Ready to unlock too: a local timer restored there is released.
+    CountdownView ready = countdownAt(60000, 90000);
+    ready.readyPage = true;
+    TEST_ASSERT_TRUE(countdownDue(ready) == CountdownDue::TIMER_EXPIRED);
+}
+
+void test_watch_ends_a_lockout_that_has_run_out() {
+    CountdownView lockout = countdownAt(60000, 59999);
+    lockout.lockout = true;
+    TEST_ASSERT_TRUE(countdownDue(lockout) == CountdownDue::NOTHING);
+    lockout.nowMs = 60000;
+    TEST_ASSERT_TRUE(countdownDue(lockout) == CountdownDue::LOCKOUT_OVER);
+    // A freeze left on the session the lockout ended does not hold it.
+    lockout.frozen = true;
+    TEST_ASSERT_TRUE(countdownDue(lockout) == CountdownDue::LOCKOUT_OVER);
+}
+
+void test_watch_never_expires_a_held_session() {
+    CountdownView held = countdownAt(60000, 90000);
+    held.frozen = true;
+    TEST_ASSERT_TRUE(countdownDue(held) == CountdownDue::NOTHING);
+    // From Ready to unlock a held session goes back to its own page.
+    held.readyPage = true;
+    TEST_ASSERT_TRUE(countdownDue(held) == CountdownDue::BACK_TO_COUNTDOWN);
+}
+
+void test_watch_returns_to_the_countdown_when_time_was_added() {
+    CountdownView ready = countdownAt(120000, 90000);
+    ready.readyPage = true;
+    TEST_ASSERT_TRUE(countdownDue(ready) == CountdownDue::BACK_TO_COUNTDOWN);
+}
+
+// The decision reaches the transitions the countdown task drives.
+void test_watch_decision_releases_a_local_timer() {
+    Context c;
+    Machine machine{c};
+    machine.set_current_states("locked.timer"_s);
+    if (countdownDue(countdownAt(60000, 60000)) ==
+        CountdownDue::TIMER_EXPIRED) {
+        machine.process_event(TimerExpired{});
+    }
+    TEST_ASSERT_TRUE(machine.is("locking"_s));
+    TEST_ASSERT_EQUAL_INT(1, c.unlocks);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_local_timer_releases_paddle_once);
@@ -191,5 +262,11 @@ int main() {
     RUN_TEST(test_lock_menu_stays_open_for_a_session_ready_to_unlock);
     RUN_TEST(test_lock_menu_releases_a_local_timer_that_has_run_out);
     RUN_TEST(test_lock_menu_has_no_countdown_without_a_timer);
+    RUN_TEST(test_watch_leaves_a_running_countdown_alone);
+    RUN_TEST(test_watch_reports_a_deadline_that_has_passed);
+    RUN_TEST(test_watch_ends_a_lockout_that_has_run_out);
+    RUN_TEST(test_watch_never_expires_a_held_session);
+    RUN_TEST(test_watch_returns_to_the_countdown_when_time_was_added);
+    RUN_TEST(test_watch_decision_releases_a_local_timer);
     return UNITY_END();
 }

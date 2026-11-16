@@ -19,6 +19,8 @@
 #include "state/LKBX.h"
 #include "structs/Version.h"
 #include "utils/dashboard.hpp"
+#include "utils/emergencyReport.h"
+#include "utils/emergencyStore.h"
 #include "utils/heldSession.h"
 #include "utils/lastWill.h"
 #include "utils/lockedReport.h"
@@ -69,6 +71,9 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
 
     switch (event->event_id) {
         case MQTT_EVENT_BEFORE_CONNECT:
+            // From here until MQTT_EVENT_DISCONNECTED the client is
+            // connecting or connected (services/mqtt.cpp).
+            noteMqttLink(true);
             // One secure connection is set up at a time (utils/tlsGate.h):
             // while an HTTPS request is opening its connection the client
             // waits here, a few seconds at most, and then connects anyway. A
@@ -89,8 +94,10 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
             strncpy(mqttTopic, cloudTopic().c_str(), sizeof(mqttTopic) - 1);
             esp_mqtt_client_subscribe(mqttClient, mqttTopic, 2);
             mqttConnected = true;
-            // An unconfirmed LOCKED report gets a fresh retry budget.
+            // An unconfirmed LOCKED report gets a fresh retry budget, and so
+            // does an emergency report that is still owed.
             lockedReport::tracker.onConnected();
+            emergencyReport::owed.onConnected();
             {
                 const auto token = firmware::provenance::currentToken();
                 JsonDocument provenance;
@@ -119,6 +126,7 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
         case MQTT_EVENT_DISCONNECTED:
             // Also how a failed connection attempt ends.
             endTlsTurn(TlsUser::MQTT);
+            noteMqttLink(false);
             mqttFrame.reset();
             Serial.println(Str::Protocol::MQTT_DISCONNECTED);
             mqttConnected = false;
@@ -127,6 +135,7 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
             // QoS 2 completes the full handshake before this fires, so the
             // broker really has the message.
             lockedReport::tracker.onPublished(event->msg_id);
+            emergencyReport::owed.onPublished(event->msg_id);
             break;
         case MQTT_EVENT_SUBSCRIBED:
             Serial.println(Str::Protocol::MQTT_SUBSCRIBED);
@@ -190,10 +199,27 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                 if (doc[Str::Json::CLEAR].as<bool>()) {
                     switch (classifyServerClear(doc[Str::Json::SESSION_ID] | "",
                                                 savedSessionId.c_str())) {
-                        case ServerClear::APPLY:
+                        case ServerClear::APPLY: {
+                            // The dashboard ended the session the box holds.
+                            // It also does that in answer to the box's own
+                            // emergency report, and the lockout outlives
+                            // that clear (utils/emergencyRecord.h).
+                            bool recordRead = false;
+                            const bool lockoutStays =
+                                emergencyLockoutOutlastsClear(recordRead);
+                            if (!recordRead) {
+                                ESP_LOGW(MQTT_TAG,
+                                         "Could not read the emergency record "
+                                         "-- asking the dashboard");
+                                lkbx->confirmServerClear();
+                                break;
+                            }
                             clearState();
-                            lkbx->sm->process_event(Unlock{});
+                            if (!lockoutStays) {
+                                lkbx->sm->process_event(Unlock{});
+                            }
                             break;
+                        }
                         case ServerClear::CONFIRM:
                             ESP_LOGW(MQTT_TAG,
                                      "Clear names no session -- asking the "
