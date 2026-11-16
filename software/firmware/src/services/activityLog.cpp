@@ -30,6 +30,9 @@ void initActivityLogTask() {
                     if (serviceMqttPause()) lkbx->confirmServerClear();
                     // A Wi-Fi station that has stayed down is begun again.
                     serviceWifiStation();
+                    // A station that is up while nothing gets through is
+                    // looked into, and in the end the box restarts itself.
+                    serviceNetworkRecovery();
                 }
                 vTaskDelay(50 / portTICK_PERIOD_MS);
             }

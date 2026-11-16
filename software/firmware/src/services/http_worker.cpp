@@ -20,6 +20,7 @@
 #include "constants/LogTags.h"
 #include "tasks/TaskParams.h"
 #include "services/serverOnline.h"
+#include "services/tlsTurn.h"
 
 #if defined(VERSIONDEV)
 #if !defined(LKBX_DEV_CA_PEM) || !defined(LKBX_DEV_API_TOKEN) || !defined(LKBX_DEV_API_BASE_URL)
@@ -258,9 +259,26 @@ int executeAttempt(HttpRequest &req) {
         }
     } cleanup{client};
 
-    if (!addHeaders(client, req) || !prepareIo(client, req) ||
-        esp_http_client_open(client, req.isPost ? req.body.length() : 0) != ESP_OK)
-        return -1;
+    if (!addHeaders(client, req) || !prepareIo(client, req)) return -1;
+    bool opened = false;
+    {
+        // One secure connection is set up at a time (utils/tlsGate.h): while
+        // the MQTT client is connecting, this request waits for it. The wait
+        // comes out of the request's own deadline, a third of what is left
+        // at most, and ends early when the request is cancelled or the
+        // worker is stopped. A request that waited in vain connects anyway.
+        // The turn ends with the block, as soon as the connection is up or
+        // has failed.
+        const TlsTurn turn(
+            TlsUser::HTTP,
+            std::min<uint32_t>(tlsGate::kHttpWaitMs,
+                               static_cast<uint32_t>(remainingMs(req)) / 3),
+            [&req] { return expired(req); });
+        opened = prepareIo(client, req) &&
+                 esp_http_client_open(
+                     client, req.isPost ? req.body.length() : 0) == ESP_OK;
+    }
+    if (!opened) return -1;
     size_t written = 0;
     while (req.isPost && written < req.body.length()) {
         if (!prepareIo(client, req)) return -1;
@@ -522,6 +540,11 @@ HttpPending *postDetached(const String &url, const JsonDocument &doc,
     if (body.length() != expectedLength) return nullptr;
     return reinterpret_cast<HttpPending *>(
         submit(url, body, true, timeoutMs, 0, false, nullptr, false));
+}
+
+HttpPending *getDetached(const String &url, int timeoutMs) {
+    return reinterpret_cast<HttpPending *>(
+        submit(url, String(), false, timeoutMs, 0, false, nullptr, false));
 }
 
 HttpPending *getDetachedWithDeviceSecret(const String &url,

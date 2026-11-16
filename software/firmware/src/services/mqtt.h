@@ -32,9 +32,23 @@ void retryMqttStartLater();
 // Called often from a task that is always running. Starts a client that is
 // not running (stopped for a portal, or never started) once no portal is
 // open, trying again until its task fits in memory. True once per start, when
-// the client has connected again: the caller then asks for the dashboard's
-// state to be read (LKBX::confirmServerClear).
+// the client has connected again, and once for every connection that follows
+// a drop: the caller then asks for the dashboard's state to be read
+// (LKBX::confirmServerClear), because the box heard nothing while it was away.
 bool serviceMqttPause();
+// A stop of the client is in progress. The MQTT task reads this while it
+// waits for its turn to connect (services/tlsTurn.h), so a stop never waits
+// behind that.
+bool mqttStopRequested();
+// The client exists and no Wi-Fi setup portal holds it stopped: the box means
+// to be on the broker. False while another task is stopping the client.
+bool mqttClientExpected();
+// Network recovery (utils/networkRecovery.h): stops the client, which gives
+// back its task stack and its TLS session, and has serviceMqttPause start it
+// again. Waits for the MQTT task to end, so the same rule as for
+// pauseMqttForPortal applies: never from the MQTT task or a state machine
+// action.
+void restartMqttForRecovery();
 // Stops and frees the client, for a firmware update or a client that could not
 // be started.
 void destroyMqtt();

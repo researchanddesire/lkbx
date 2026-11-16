@@ -119,4 +119,30 @@ class MqttPause {
     uint32_t waitFromMs_ = 0;
 };
 
+// The client also connects again by itself, without having been stopped: the
+// broker or the network dropped the connection and the client's own retry
+// brought it back. The broker keeps nothing for a client that was away, so a
+// command published in between is never delivered (2026-11-16 rig run: the
+// broker answered `no_matching_subscribers` for one sent during a short
+// drop). So the state is read after every connection that follows a drop, not
+// only after a start.
+//
+// The first connection since the box started is not one of these: the boot
+// sequence reads the state itself.
+class MqttReconnect {
+  public:
+    // Called often with whether the client is connected now. True once for
+    // every connection after the first.
+    bool seen(bool connected) {
+        const bool again = connected && !connected_ && connectedBefore_;
+        if (connected) connectedBefore_ = true;
+        connected_ = connected;
+        return again;
+    }
+
+  private:
+    bool connected_ = false;
+    bool connectedBefore_ = false;
+};
+
 #endif  // LOCKBOX_MQTT_PAUSE_H

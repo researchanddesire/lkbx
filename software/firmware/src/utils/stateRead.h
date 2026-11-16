@@ -7,8 +7,9 @@
 
 // The box reads its state from the dashboard over HTTPS whenever it may have
 // missed something: after its MQTT client was stopped for the Wi-Fi setup
-// portal, when a clear names no session, when a sync names another session
-// than the one it holds, when Chaster does not know the session.
+// portal, after every MQTT connection that follows a drop, when a clear names
+// no session, when a sync names another session than the one it holds, when
+// Chaster does not know the session.
 //
 // The read runs on the delay task, which always exists, in steps that never
 // block it (LKBX::serviceStateRead): the HTTP worker takes the request and the

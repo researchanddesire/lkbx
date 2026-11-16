@@ -15,6 +15,7 @@
 #include "services/getId.h"
 #include "services/hardwareHealth.h"
 #include "services/machine.h"
+#include "services/tlsTurn.h"
 #include "state/LKBX.h"
 #include "structs/Version.h"
 #include "utils/dashboard.hpp"
@@ -68,6 +69,14 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
 
     switch (event->event_id) {
         case MQTT_EVENT_BEFORE_CONNECT:
+            // One secure connection is set up at a time (utils/tlsGate.h):
+            // while an HTTPS request is opening its connection the client
+            // waits here, a few seconds at most, and then connects anyway. A
+            // stop of the client ends the wait at once. The turn is given
+            // back when the client has connected or the attempt has failed
+            // (the two events below); one that is never given back runs out.
+            waitForTlsTurn(TlsUser::MQTT, tlsGate::kMqttWaitMs,
+                           [] { return mqttStopRequested(); });
             // Every connection attempt gets its own last will: a new seal for
             // a box that signs, a new id otherwise. Built once per boot, the
             // dashboard saw the second disconnect of a boot as a repeat of the
@@ -101,8 +110,15 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                                         payload.c_str(), payload.length(), 1,
                                         true);
             }
+            // Connected. The turn is kept a moment longer: the subscription,
+            // the provenance record and any waiting reports go out now, and
+            // an HTTPS connection set up on top of them is what ran R8 out
+            // of memory.
+            endTlsTurnAfter(TlsUser::MQTT, tlsGate::kMqttSettleMs);
             break;
         case MQTT_EVENT_DISCONNECTED:
+            // Also how a failed connection attempt ends.
+            endTlsTurn(TlsUser::MQTT);
             mqttFrame.reset();
             Serial.println(Str::Protocol::MQTT_DISCONNECTED);
             mqttConnected = false;

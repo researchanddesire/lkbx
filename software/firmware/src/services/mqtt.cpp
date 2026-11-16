@@ -3,9 +3,11 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 
+#include <atomic>
 #include <mutex>
 
 #include "constants/LogTags.h"
+#include "services/tlsTurn.h"
 #include "utils/mqttPause.h"
 
 namespace {
@@ -16,6 +18,22 @@ bool mqttPaused = false;
 // task and an update.
 std::mutex pauseMutex;
 MqttPause portalPause;
+// Connections that follow a drop. Only serviceMqttPause touches it.
+MqttReconnect reconnectWatch;
+
+// A stop is in progress: the MQTT task must not wait for its turn to connect
+// (services/tlsTurn.h) while another task waits for it to end.
+std::atomic<bool> stopRequested{false};
+
+// Stops the MQTT task and waits for it to end. Called with pauseMutex held.
+esp_err_t stopClientTask() {
+    stopRequested.store(true);
+    const esp_err_t result = esp_mqtt_client_stop(mqttClient);
+    stopRequested.store(false);
+    // A client stopped in the middle of connecting gives its turn back here.
+    endTlsTurn(TlsUser::MQTT);
+    return result;
+}
 
 // What the client was created with, minus everything it already holds a copy
 // of (see rememberMqttSettings).
@@ -45,7 +63,7 @@ const int mqtt_port = MQTT_PORT;
 bool stopMqtt() {
     if (mqttClient == nullptr || mqttPaused) return true;
 
-    const esp_err_t result = esp_mqtt_client_stop(mqttClient);
+    const esp_err_t result = stopClientTask();
     if (result != ESP_OK) {
         ESP_LOGE(MQTT_TAG, "Could not stop MQTT client: %s",
                  esp_err_to_name(result));
@@ -94,17 +112,48 @@ void retryMqttStartLater() {
     portalPause.startFailed(millis());
 }
 
+bool mqttStopRequested() { return stopRequested.load(); }
+
+bool mqttClientExpected() {
+    // Never waits behind a stop that is in progress.
+    std::unique_lock<std::mutex> lock(pauseMutex, std::try_to_lock);
+    if (!lock.owns_lock()) return false;
+    return mqttClient != nullptr && !portalPause.portalOpen();
+}
+
+void restartMqttForRecovery() {
+    std::lock_guard<std::mutex> lock(pauseMutex);
+    // A portal owns the client while it is open, and a client that is
+    // already waiting to be started needs nothing more.
+    if (mqttClient == nullptr || portalPause.portalOpen() || mqttPaused) return;
+    // The same route as a client that could not start at boot: started again
+    // in two seconds, tried until its task fits, and the state is read once
+    // it has connected.
+    if (stopMqtt()) portalPause.startFailed(millis());
+}
+
 bool serviceMqttPause() {
     // Never waits behind a stop that is in progress.
     std::unique_lock<std::mutex> lock(pauseMutex, std::try_to_lock);
     if (!lock.owns_lock()) return false;
 
-    switch (portalPause.next(millis(), mqttConnected)) {
+    // The client connects again by itself after a drop, and the broker keeps
+    // nothing for a client that was away: whatever the dashboard published
+    // meanwhile was not heard (2026-11-16 rig run: a command sent during a
+    // short drop was lost). So every connection that follows a drop asks for
+    // the dashboard's state, as a start after the portal does.
+    const bool connected = mqttConnected;
+    const bool reconnected = reconnectWatch.seen(connected);
+    if (reconnected) {
+        ESP_LOGI(MQTT_TAG, "MQTT connected again; reading the state");
+    }
+
+    switch (portalPause.next(millis(), connected)) {
         case MqttPauseStep::START_CLIENT: {
             if (mqttClient == nullptr) {
                 mqttPaused = false;
                 portalPause.clientGone();
-                return false;
+                return reconnected;
             }
             const bool started = startMqtt();
             if (!started) {
@@ -117,21 +166,21 @@ bool serviceMqttPause() {
                              heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
             }
             portalPause.startTried(started, millis());
-            return false;
+            return reconnected;
         }
         case MqttPauseStep::RECONCILE:
             portalPause.reconcileAsked();
             return true;
         case MqttPauseStep::NONE:
         default:
-            return false;
+            return reconnected;
     }
 }
 
 void destroyMqtt() {
     std::lock_guard<std::mutex> lock(pauseMutex);
     if (mqttClient != nullptr) {
-        esp_mqtt_client_stop(mqttClient);
+        stopClientTask();
         esp_mqtt_client_destroy(mqttClient);
         mqttClient = nullptr;
     }
