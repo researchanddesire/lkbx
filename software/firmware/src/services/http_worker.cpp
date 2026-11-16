@@ -231,6 +231,26 @@ bool addHeaders(esp_http_client_handle_t client, const HttpRequest &req) {
 }
 
 int executeAttempt(HttpRequest &req) {
+    // One secure connection is set up at a time (utils/tlsGate.h): while the
+    // MQTT client is connecting, this request waits for it. The wait comes
+    // out of the request's own deadline, a third of what is left at most,
+    // and ends early when the request is cancelled or the worker is stopped.
+    // A request that waited in vain connects anyway.
+    //
+    // The turn is kept for the whole attempt: declared first, it is given
+    // back last, after the answer has been read and the connection has been
+    // closed and freed (ClientCleanup below). An open HTTPS session holds
+    // internal RAM for as long as it lasts, so nothing else sets up a
+    // connection on top of it; in particular the rig's probe on staging
+    // builds waits, and skips when this takes long. The MQTT client waits a
+    // few seconds at most and then connects anyway (tlsGate::kMqttWaitMs).
+    const TlsTurn turn(
+        TlsUser::HTTP,
+        std::min<uint32_t>(tlsGate::kHttpWaitMs,
+                           static_cast<uint32_t>(remainingMs(req)) / 3),
+        [&req] { return expired(req); });
+    if (expired(req)) return -1;
+
     esp_http_client_config_t config = {};
     config.url = req.url.c_str();
     config.method = req.isPost ? HTTP_METHOD_POST : HTTP_METHOD_GET;
@@ -260,25 +280,10 @@ int executeAttempt(HttpRequest &req) {
     } cleanup{client};
 
     if (!addHeaders(client, req) || !prepareIo(client, req)) return -1;
-    bool opened = false;
-    {
-        // One secure connection is set up at a time (utils/tlsGate.h): while
-        // the MQTT client is connecting, this request waits for it. The wait
-        // comes out of the request's own deadline, a third of what is left
-        // at most, and ends early when the request is cancelled or the
-        // worker is stopped. A request that waited in vain connects anyway.
-        // The turn ends with the block, as soon as the connection is up or
-        // has failed.
-        const TlsTurn turn(
-            TlsUser::HTTP,
-            std::min<uint32_t>(tlsGate::kHttpWaitMs,
-                               static_cast<uint32_t>(remainingMs(req)) / 3),
-            [&req] { return expired(req); });
-        opened = prepareIo(client, req) &&
-                 esp_http_client_open(
-                     client, req.isPost ? req.body.length() : 0) == ESP_OK;
+    if (esp_http_client_open(client, req.isPost ? req.body.length() : 0) !=
+        ESP_OK) {
+        return -1;
     }
-    if (!opened) return -1;
     size_t written = 0;
     while (req.isPost && written < req.body.length()) {
         if (!prepareIo(client, req)) return -1;

@@ -29,8 +29,10 @@ static bool ensureBreakCanvasAllocated() {
     return breakCanvas != nullptr && breakCanvas->getBuffer() != nullptr;
 }
 
-void startBreakTimerTask(void *pvParameters) {
-    LKBX *plkbx = (LKBX *)pvParameters;
+// The break page's work. Its strings are freed when it returns; declared in
+// the task function they never would be, because vTaskDelete does not return
+// (see LKBX::runUnlockTimer).
+static void runBreakTimer(LKBX *plkbx) {
     auto isInCorrectState = [](LKBX *lkbx) {
         // Add any states that you want to support here.
         return lkbx->sm->is("locked.break"_s);
@@ -106,8 +108,6 @@ void startBreakTimerTask(void *pvParameters) {
         ESP_LOGW(BREAK_TIMER_TAG,
                  "Lock window ended (lockEnd=%llu) -- ready to unlock",
                  lockEnd);
-        TaskHandles::breakTimer = nullptr;
-        vTaskDelete(nullptr);
         return;
     }
 
@@ -233,7 +233,10 @@ void startBreakTimerTask(void *pvParameters) {
 
         vTaskDelay(250 / portTICK_PERIOD_MS);
     }
+}
 
+void startBreakTimerTask(void *pvParameters) {
+    runBreakTimer(static_cast<LKBX *>(pvParameters));
     TaskHandles::breakTimer = nullptr;
     vTaskDelete(nullptr);
 }

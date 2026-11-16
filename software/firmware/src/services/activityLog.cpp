@@ -6,6 +6,7 @@
 #include "constants/LogTags.h"
 #include "machine.h"
 #include "magnetics.h"
+#include "memoryWatch.h"
 #include "mqtt.h"
 #include "tasks/TaskParams.h"
 #include "wm.h"
@@ -33,6 +34,8 @@ void initActivityLogTask() {
                     // A station that is up while nothing gets through is
                     // looked into, and in the end the box restarts itself.
                     serviceNetworkRecovery();
+                    // The memory picture, once a minute, for the log.
+                    serviceMemoryWatch();
                 }
                 vTaskDelay(50 / portTICK_PERIOD_MS);
             }

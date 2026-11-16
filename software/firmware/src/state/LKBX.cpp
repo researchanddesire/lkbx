@@ -76,9 +76,7 @@ void LKBX::retryClockSyncTask(void *) {
  * with version text below, then proceeds to the next state.
  * @param pvParameters
  */
-void LKBX::drawHelloTask(void *pvParameters) {
-    LKBX *plkbx = (LKBX *)pvParameters;
-
+void LKBX::runHello(LKBX *plkbx) {
     constexpr int logoWidth = 64;
     constexpr int logoHeight = 50;
     constexpr int textPadding = 16;
@@ -137,6 +135,13 @@ void LKBX::drawHelloTask(void *pvParameters) {
 
         xSemaphoreGive(displayMutex);
     }
+}
+
+void LKBX::drawHelloTask(void *pvParameters) {
+    LKBX *plkbx = (LKBX *)pvParameters;
+
+    // The page's strings are freed when this returns (see runUnlockTimer).
+    runHello(plkbx);
 
     vTaskDelay(2500 / portTICK_PERIOD_MS);
 
@@ -260,10 +265,15 @@ void LKBX::startPreflight() const {
     }
 }
 
-void LKBX::startUnlockTimerTask(void *pvParameters) {
-    // parse ossm from the parameters
-    LKBX *plkbx = (LKBX *)pvParameters;
-
+// The countdown task's work. A function of its own, because the task ends with
+// vTaskDelete, which never returns: nothing declared in the task function
+// itself is ever destroyed. The time canvas below owns a 1,920-byte buffer in
+// internal RAM, and while it was declared in the task function that buffer
+// stayed allocated every time the task ended, which is every time the box
+// left its locked pages (2026-11-17 rig run on R8: about 6 KB less free
+// internal RAM after every visit to the Wi-Fi page and unlock, until TLS could
+// not encrypt and tasks could not be created). Here it is freed on return.
+void LKBX::runUnlockTimer(LKBX *plkbx) {
     auto isInCorrectState = [](LKBX *ossm) {
         return ossm->sm->is("locked.timer"_s) || ossm->sm->is("lockMenu"_s) ||
                ossm->sm->is("locked.ready"_s) ||
@@ -355,6 +365,13 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
     // Define the height for the time canvas
     const int TIME_CANVAS_HEIGHT = 48;
     GFXcanvas1 timeRemainingCanvas(Display::WIDTH, TIME_CANVAS_HEIGHT);
+    // Without its buffer the canvas draws nothing and has nothing to show.
+    // The loop still runs: it is what acts at the deadline.
+    const bool canvasReady = timeRemainingCanvas.getBuffer() != nullptr;
+    if (!canvasReady) {
+        ESP_LOGE(UNLOCK_TIMER_TAG,
+                 "No memory for the countdown canvas; the time is not drawn");
+    }
 
     while (isInCorrectState(plkbx)) {
         if (!isEmergencyBlocked) {
@@ -604,7 +621,8 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             lastFrozenDisplay.counter == nextDisplay.counter &&
             strcmp(lastFrozenDisplay.reason, nextDisplay.reason) == 0;
 
-        if (shouldDrawCountdown(plkbx) && !frozenFrameUnchanged &&
+        if (canvasReady && shouldDrawCountdown(plkbx) &&
+            !frozenFrameUnchanged &&
             xSemaphoreTake(displayMutex, 100) == pdTRUE) {
             plkbx->display.drawBitmap(0, y, timeRemainingCanvas.getBuffer(),
                                       Display::WIDTH, TIME_CANVAS_HEIGHT,
@@ -624,6 +642,14 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
     }
 
     sleepDuration = 0;
+}
+
+void LKBX::startUnlockTimerTask(void *pvParameters) {
+    // Everything the countdown allocates lives in runUnlockTimer and is
+    // released when it returns. Keep this function free of objects that own
+    // memory: vTaskDelete does not return, so they would never be destroyed.
+    runUnlockTimer(static_cast<LKBX *>(pvParameters));
+
     // set the handle to null
     TaskHandles::unlockTimer = nullptr;
 

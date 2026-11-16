@@ -29,6 +29,18 @@
 //
 // Being back on the broker ends all of it at any point.
 //
+// The minute in step 1 is there because most drops mend themselves: the MQTT
+// client tries again every ten seconds. One kind does not. After internal RAM
+// has run out the box can stay cut off with its station up (2026-11-17 rig
+// run on R8, twice: `esp-aes: Failed to allocate memory`, then every
+// connection timed out for 95 and 110 seconds, with 13 KB free, until step 2
+// connected the station again; with the station down 37 KB were free). Most
+// of that time was the wait for step 1. So when an allocation that had to be
+// internal failed around the time the broker was lost
+// (services/memoryWatch.h), the dashboard is asked after 20 seconds instead
+// of 60. Nothing else changes: the same question is asked, and the station
+// is only connected again if the dashboard does not answer.
+//
 // A dashboard that answers does not always mean the fault is the broker's.
 // The box's own MQTT client can be the part that is missing: it was stopped
 // and its task could not be created again, because no block of internal RAM
@@ -60,6 +72,14 @@ namespace networkRecovery {
     // Off the broker with the station up for this long before the dashboard
     // is asked. The MQTT client tries again every ten seconds by itself.
     constexpr uint32_t kOffBrokerBeforeCheckMs = 60000;
+    // The same, when internal RAM ran short around the time the broker was
+    // lost: long enough for the MQTT client's own first retry, which starts
+    // ten seconds after the drop.
+    constexpr uint32_t kOffBrokerAfterShortageMs = 20000;
+    // How far back a failed internal allocation counts as "around the time
+    // the broker was lost". The caller looks this far back
+    // (RecoveryInputs::memoryShort).
+    constexpr uint32_t kShortageRecentMs = 120000;
     // The whole request to the dashboard, including its wait for the MQTT
     // client's own connection attempt (utils/tlsGate.h).
     constexpr int kCheckTimeoutMs = 15000;
@@ -109,6 +129,9 @@ struct RecoveryInputs {
     // only waiting for its next start, or is stopped for a setup portal, is
     // not down.
     bool clientDown = false;
+    // An allocation that had to come from internal RAM failed within the
+    // last kShortageRecentMs (services/memoryWatch.h).
+    bool memoryShort = false;
 };
 
 class NetworkRecovery {
@@ -158,12 +181,18 @@ class NetworkRecovery {
                     counting_ = false;
                     return RecoveryStep::NONE;
                 }
+                // Memory that ran short at any point while the box has
+                // been off the broker, or just before, shortens the wait.
+                if (in.memoryShort) afterShortage_ = true;
                 if (!counting_) {
                     counting_ = true;
                     sinceMs_ = nowMs;
                     return RecoveryStep::NONE;
                 }
-                if (!elapsed(nowMs, networkRecovery::kOffBrokerBeforeCheckMs)) {
+                if (!elapsed(nowMs,
+                             afterShortage_
+                                 ? networkRecovery::kOffBrokerAfterShortageMs
+                                 : networkRecovery::kOffBrokerBeforeCheckMs)) {
                     return RecoveryStep::NONE;
                 }
                 stage_ = Stage::FIRST_CHECK;
@@ -255,6 +284,9 @@ class NetworkRecovery {
     // The restart that is wanted, or was just asked for, is for a client that
     // cannot start, not for a network that carries nothing.
     bool forClient() const { return forClient_; }
+    // Internal RAM ran short around the time the broker was lost, so the
+    // dashboard was first asked early. For the log.
+    bool afterShortage() const { return afterShortage_; }
 
   private:
     enum class Stage : uint8_t {
@@ -276,6 +308,7 @@ class NetworkRecovery {
         resting_ = false;
         downCounting_ = false;
         forClient_ = false;
+        afterShortage_ = false;
     }
 
     // Whether the box has been at rest on every pass for kAtRestMs.
@@ -315,6 +348,8 @@ class NetworkRecovery {
     uint32_t downSinceMs_ = 0;
     // The restart is for the client (CLIENT_DOWN was reached).
     bool forClient_ = false;
+    // Internal RAM ran short while the box has been off the broker.
+    bool afterShortage_ = false;
 };
 
 #endif  // LOCKBOX_NETWORK_RECOVERY_H

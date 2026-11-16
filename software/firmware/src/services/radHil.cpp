@@ -100,7 +100,37 @@ unsigned long long uptimeMs() {
     return static_cast<unsigned long long>(esp_timer_get_time() / 1000);
 }
 
-bool checkInternet() {
+#if defined(RAD_HIL_TLS_TURN)
+// The probe leaves the firmware's memory alone: it does not connect while
+// internal RAM is short (utils/tlsGate.h). Said at most once a minute.
+bool probeHasRoom() {
+    const size_t freeBytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t largestBlock =
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (tlsProbeHasRoom(static_cast<uint32_t>(freeBytes),
+                        static_cast<uint32_t>(largestBlock))) {
+        return true;
+    }
+    static uint32_t saidMs = 0;
+    static bool said = false;
+    const uint32_t now = millis();
+    if (!said || now - saidMs >= 60000) {
+        said = true;
+        saidMs = now;
+        ESP_LOGW("radHil",
+                 "Rig probe not connecting now: largest free internal block "
+                 "%u bytes, %u bytes free",
+                 static_cast<unsigned>(largestBlock),
+                 static_cast<unsigned>(freeBytes));
+    }
+    return false;
+}
+#endif
+
+// `skipped`: the probe did not look this time, and says nothing about the
+// network. The caller keeps its last answer and asks again on its next pass.
+bool checkInternet(bool& skipped) {
+    skipped = false;
     // TLS certificate dates require a synchronized clock. Some products do
     // not initialize SNTP during ordinary idle startup, so the staging-only
     // observer requests it once and waits without weakening verification.
@@ -114,9 +144,23 @@ bool checkInternet() {
     }
 #if defined(RAD_HIL_TLS_TURN)
     // The probe opens a secure connection of its own, which production builds
-    // never do. It waits for the firmware's connections and then goes ahead,
-    // so the observation keeps its cadence.
-    const TlsTurn turn(TlsUser::PROBE, tlsGate::kProbeWaitMs);
+    // never do, so it must never be what runs the firmware out of memory
+    // (2026-11-17 rig run on R8: it connected beside an open HTTPS request
+    // and the MQTT session during an unlock, and the MQTT client could not
+    // encrypt its next message). It connects only with a turn of its own:
+    // while the firmware is setting up a connection or has a request open it
+    // waits, and when that takes too long, or internal RAM is short, it does
+    // not connect at all and looks again on the next pass.
+    if (!probeHasRoom()) {
+        skipped = true;
+        return false;
+    }
+    const TlsTurn turn(TlsUser::PROBE, tlsGate::kProbeWaitMs, false);
+    // The wait can be seconds long: the memory is looked at again.
+    if (!turn.held() || !probeHasRoom()) {
+        skipped = true;
+        return false;
+    }
 #endif
     // A read-only request with full certificate/hostname validation. Never
     // follow a redirect to a different environment or send device credentials.
@@ -172,9 +216,15 @@ void observeTask(void*) {
         const bool wifi = WiFi.status() == WL_CONNECTED;
         if (!wifi) internet = false;
         if (wifi && (previousProbe == 0 || now - previousProbe >= 30000)) {
-            previousProbe = now;
-            internet = checkInternet();
-            if (internet) lastNetworkMs = millis();
+            bool skipped = false;
+            const bool reached = checkInternet(skipped);
+            // A probe that did not look is due again on the next pass, five
+            // seconds from now, and leaves the last answer standing.
+            if (!skipped) {
+                previousProbe = now;
+                internet = reached;
+                if (internet) lastNetworkMs = millis();
+            }
         }
         const auto lastProgress = progressMs.load(std::memory_order_relaxed);
         // Read progress first: another core can advance it while we sample.

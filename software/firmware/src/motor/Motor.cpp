@@ -1,59 +1,76 @@
 #include "Motor.h"
 
+#include <esp_heap_caps.h>
+
 #include "constants/LogTags.h"
 #include "constants/PerferenceKeys.h"
 #include "constants/strings.h"
 #include "tasks/TaskParams.h"
 
+// The end of a movement: the motor stays powered for up to a second more, so
+// the paddle is pressed home against its stop, and is switched off at the
+// current limit or when the second is over. A newer movement (lockId) takes
+// the motor over.
+void Motor::runCurrentWatch() {
+    const int watchedLockId = lockId;
+
+    current[0] = 0;
+    current[1] = 0;
+    current[2] = 0;
+
+    int timeElapsed = 0;
+    bool hasHitCurrentLimit = false;
+    float avgCurrent = 0;
+    while (timeElapsed < 1000 && watchedLockId == lockId) {
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+        timeElapsed += 50;
+
+        if (hasHitCurrentLimit) {
+            continue;
+        }
+
+        float measured = ina->getCurrent_mA();
+        current[0] = current[1];
+        current[1] = current[2];
+        current[2] = measured;
+
+        avgCurrent = (current[0] + current[1] + current[2]) / 3;
+
+        ESP_LOGD("Motor", "Current: %f", avgCurrent);
+
+        if (avgCurrent > 50) {
+            hasHitCurrentLimit = true;
+            Motor::clear();
+            continue;
+        }
+    }
+
+    if (!hasHitCurrentLimit && watchedLockId == lockId) {
+        Motor::clear();
+    }
+}
+
 void Motor::watchCurrent() {
+    // The watch of the movement before this one ends within 50 ms of seeing
+    // this one, without touching the motor. Returning while it was still
+    // there left this movement with no watch at all, and the motor powered.
+    for (int waitedMs = 0;
+         TaskHandles::currentWatch != nullptr && waitedMs < 200;
+         waitedMs += 10) {
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
     if (TaskHandles::currentWatch != nullptr) {
-        ESP_LOGW(TASKDEBUG_TAG, "currentWatch task already running, skipping");
+        ESP_LOGW(TASKDEBUG_TAG,
+                 "currentWatch task still running; finishing the movement "
+                 "on this task");
+        runCurrentWatch();
         return;
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating current watch task");
     const BaseType_t created = xTaskCreatePinnedToCore(
         [](void *pvParameters) {
-            auto *motor = (Motor *)pvParameters;
-
-            int lockId = motor->lockId;
-
-            motor->current[0] = 0;
-            motor->current[1] = 0;
-            motor->current[2] = 0;
-
-            int timeElapsed = 0;
-            bool hasHitCurrentLimit = false;
-            float avgCurrent = 0;
-            while (timeElapsed < 1000 && lockId == motor->lockId) {
-                vTaskDelay(50 / portTICK_PERIOD_MS);
-                timeElapsed += 50;
-
-                if (hasHitCurrentLimit) {
-                    continue;
-                }
-
-                float current = motor->ina->getCurrent_mA();
-                motor->current[0] = motor->current[1];
-                motor->current[1] = motor->current[2];
-                motor->current[2] = current;
-
-                avgCurrent = (motor->current[0] + motor->current[1] +
-                              motor->current[2]) /
-                             3;
-
-                ESP_LOGD("Motor", "Current: %f", avgCurrent);
-
-                if (avgCurrent > 50) {
-                    hasHitCurrentLimit = true;
-                    Motor::clear();
-                    continue;
-                }
-            }
-
-            if (!hasHitCurrentLimit && lockId == motor->lockId) {
-                Motor::clear();
-            }
+            static_cast<Motor *>(pvParameters)->runCurrentWatch();
             TaskHandles::currentWatch = nullptr;
             vTaskDelete(nullptr);
         },
@@ -61,12 +78,22 @@ void Motor::watchCurrent() {
         Tasks::currentWatch.priority, &TaskHandles::currentWatch,
         Tasks::currentWatch.core);
     if (created != pdPASS) {
-        // This task is what switches the motor off, after a second or at the
-        // current limit. Without it the motor would stay powered. The paddle
-        // has already had its travel time (waitForLock / waitForUnlock).
+        // No memory for the task's stack. The same watch runs here instead,
+        // on the task that moved the motor: the paddle is still pressed home
+        // and the motor is still switched off, at the current limit or after
+        // a second. Cutting the power at once, as this did before, left the
+        // paddle wherever the position sensors first saw it, which can be
+        // short of its stop. The caller waits up to a second longer.
+        TaskHandles::currentWatch = nullptr;
         ESP_LOGE(TASKDEBUG_TAG,
-                 "Could not start the current watch; switching the motor off");
-        Motor::clear();
+                 "Could not start the current watch (largest free internal "
+                 "block %u bytes, %u bytes free); finishing the movement on "
+                 "this task",
+                 static_cast<unsigned>(
+                     heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned>(
+                     heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+        runCurrentWatch();
     }
 }
 void Motor::waitForLock() {
