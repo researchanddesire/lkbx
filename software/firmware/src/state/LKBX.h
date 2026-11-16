@@ -39,6 +39,8 @@
 #include "utils/getPairingCode.h"
 #include "utils/lockMenuCountdown.h"
 #include "utils/lockedReport.h"
+#include "utils/logBacklog.h"
+#include "utils/missingTask.h"
 #include "utils/normalizeOption.h"
 #include "utils/psram.h"
 #include "utils/savedTimerSleep.h"
@@ -117,6 +119,11 @@ class LKBX {
     void serviceCountdownWatch();
     std::atomic<bool> countdownNeedsWatch{false};
     uint32_t countdownWatchedMs = 0;
+    // A menu page must have its task too (LKBX.menu.cpp,
+    // utils/missingTask.h).
+    void restoreMenu();
+    std::mutex menuTaskStart;
+    MissingTask menuWatch;
     void checkOfferedLock();
     uint32_t offerStartedMs = 0;
     String offerSessionId;
@@ -127,6 +134,7 @@ class LKBX {
     void startWifiConnection();
     void startMqttConnection();
     static void startMqttConnectionTask(void *pvParameters);
+    static void runMqttConnection(LKBX *plkbx);
     void calibrate();
     void calibrateButton();
     static void calibrateTask(void *pvParameters);
@@ -1150,9 +1158,16 @@ class LKBX {
      * ////
      * ///////////////////////////////////////////
      */
+    // A task function ends with vTaskDelete, which never returns, so nothing
+    // declared in it is ever destroyed. A task that owns memory while it runs
+    // (a canvas, a String, a sign-in answer) therefore does its work in a
+    // run* function and only calls that function and vTaskDelete itself.
     static void drawHelloTask(void *pvParameters);
+    static void runHello(LKBX *plkbx);
     static void startUnlockTimerTask(void *pvParameters);
+    static void runUnlockTimer(LKBX *plkbx);
     static void startWifiConnectionTask(void *pvParameters);
+    static void runWifiConnection(LKBX *plkbx);
     static void checkWifiTask(void *pvParameters);
     static void checkForUpdatesTask(void *pvParameters);
     static void startPairingCheckTask(void *pvParameters);
@@ -1463,6 +1478,13 @@ class LKBX {
                      message.c_str());
             return;
         }
+        // Off the broker the client's outbox only grows (utils/logBacklog.h).
+        // Connected, the outbox is not looked at.
+        if (!mqttConnected &&
+            !activityLogIsQueued(false,
+                                 esp_mqtt_client_get_outbox_size(client))) {
+            return;
+        }
 
         String currentState = "";
         if (sm) {
@@ -1486,6 +1508,7 @@ class LKBX {
         checkOfferedLock();
         checkBreakCooldown();
         restoreUnlockTimer();
+        restoreMenu();
         serviceEmergencyReport();
         if (logger.stateChangeMessagePending) {
             logger.stateChangeMessagePending = false;

@@ -86,9 +86,7 @@ void LKBX::checkWifiTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
-void LKBX::startWifiConnectionTask(void *pvParameters) {
-    LKBX *plkbx = static_cast<LKBX *>(pvParameters);
-
+void LKBX::runWifiConnection(LKBX *plkbx) {
     // Uses global WIFI_CONNECT_TAG from LogTags.h
     constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 10000;
     constexpr uint32_t WIFI_CONNECT_POLL_MS = 250;
@@ -123,7 +121,6 @@ void LKBX::startWifiConnectionTask(void *pvParameters) {
         ESP_LOGW(WIFI_CONNECT_TAG,
                  "Timed out waiting for WiFi connection (status=%d)", status);
         plkbx->sm->process_event(Error{.error = error});
-        vTaskDelete(nullptr);
         return;
     }
 
@@ -138,7 +135,6 @@ void LKBX::startWifiConnectionTask(void *pvParameters) {
     if (WiFi.localIP() == IPAddress(INADDR_NONE)) {
         ESP_LOGW(WIFI_CONNECT_TAG, "Timed out waiting for IP assignment");
         plkbx->sm->process_event(Error{.error = ErrorT::WIFI_NO_IP});
-        vTaskDelete(nullptr);
         return;
     }
 
@@ -174,7 +170,12 @@ void LKBX::startWifiConnectionTask(void *pvParameters) {
                  responseCode);
         plkbx->sm->process_event(Error{.error = ErrorT::SERVER_UNREACHABLE});
     }
+}
 
+void LKBX::startWifiConnectionTask(void *pvParameters) {
+    // The work, and the strings it builds, are in runWifiConnection: nothing
+    // declared here would be destroyed, because vTaskDelete never returns.
+    runWifiConnection(static_cast<LKBX *>(pvParameters));
     vTaskDelete(nullptr);
 }
 
@@ -402,9 +403,7 @@ void LKBX::syncLockStateOnBootTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
-void LKBX::startMqttConnectionTask(void *pvParameters) {
-    LKBX *plkbx = static_cast<LKBX *>(pvParameters);
-
+void LKBX::runMqttConnection(LKBX *plkbx) {
     constexpr int AUTH_MAX_ATTEMPTS = 3;
     constexpr uint32_t AUTH_RETRY_MS = 5000;
     constexpr uint32_t AUTH_REJECTED_RETRY_MS = 60000;
@@ -424,8 +423,6 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     const DeviceKeyOutcome keyOutcome = prepareDeviceKey();
     if (keyOutcome == DeviceKeyOutcome::failed && !returningDevice) {
         plkbx->sm->process_event(Error{.error = ErrorT::DEVICE_KEY_FAILED});
-        TaskHandles::mqttConnect = nullptr;
-        vTaskDelete(nullptr);
         return;
     }
 
@@ -456,8 +453,6 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
                 .error = response.rateLimited ? ErrorT::AUTH_RATE_LIMITED
                                               : ErrorT::DASHBOARD_SIGN_IN_FAILED});
             if (!returningDevice) {
-                TaskHandles::mqttConnect = nullptr;
-                vTaskDelete(nullptr);
                 return;
             }
         }
@@ -488,8 +483,6 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
             }
         } else if (second == DeviceKeyOutcome::failed && !returningDevice) {
             plkbx->sm->process_event(Error{.error = ErrorT::DEVICE_KEY_FAILED});
-            TaskHandles::mqttConnect = nullptr;
-            vTaskDelete(nullptr);
             return;
         }
     }
@@ -578,7 +571,6 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
         if (bootPending) {
             plkbx->sm->process_event(Error{.error = ErrorT::MQTT_AUTH_FAILED});
         }
-        vTaskDelete(nullptr);
         return;
     }
 
@@ -620,8 +612,21 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
             plkbx->sendActivityLog("reconnected");
         }
     }
+}
 
-    TaskHandles::mqttConnect = nullptr;
+void LKBX::startMqttConnectionTask(void *pvParameters) {
+    // The sign-in answer (client id, username, password, command key) and
+    // everything else the sign-in allocates live in runMqttConnection and are
+    // freed when it returns. Declared here they would stay allocated for
+    // good, because vTaskDelete never returns.
+    runMqttConnection(static_cast<LKBX *>(pvParameters));
+
+    // A sign-in that failed has already given the handle up, and Retry may
+    // have started the next one by now: only this task's own handle is
+    // cleared.
+    if (TaskHandles::mqttConnect == xTaskGetCurrentTaskHandle()) {
+        TaskHandles::mqttConnect = nullptr;
+    }
     vTaskDelete(nullptr);
 }
 

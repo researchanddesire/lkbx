@@ -20,9 +20,20 @@
 // because it sends its subscription, its provenance record and any waiting
 // reports right away.
 //
+// An HTTPS request keeps its turn until its answer is read and its connection
+// is closed, not only while it connects. Its session is as short as the
+// request, and while it is open it holds internal RAM of its own; on the
+// 2026-11-17 rig run the rig's probe connected beside an open request and a
+// connected client during an unlock, and the client's next write found no
+// encryption buffer. The MQTT client's session is different: it stays open
+// for as long as the box is online and holds no turn once it has settled.
+//
 // Nobody waits for a turn forever: the caller waits a bounded time and then
 // connects anyway (services/tlsTurn.h), which is what every connection did
-// before. A turn that was never given back ends by itself.
+// before. A turn that was never given back ends by itself. The rig's probe
+// is the exception: it is an observer the firmware does not need, so without
+// a turn, or with little internal RAM free, it does not connect at all and
+// tries again a few seconds later (tlsProbeHasRoom).
 //
 // This is the bookkeeping only. No Arduino dependencies, so it is unit-tested
 // natively. See test/test_tls_gate.
@@ -45,7 +56,24 @@ namespace tlsGate {
     constexpr uint32_t kHttpWaitMs = 4000;
     // The rig's probe (staging builds) is the least urgent.
     constexpr uint32_t kProbeWaitMs = 10000;
+    // The probe leaves internal RAM alone when little of it is free. Setting
+    // up its connection takes internal RAM for the certificate chain and the
+    // key exchange, and every encrypted record needs two 1.6 KB blocks the
+    // encryption hardware can reach. On the 2026-11-17 rig run R8 had 39 KB
+    // free in a 9.7 KB largest block with the Wi-Fi setup task running, and
+    // was cut off at 13 KB in a 3 KB block and at 4 KB in a 1 KB block. Below
+    // these the probe would be taking what the firmware's own connections
+    // are about to need.
+    constexpr uint32_t kProbeMinFreeBytes = 20 * 1024;
+    constexpr uint32_t kProbeMinBlockBytes = 4 * 1024;
 }  // namespace tlsGate
+
+// Whether the rig's probe may set up its connection, given the internal RAM
+// that is free now and the largest block of it.
+inline bool tlsProbeHasRoom(uint32_t freeBytes, uint32_t largestBlockBytes) {
+    return freeBytes >= tlsGate::kProbeMinFreeBytes &&
+           largestBlockBytes >= tlsGate::kProbeMinBlockBytes;
+}
 
 enum class TlsUser : uint8_t {
     NONE,

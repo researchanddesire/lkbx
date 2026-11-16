@@ -117,6 +117,51 @@ void test_turns_survive_the_millisecond_counter_wrapping() {
     TEST_ASSERT_TRUE(gate.take(TlsUser::HTTP, takenAt + kLease));
 }
 
+// An HTTPS request keeps its turn until its connection is closed, so the
+// rig's probe finds no turn for as long as the request is open, however often
+// it asks, and gets one as soon as the request is over.
+void test_the_probe_gets_no_turn_while_a_request_is_open() {
+    TlsGate gate;
+    TEST_ASSERT_TRUE(gate.take(TlsUser::HTTP, 0));
+    for (uint32_t now = 50; now < tlsGate::kProbeWaitMs; now += 50) {
+        TEST_ASSERT_FALSE(gate.take(TlsUser::PROBE, now));
+    }
+    TEST_ASSERT_TRUE(gate.holder(tlsGate::kProbeWaitMs) == TlsUser::HTTP);
+    gate.give(TlsUser::HTTP);
+    TEST_ASSERT_TRUE(gate.take(TlsUser::PROBE, tlsGate::kProbeWaitMs + 50));
+}
+
+// The MQTT client waits a few seconds for an open request and then connects
+// anyway: it takes no turn, and the request's turn is still its own to end.
+void test_a_request_that_outlasts_the_clients_wait_keeps_its_turn() {
+    TlsGate gate;
+    TEST_ASSERT_TRUE(gate.take(TlsUser::HTTP, 0));
+    TEST_ASSERT_FALSE(gate.take(TlsUser::MQTT, tlsGate::kMqttWaitMs));
+    // The client went ahead and reports its connection as usual.
+    gate.giveAfter(TlsUser::MQTT, tlsGate::kMqttWaitMs + 1000, kSettle);
+    TEST_ASSERT_TRUE(gate.holder(tlsGate::kMqttWaitMs + 1000) ==
+                     TlsUser::HTTP);
+    gate.give(TlsUser::HTTP);
+    TEST_ASSERT_TRUE(gate.holder(tlsGate::kMqttWaitMs + 1001) ==
+                     TlsUser::NONE);
+}
+
+// The probe is an observer: it only connects with room to spare.
+void test_the_probe_needs_room_in_internal_ram() {
+    const uint32_t free = tlsGate::kProbeMinFreeBytes;
+    const uint32_t block = tlsGate::kProbeMinBlockBytes;
+    TEST_ASSERT_TRUE(tlsProbeHasRoom(free, block));
+    TEST_ASSERT_TRUE(tlsProbeHasRoom(2 * free, 2 * block));
+    // The memory picture of the rig's two failures, just before them.
+    TEST_ASSERT_FALSE(tlsProbeHasRoom(13107, 3072));
+    TEST_ASSERT_FALSE(tlsProbeHasRoom(4415, 1024));
+    // Enough in total but in pieces, and one large piece of too little.
+    TEST_ASSERT_FALSE(tlsProbeHasRoom(2 * free, block - 1));
+    TEST_ASSERT_FALSE(tlsProbeHasRoom(free - 1, free - 1));
+    // A box at rest (R8, first run of the same rig session).
+    TEST_ASSERT_TRUE(tlsProbeHasRoom(39463, 9728));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_the_first_to_ask_gets_the_turn);
@@ -130,5 +175,8 @@ int main() {
     RUN_TEST(test_three_users_take_turns);
     RUN_TEST(test_nobody_is_not_a_user);
     RUN_TEST(test_turns_survive_the_millisecond_counter_wrapping);
+    RUN_TEST(test_the_probe_gets_no_turn_while_a_request_is_open);
+    RUN_TEST(test_a_request_that_outlasts_the_clients_wait_keeps_its_turn);
+    RUN_TEST(test_the_probe_needs_room_in_internal_ram);
     return UNITY_END();
 }

@@ -16,6 +16,7 @@
 #include "machine.h"
 #include "motor/Motor.h"
 #include "services/lastInteraction.h"
+#include "services/memoryWatch.h"
 #include "services/mqtt.h"
 #include "services/serverOnline.h"
 #include "tasks/TaskStart.h"
@@ -90,6 +91,9 @@ void registerCaptivePortalFallbackRoutes() {
 }  // namespace
 
 void initWM() {
+    // Failed internal allocations are noted from here on: network recovery
+    // looks into a lost broker sooner after one (utils/networkRecovery.h).
+    initMemoryWatch();
     wm.setDebugOutput(false);
     WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
         clearServerOnline();
@@ -324,14 +328,16 @@ uint32_t networkRecoveryLookedMs = 0;
 void logNetworkRecovery(const char *step) {
     ESP_LOGW(WIFI_CONNECT_TAG,
              "Network recovery: %s (largest free internal block %u bytes, "
-             "%u bytes free, lowest ever %u bytes)",
+             "%u bytes free, lowest ever %u bytes, %u internal allocations "
+             "failed since boot)",
              step,
              static_cast<unsigned>(
                  heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned>(
                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned>(
-                 heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)));
+                 heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(internalAllocationFailures()));
 }
 
 // Whether the box may restart now to get its network back. A restart goes
@@ -414,6 +420,8 @@ void serviceNetworkRecovery() {
     in.stationUp = WiFi.status() == WL_CONNECTED;
     in.brokerExpected = mqttClientExpected();
     in.clientDown = mqttClientCannotStart();
+    in.memoryShort =
+        internalMemoryWasShort(networkRecovery::kShortageRecentMs);
     // Looked at only while the box is off the broker: a setup page owns the
     // Wi-Fi mode, as for the station keeper.
     in.held = !in.brokerUp &&
@@ -430,7 +438,10 @@ void serviceNetworkRecovery() {
     switch (step) {
         case RecoveryStep::CHECK:
             logNetworkRecovery(
-                "off the broker with Wi-Fi up; asking the dashboard");
+                networkRecoveryPlan.afterShortage()
+                    ? "off the broker with Wi-Fi up after internal RAM ran "
+                      "short; asking the dashboard"
+                    : "off the broker with Wi-Fi up; asking the dashboard");
             networkCheck =
                 getDetached(String(RAD_SERVER) + Str::Api::HEALTH_CHECK,
                             networkRecovery::kCheckTimeoutMs);

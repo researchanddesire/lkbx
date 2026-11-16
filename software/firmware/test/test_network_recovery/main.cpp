@@ -12,6 +12,7 @@ constexpr uint32_t kRecheck = networkRecovery::kBrokerOnlyRecheckMs;
 constexpr uint32_t kRest = networkRecovery::kAtRestMs;
 constexpr uint32_t kFresh = networkRecovery::kNoAnswerFreshMs;
 constexpr uint32_t kDown = networkRecovery::kClientDownMs;
+constexpr uint32_t kShort = networkRecovery::kOffBrokerAfterShortageMs;
 
 // On the broker.
 RecoveryInputs online() {
@@ -37,6 +38,14 @@ RecoveryInputs cutOff(bool atRest = false) {
 RecoveryInputs clientDown(bool atRest = false) {
     RecoveryInputs in = cutOff(atRest);
     in.clientDown = true;
+    return in;
+}
+
+// The fault of the 2026-11-17 rig run: internal RAM ran out, and the box was
+// cut off with its station up.
+RecoveryInputs cutOffShortOfMemory() {
+    RecoveryInputs in = cutOff();
+    in.memoryShort = true;
     return in;
 }
 
@@ -563,6 +572,106 @@ void test_a_client_that_cannot_start_after_step_one_restarts_the_box() {
     TEST_ASSERT_TRUE(recovery.forClient());
 }
 
+// The fault: after internal RAM ran out the box was cut off for 95 and 110
+// seconds, most of it the minute before the dashboard was asked.
+void test_a_drop_after_memory_ran_short_is_looked_into_sooner() {
+    NetworkRecovery recovery;
+    TEST_ASSERT_TRUE(recovery.next(online(), 0) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), 0) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), kShort - 1) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), kShort) ==
+                     RecoveryStep::CHECK);
+    TEST_ASSERT_TRUE(recovery.afterShortage());
+    // The steps that follow are the usual ones.
+    recovery.checked(false, kShort);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), kShort) ==
+                     RecoveryStep::RECONNECT);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), kShort + kAfter - 1) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), kShort + kAfter) ==
+                     RecoveryStep::CHECK);
+}
+
+// The shortage is remembered for the whole time the box is off the broker:
+// the hook's report ages out, the reason for the drop does not.
+void test_a_shortage_seen_once_keeps_the_short_wait() {
+    NetworkRecovery recovery;
+    TEST_ASSERT_TRUE(recovery.next(online(), 0) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), 0) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), 5000) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), kShort - 1) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), kShort) == RecoveryStep::CHECK);
+}
+
+// A shortage only brings the question forward. A dashboard that answers
+// still means the network works, and nothing is connected again.
+void test_a_dashboard_that_answers_after_a_shortage_changes_nothing() {
+    NetworkRecovery recovery;
+    TEST_ASSERT_TRUE(recovery.next(online(), 0) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), 0) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), kShort) ==
+                     RecoveryStep::CHECK);
+    recovery.checked(true, kShort);
+    TEST_ASSERT_FALSE(recovery.restartWanted());
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(),
+                                   kShort + kRecheck - 1) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), kShort + kRecheck) ==
+                     RecoveryStep::CHECK);
+}
+
+// Short memory alone asks for nothing: a box on the broker is left alone, and
+// being back on the broker forgets the shortage.
+void test_short_memory_on_the_broker_is_left_alone_and_forgotten() {
+    NetworkRecovery recovery;
+    RecoveryInputs shortOnline = online();
+    shortOnline.memoryShort = true;
+    for (uint32_t now = 0; now < 2 * kCheck; now += 1000) {
+        TEST_ASSERT_TRUE(recovery.next(shortOnline, now) == RecoveryStep::NONE);
+    }
+    TEST_ASSERT_FALSE(recovery.afterShortage());
+
+    // A drop after a shortage, mended by the client itself.
+    uint32_t now = 2 * kCheck;
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), now) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(online(), now + 5000) == RecoveryStep::NONE);
+    TEST_ASSERT_FALSE(recovery.afterShortage());
+    // The next drop, with memory well, waits the full minute.
+    now += 10000;
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), now) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), now + kShort) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), now + kCheck - 1) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOff(), now + kCheck) ==
+                     RecoveryStep::CHECK);
+}
+
+// The short wait is the station keeper's and the setup page's to stop, like
+// the long one.
+void test_the_short_wait_also_only_runs_with_the_station_up() {
+    NetworkRecovery recovery;
+    TEST_ASSERT_TRUE(recovery.next(online(), 0) == RecoveryStep::NONE);
+    RecoveryInputs down = stationDown();
+    down.memoryShort = true;
+    for (uint32_t now = 0; now <= 3 * kShort; now += 1000) {
+        TEST_ASSERT_TRUE(recovery.next(down, now) == RecoveryStep::NONE);
+    }
+    // The station is back: the wait starts here.
+    const uint32_t backAt = 3 * kShort + 1000;
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), backAt) ==
+                     RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(),
+                                   backAt + kShort - 1) == RecoveryStep::NONE);
+    TEST_ASSERT_TRUE(recovery.next(cutOffShortOfMemory(), backAt + kShort) ==
+                     RecoveryStep::CHECK);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_a_box_on_the_broker_is_left_alone);
@@ -590,5 +699,10 @@ int main() {
     RUN_TEST(test_a_client_that_never_started_since_boot_never_restarts_the_box);
     RUN_TEST(test_the_client_clock_stops_for_a_station_that_is_down_or_a_setup_page);
     RUN_TEST(test_a_client_that_cannot_start_after_step_one_restarts_the_box);
+    RUN_TEST(test_a_drop_after_memory_ran_short_is_looked_into_sooner);
+    RUN_TEST(test_a_shortage_seen_once_keeps_the_short_wait);
+    RUN_TEST(test_a_dashboard_that_answers_after_a_shortage_changes_nothing);
+    RUN_TEST(test_short_memory_on_the_broker_is_left_alone_and_forgotten);
+    RUN_TEST(test_the_short_wait_also_only_runs_with_the_station_up);
     return UNITY_END();
 }

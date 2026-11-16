@@ -14,7 +14,8 @@
 // One secure connection is set up at a time (utils/tlsGate.h has the reason
 // and the rules). This is the part that waits: the MQTT client before it
 // connects (MQTT_EVENT_BEFORE_CONNECT), the HTTP worker before it opens a
-// request, and on staging builds the rig's connectivity probe.
+// request, which keeps the turn until the request is over, and on staging
+// builds the rig's connectivity probe.
 //
 // Header-only, and built on nothing but the timer and vTaskDelay, so the HTTP
 // worker's host build (test/test_http_worker_security) compiles it as it is.
@@ -47,9 +48,11 @@ inline void endTlsTurnAfter(TlsUser user, uint32_t afterMs) {
 // longer wants to connect. True when the turn is the caller's, who ends it
 // with endTlsTurn or endTlsTurnAfter. False when the wait ran out or was
 // given up: the caller holds no turn and, if it still wants to, connects
-// anyway.
+// anyway. A caller that does not connect without a turn (the rig's probe)
+// says so with `connectsAnyway`, for the log.
 template <typename GiveUp>
-inline bool waitForTlsTurn(TlsUser user, uint32_t waitMs, GiveUp giveUp) {
+inline bool waitForTlsTurn(TlsUser user, uint32_t waitMs, GiveUp giveUp,
+                           bool connectsAnyway = true) {
     const uint32_t startedMs = tlsTurn::nowMs();
     for (;;) {
         const uint32_t now = tlsTurn::nowMs();
@@ -63,6 +66,7 @@ inline bool waitForTlsTurn(TlsUser user, uint32_t waitMs, GiveUp giveUp) {
         }
         // The log macros are empty in the host build.
         (void)other;
+        (void)connectsAnyway;
         if (taken) {
             if (waitedMs > 0) {
                 ESP_LOGI(tlsTurn::kTag,
@@ -75,10 +79,10 @@ inline bool waitForTlsTurn(TlsUser user, uint32_t waitMs, GiveUp giveUp) {
         if (giveUp()) return false;
         if (waitedMs >= waitMs) {
             ESP_LOGW(tlsTurn::kTag,
-                     "%s waited %u ms and %s is still connecting; going "
-                     "ahead",
+                     "%s waited %u ms and %s is still connecting; %s",
                      tlsUserName(user), static_cast<unsigned>(waitedMs),
-                     tlsUserName(other));
+                     tlsUserName(other),
+                     connectsAnyway ? "going ahead" : "not connecting now");
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -90,15 +94,21 @@ inline bool waitForTlsTurn(TlsUser user, uint32_t waitMs, GiveUp giveUp) {
 class TlsTurn {
   public:
     template <typename GiveUp>
-    TlsTurn(TlsUser user, uint32_t waitMs, GiveUp giveUp)
-        : user_(user), held_(waitForTlsTurn(user, waitMs, giveUp)) {}
+    TlsTurn(TlsUser user, uint32_t waitMs, GiveUp giveUp,
+            bool connectsAnyway = true)
+        : user_(user),
+          held_(waitForTlsTurn(user, waitMs, giveUp, connectsAnyway)) {}
 
-    TlsTurn(TlsUser user, uint32_t waitMs)
-        : TlsTurn(user, waitMs, [] { return false; }) {}
+    TlsTurn(TlsUser user, uint32_t waitMs, bool connectsAnyway = true)
+        : TlsTurn(user, waitMs, [] { return false; }, connectsAnyway) {}
 
     ~TlsTurn() {
         if (held_) endTlsTurn(user_);
     }
+
+    // The turn is this object's: nobody else is setting up a connection or
+    // has a request open. False when the wait ran out.
+    bool held() const { return held_; }
 
     TlsTurn(const TlsTurn &) = delete;
     TlsTurn &operator=(const TlsTurn &) = delete;
