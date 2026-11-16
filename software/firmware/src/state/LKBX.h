@@ -34,10 +34,14 @@
 #include "utils/breakTiming.h"
 #include "utils/chasterAsk.h"
 #include "utils/getPairingCode.h"
+#include "utils/lockMenuCountdown.h"
 #include "utils/lockedReport.h"
 #include "utils/normalizeOption.h"
+#include "utils/psram.h"
 #include "utils/savedTimerSleep.h"
+#include "utils/stateRead.h"
 #include "utils/stringFormat.h"
+#include "utils/unsentReport.h"
 
 namespace sml = boost::sml;
 
@@ -92,6 +96,13 @@ class LKBX {
     // Which heading the held-session page was last drawn with, so a freeze
     // that turns into an unlock hold (or back) repaints it.
     volatile bool heldPageShowsWaiting = false;
+    // The state read from the dashboard runs on the delay task too, one step
+    // per pass (LKBX.wifi.cpp, utils/stateRead.h). confirmServerClear asks
+    // for it.
+    void serviceStateRead();
+    StateRead stateReadPlan;
+    // Whether the lock menu must run the countdown (utils/lockMenuCountdown.h).
+    bool lockMenuNeedsCountdown() const;
     // A locked timer must have its countdown task (LKBX.cpp).
     void restoreUnlockTimer();
     std::mutex unlockTimerStart;
@@ -149,6 +160,13 @@ class LKBX {
             auto startDelay = [](LKBX &) { delayTimeout = 2000; };
             auto startPreflight = [](LKBX &o) { o.startPreflight(); };
             auto startUnlockTimer = [](LKBX &o) { o.startUnlockTimer(); };
+            // The lock menu keeps the countdown of the page it was opened
+            // from. Coming back from a page that ends it (the break pages,
+            // the emergency page, an answer from Chaster) it is started
+            // again, so the menu still moves on at the deadline.
+            auto resumeUnlockTimer = [](LKBX &o) {
+                if (o.lockMenuNeedsCountdown()) o.startUnlockTimer();
+            };
             auto startUpdate = [](LKBX &o) { o.startUpdate(); };
             auto startDeferredServices = [](LKBX &o) {
                 o.startDeferredServices();
@@ -225,10 +243,16 @@ class LKBX {
                 };
             };
 
-            auto drawWifiSetupQR = [](LKBX &o) {
+            // Draws the Wi-Fi setup page and asks for its portal. The portal
+            // is opened by the activity log task, which first stops the MQTT
+            // client so the portal's task never has to fit in memory beside
+            // it (services/wm.cpp). If the portal cannot be opened, that task
+            // replaces the QR code with a notice.
+            auto openWifiSetup = [](LKBX &o) {
                 o.drawQRCode(Str::Screen::WIFI_SETUP_TITLE,
                              Str::Screen::WIFI_SETUP_DESC,
                              Str::Screen::WIFI_SETUP_QR, Str::Label::WIFI);
+                requestWifiPortal();
             };
 
             auto drawWifiErrorNetworkQR = [](LKBX &o) {
@@ -679,7 +703,7 @@ class LKBX {
                 "init.preflight.wifiConnecting"_s + error[isError(ErrorT::WIFI_NO_IP)] = "init.preflight.wifiErrorNoIp"_s,
                 "init.preflight.wifiConnecting"_s + error[isError(ErrorT::SERVER_UNREACHABLE)] = "init.preflight.wifiErrorServer"_s,
 
-                "init.preflight.wifiSetup"_s + on_entry<_> / (pauseLoadingAnimation, drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "init.preflight.wifiSetup"_s + on_entry<_> / (pauseLoadingAnimation, openWifiSetup),
                 "init.preflight.wifiSetup"_s + wifiConnected = "init.preflight.wifiConnecting"_s,
                 "init.preflight.wifiSetup"_s + buttonPress = "init.preflight.updateCheck"_s,
 
@@ -809,7 +833,7 @@ class LKBX {
                 "pairing"_s + forceUpdate = "update"_s,
 
                 "pairing.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
-                "pairing.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "pairing.wifi"_s + on_entry<_> / (openWifiSetup),
                 "pairing.wifi"_s + buttonPress = "home.settings"_s,
                 "pairing.wifi"_s + backPress = "home.settings"_s,
                 "pairing.wifi"_s + wifiConnected = "pairing"_s,
@@ -923,7 +947,7 @@ class LKBX {
                 "locked.ready.addTime"_s + forceUpdate = "update"_s,
 
                 "lockMenu"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
-                "lockMenu"_s + on_entry<_> / (drawEmergencyMenu),
+                "lockMenu"_s + on_entry<_> / (drawEmergencyMenu, resumeUnlockTimer),
                 "lockMenu"_s + buttonPress[(isOption(MenuItemE::SLEEP))] = "lockMenu.sleep"_s,
                 "lockMenu"_s + buttonPress[(isOption(MenuItemE::WIFI_SETTINGS))] = "wmConfig"_s,
                 "lockMenu"_s + buttonPress[(isOption(MenuItemE::RESTART))] = "restart"_s,
@@ -967,7 +991,7 @@ class LKBX {
                 "locked.break"_s + unlock / (clearActiveBreak, clearLocalPlay, unlockAction) = "locking"_s,
 
                 "lockMenu.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
-                "lockMenu.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "lockMenu.wifi"_s + on_entry<_> / (openWifiSetup),
                 "lockMenu.wifi"_s + buttonPress = "lockMenu"_s,
                 "lockMenu.wifi"_s + backPress = "lockMenu"_s,
                 "lockMenu.wifi"_s + wifiConnected = "lockMenu"_s,
@@ -1005,7 +1029,7 @@ class LKBX {
                 "emergency.blocked"_s + forceUpdate = "update"_s,
 
                 "emergency.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
-                "emergency.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "emergency.wifi"_s + on_entry<_> / (openWifiSetup),
                 "emergency.wifi"_s + buttonPress = "emergency.blocked"_s,
                 "emergency.wifi"_s + backPress = "emergency.blocked"_s,
                 "emergency.wifi"_s + wifiConnected = "emergency.blocked"_s,
@@ -1015,7 +1039,7 @@ class LKBX {
                 "emergency.wifi"_s + forceUpdate = "update"_s,
 
                 "wmConfig"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
-                "wmConfig"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "wmConfig"_s + on_entry<_> / (openWifiSetup),
                 "wmConfig"_s + buttonPress = "home"_s,
                 "wmConfig"_s + backPress = "home"_s,
                 "wmConfig"_s + lock / (clearLocalPlay, lockAction) = "locking"_s,
@@ -1029,7 +1053,7 @@ class LKBX {
                 "wmConfig.error"_s + backPress = "home"_s,
                 "wmConfig.error"_s + forceUpdate = "update"_s,
 
-                "update.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
+                "update.wifi"_s + on_entry<_> / (openWifiSetup),
                 "update.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "update.wifi"_s + backPress = "home"_s,
                 "update.wifi"_s + buttonPress[isOnline] = "update"_s,
@@ -1102,7 +1126,6 @@ class LKBX {
     static void startPairingCheckTask(void *pvParameters);
     static void pollPairingTask(void *pvParameters);
     static void syncLockStateOnBootTask(void *pvParameters);
-    static void confirmServerClearTask(void *pvParameters);
     static void syncClockOnBootTask(void *pvParameters);
     static void retryClockSyncTask(void *pvParameters);
 
@@ -1112,9 +1135,13 @@ class LKBX {
 
     void initDelayTask();
     // A dashboard clear that names no session: re-read the state over HTTPS.
-    // Also what a box does when it may have missed a message. False when the
-    // pull could not be started.
-    bool confirmServerClear();
+    // Also what a box does when it may have missed a message. Safe from any
+    // task: it only notes that the read is wanted. The delay task runs it and
+    // tries until one read has completed (serviceStateRead).
+    void confirmServerClear() { stateReadPlan.want(); }
+    // Shown over the Wi-Fi setup page when its portal could not be opened,
+    // so the page does not offer a network that is not there.
+    void drawWifiSetupUnavailable();
 
     Adafruit_ST7789 &display;
     AiEsp32RotaryEncoder &encoder;
@@ -1158,9 +1185,13 @@ class LKBX {
         // state message means the device has moved on, except DISCONNECTED:
         // it is sent on the way to sleep, and sleep can still be cancelled.
         const bool isLockedReport = message == Str::Protocol::LOCKED;
-        if (!isLockedReport && message != Str::Protocol::DISCONNECTED) {
+        const bool isSleepReport = message == Str::Protocol::DISCONNECTED;
+        if (!isLockedReport && !isSleepReport) {
             lockedReport::tracker.clear();
         }
+        // A report that could not go out earlier is out of date now, with the
+        // same exception.
+        if (!isSleepReport) unsentReport::holder.clear();
         if (!client || !isTimeSynced) {
             ESP_LOGW(MQTT_TAG, "%s, skipping state message: %s",
                      client ? "Time not synced yet" : "No MQTT client yet",
@@ -1177,8 +1208,10 @@ class LKBX {
         const String sealed = sealCloudReport(
             topic.c_str(), lockbox::security::ReportKind::state, msg);
         if (sealed.isEmpty()) {
-            // Never sent in plain JSON; a LOCKED report retries once it seals.
+            // Never sent in plain JSON; a LOCKED report retries once it seals,
+            // and any other is kept for a retry.
             if (isLockedReport) lockedReport::tracker.onReport(-1, millis(), msg.c_str());
+            else if (!isSleepReport) holdUnsentReport(msg);
             return;
         }
 
@@ -1186,9 +1219,58 @@ class LKBX {
                                              0, 2, false, true);
         if (isLockedReport) {
             lockedReport::tracker.onReport(result, millis(), msg.c_str());
+        } else if (result < 0 && !isSleepReport) {
+            // No memory for the client's outbox either.
+            holdUnsentReport(msg);
         }
 
         ESP_LOGD(MQTT_TAG, "Message enqueue result: %d", result);
+    }
+
+    // Keeps a state report that could not be sealed or queued, for
+    // retryUnsentReport (utils/unsentReport.h). This happens when internal
+    // RAM is short, so the copy lives in PSRAM where there is any, and
+    // nothing here can throw.
+    void holdUnsentReport(const String &report) {
+        if (!unsentReport::holder.hasStorage()) {
+            char *storage = static_cast<char *>(
+                lockboxAllocPreferPsram(unsentReport::kCapacity));
+            if (storage != nullptr &&
+                !unsentReport::holder.setStorage(storage,
+                                                 unsentReport::kCapacity)) {
+                heap_caps_free(storage);  // another task was first
+            }
+        }
+        const bool kept = unsentReport::holder.hold(
+            report.c_str(), report.length(), millis());
+        ESP_LOGW(MQTT_TAG, "A state report could not be sent; %s",
+                 kept ? "it is kept and tried again"
+                      : "it could not be kept either");
+    }
+
+    // Seals and sends the held report again. From the activity log task.
+    void retryUnsentReport() {
+        String report;
+        uint32_t ticket = 0;
+        if (!unsentReport::holder.read(report, ticket)) {
+            // Nothing held any more, or no memory for the copy: the latter
+            // counts as a try.
+            unsentReport::holder.retried(ticket, false, millis());
+            return;
+        }
+        const String topic = cloudTopic();
+        const String sealed = sealCloudReport(
+            topic.c_str(), lockbox::security::ReportKind::state, report);
+        int result = -1;
+        // A newer report may have been made while this one was sealed; it
+        // must not be followed by the older one.
+        if (!sealed.isEmpty() && unsentReport::holder.stillHeld(ticket)) {
+            result = esp_mqtt_client_enqueue(client, topic.c_str(),
+                                             sealed.c_str(), 0, 2, false, true);
+        }
+        unsentReport::holder.retried(ticket, result >= 0, millis());
+        ESP_LOGW(MQTT_TAG, "Held state report %s",
+                 result >= 0 ? "sent" : "still not sent");
     }
 
     void sendActivityLog(const String &message) {
@@ -1231,6 +1313,11 @@ class LKBX {
         if (lockedReport::tracker.dueForResend(millis()) && mqttConnected) {
             if (isLocked()) resendLockedReport();
             else lockedReport::tracker.clear();  // no longer locked: moot
+        }
+        // Any other state report that could not be sealed or queued.
+        if (mqttConnected && client && isTimeSynced &&
+            unsentReport::holder.due(millis())) {
+            retryUnsentReport();
         }
     }
 

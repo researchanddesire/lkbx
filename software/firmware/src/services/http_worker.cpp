@@ -524,6 +524,22 @@ HttpPending *postDetached(const String &url, const JsonDocument &doc,
         submit(url, body, true, timeoutMs, 0, false, nullptr, false));
 }
 
+HttpPending *getDetachedWithDeviceSecret(const String &url,
+                                         const String &deviceSecret,
+                                         int timeoutMs) {
+    return reinterpret_cast<HttpPending *>(
+        submit(url, String(), false, timeoutMs, 0, false,
+               deviceSecret.length() > 0 ? &deviceSecret : nullptr, false));
+}
+
+HttpPending *getDetachedWithDeviceToken(const String &url,
+                                        const String &deviceToken,
+                                        int timeoutMs) {
+    if (deviceToken.length() == 0) return nullptr;
+    return reinterpret_cast<HttpPending *>(
+        submit(url, String(), false, timeoutMs, 0, false, &deviceToken, true));
+}
+
 bool takeHttpResult(HttpPending *&pending, int &code, String *responsePayload) {
     code = -1;
     if (responsePayload) responsePayload->clear();

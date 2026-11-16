@@ -246,6 +246,13 @@ namespace Str {
         // Timer unit defaults
         constexpr char TIMER_DEFAULT[] PROGMEM = "10 minutes";
 
+        // The Wi-Fi setup page when its setup network could not be started.
+        constexpr char WIFI_SETUP_UNAVAILABLE_TITLE[] PROGMEM =
+            "Wi-Fi Setup Not Open";
+        constexpr char WIFI_SETUP_UNAVAILABLE_DESC[] PROGMEM =
+            "Wi-Fi setup could not be opened just now. Leave this page and "
+            "try again.";
+
         // The timer page could not be drawn, or the timer's end could not be
         // saved. The box does not lock.
         constexpr char TIMER_UNAVAILABLE_TITLE[] PROGMEM = "Timer Not Set";

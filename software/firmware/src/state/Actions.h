@@ -19,17 +19,6 @@
 #include "tasks/TaskStart.h"
 #include "utils/syncState.h"
 
-// Starts the Wi-Fi setup portal's task. If it cannot be created the page still
-// shows and both buttons leave it; only the setup network is missing, and the
-// failure is logged.
-constexpr auto startTask = [](auto task, const TaskParams &params,
-                              TaskHandle_t &handle) {
-    return [task, &params, &handle]() {
-        ESP_LOGD(TASKDEBUG_TAG, "Creating task %s", params.name);
-        startTaskWithRetry(task, params, nullptr, &handle);
-    };
-};
-
 auto setLocalPlay = []() {
     ESP_LOGD(ACTIONS_TAG, "Setting local play");
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {

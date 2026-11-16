@@ -18,18 +18,23 @@ bool stopMqtt();
 
 // The Wi-Fi setup portal and the client do not fit in internal RAM together
 // on R8 hardware, so the client is stopped while a portal is open (see
-// utils/mqttPause.h). The portal task calls pauseMqttForPortal before it opens
-// the portal and resumeMqttAfterPortal once it has closed it. Never call
-// pauseMqttForPortal from the MQTT task or from a state machine action: it
-// waits for the MQTT task to stop.
+// utils/mqttPause.h). The activity log task calls pauseMqttForPortal before it
+// creates the portal's task (services/wm.cpp), so that task never has to fit
+// beside the client; resumeMqttAfterPortal is called once the portal has
+// closed, or could not be opened. Never call pauseMqttForPortal from the MQTT
+// task or from a state machine action: it waits for the MQTT task to stop.
 void pauseMqttForPortal();
 void resumeMqttAfterPortal();
-// Called often from a task that is always running. Starts a paused client
-// again once the last portal has closed, trying again until its task fits in
-// memory. True when the client has connected again and the caller should now
-// read the dashboard's state; report that attempt with noteMqttReconcile.
+// The client exists but its task could not be created (no free 10 KB block of
+// internal RAM at boot). serviceMqttPause starts it, as it does after a
+// portal, trying every two seconds until it fits.
+void retryMqttStartLater();
+// Called often from a task that is always running. Starts a client that is
+// not running (stopped for a portal, or never started) once no portal is
+// open, trying again until its task fits in memory. True once per start, when
+// the client has connected again: the caller then asks for the dashboard's
+// state to be read (LKBX::confirmServerClear).
 bool serviceMqttPause();
-void noteMqttReconcile(bool started);
 // Stops and frees the client, for a firmware update or a client that could not
 // be started.
 void destroyMqtt();

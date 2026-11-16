@@ -42,15 +42,26 @@ int post(const String &url, const JsonDocument &doc,
          String *responsePayload = nullptr, int timeoutMs = 5000,
          int retries = 0);
 
-// A POST the caller polls instead of waiting for, so a task with other work to
-// do (the delay task asking Chaster) is never blocked on the network. The same
-// checks, limits and total deadline as post() apply, without retries.
+// A request the caller polls instead of waiting for, so a task with other work
+// to do (the delay task asking Chaster or reading the state) is never blocked
+// on the network. The same checks, limits and total deadline as the waiting
+// calls apply, without retries.
 struct HttpPending;
 
 // Queues the request. Null when it could not be queued: an invalid request, no
 // memory, a full queue or a stopped worker.
 HttpPending *postDetached(const String &url, const JsonDocument &doc,
                           int timeoutMs);
+
+// The same for a GET that carries the device's identity, as
+// getWithDeviceSecret and getWithDeviceToken do: the delay task reading the
+// box's state. Only the configured RAD server may receive either value.
+HttpPending *getDetachedWithDeviceSecret(const String &url,
+                                         const String &deviceSecret,
+                                         int timeoutMs);
+HttpPending *getDetachedWithDeviceToken(const String &url,
+                                        const String &deviceToken,
+                                        int timeoutMs);
 
 // True once the request has ended: answered, failed, or past its deadline.
 // `code` and `responsePayload` then hold what post() would have returned, and

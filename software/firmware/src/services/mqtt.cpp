@@ -12,7 +12,8 @@ namespace {
 bool mqttPaused = false;
 
 // Serializes stopping, starting and destroying the client with the portal
-// bookkeeping, across the portal task, the activity log task and an update.
+// bookkeeping, across the portal task, the activity log task, the sign-in
+// task and an update.
 std::mutex pauseMutex;
 MqttPause portalPause;
 
@@ -86,6 +87,13 @@ void resumeMqttAfterPortal() {
     portalPause.portalClosed(millis());
 }
 
+void retryMqttStartLater() {
+    std::lock_guard<std::mutex> lock(pauseMutex);
+    if (mqttClient == nullptr) return;
+    mqttPaused = true;
+    portalPause.startFailed(millis());
+}
+
 bool serviceMqttPause() {
     // Never waits behind a stop that is in progress.
     std::unique_lock<std::mutex> lock(pauseMutex, std::try_to_lock);
@@ -112,16 +120,12 @@ bool serviceMqttPause() {
             return false;
         }
         case MqttPauseStep::RECONCILE:
+            portalPause.reconcileAsked();
             return true;
         case MqttPauseStep::NONE:
         default:
             return false;
     }
-}
-
-void noteMqttReconcile(bool started) {
-    std::lock_guard<std::mutex> lock(pauseMutex);
-    portalPause.reconcileTried(started, millis());
 }
 
 void destroyMqtt() {

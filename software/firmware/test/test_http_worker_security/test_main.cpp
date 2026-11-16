@@ -342,6 +342,72 @@ void testDeviceSecretOnlyReachesConfiguredServer() {
 #endif
 }
 
+// Polls a detached request to its end, as the delay task does on each pass.
+int awaitDetached(HttpPending *&pending, String &response) {
+    int code = 0;
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!takeHttpResult(pending, code, &response)) {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(1ms);
+    }
+    assert(pending == nullptr);
+    return code;
+}
+
+// The state read runs on the delay task: a GET with the device's identity
+// that is polled and never waited for.
+void testDetachedIdentityGet() {
+    reset();
+    Scenario state; state.body = "{\"ok\":true}"; schedule(state);
+    HttpPending *pending = getDetachedWithDeviceToken(
+        url("/api/lockbox/v2/state"), String("device-token-value"), 2000);
+    assert(pending != nullptr);
+    String response("stale");
+    assert(awaitDetached(pending, response) == 200);
+    assert(std::string(response.c_str()) == state.body);
+    auto seen = snapshots();
+    assert(seen.size() == 1 && seen[0].method == HTTP_METHOD_GET);
+    assert(seen[0].headers.at("x-lkbx-device-token") == "device-token-value");
+    assert(seen[0].headers.count("x-lkbx-device-secret") == 0);
+    assert(seen[0].writtenBody.empty());
+
+    // A v1 box sends its secret the same way.
+    reset();
+    schedule(Scenario{});
+    pending = getDetachedWithDeviceSecret(url("/api/lockbox/state/device"),
+                                          String("device-secret-value"), 2000);
+    assert(pending != nullptr);
+    assert(awaitDetached(pending, response) == 200);
+    seen = snapshots();
+    assert(seen.size() == 1 && seen[0].method == HTTP_METHOD_GET);
+    assert(seen[0].headers.at("x-lkbx-device-secret") == "device-secret-value");
+    assert(seen[0].headers.count("x-lkbx-device-token") == 0);
+
+    // A refusal comes back with its status, as from the waiting calls.
+    reset();
+    Scenario failed; failed.status = 503; failed.body = "down"; schedule(failed);
+    pending = getDetachedWithDeviceToken(url("/api/lockbox/v2/state"),
+                                         String("device-token-value"), 2000);
+    assert(pending != nullptr);
+    assert(awaitDetached(pending, response) == 503);
+
+    // Without a token nothing is sent.
+    reset();
+    assert(getDetachedWithDeviceToken(url("/api/lockbox/v2/state"), String(), 2000) == nullptr);
+    assert(snapshots().empty());
+
+#ifndef VERSIONDEV
+    // Another HTTPS origin never receives either value.
+    assert(getDetachedWithDeviceToken(String("https://other.example.test/api"),
+                                      String("device-token-value"), 2000) == nullptr);
+    assert(getDetachedWithDeviceSecret(String("https://other.example.test/api"),
+                                       String("device-secret-value"), 2000) == nullptr);
+    assert(snapshots().empty());
+#endif
+    assert(stopHttpWorker());
+    assert(liveSemaphores == 0);
+}
+
 void testBoundsAndRetry() {
     reset();
     String response("stale");
@@ -583,6 +649,7 @@ void testCallerTimeoutCannotLeaveOrRestoreOnline() {
 int main() {
     testTlsAndUrls();
     testDeviceSecretOnlyReachesConfiguredServer();
+    testDetachedIdentityGet();
     testBoundsAndRetry();
     testSlowServerResponse();
     testCallerTimeoutAndLateCompletion();

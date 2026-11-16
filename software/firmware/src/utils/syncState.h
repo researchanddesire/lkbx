@@ -528,24 +528,12 @@ static bool serverBreakOnCooldown() {
     return isServerBreakEcho(breakLast, now);
 }
 
-static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
-    if (WiFiClass::status() != WL_CONNECTED) {
-        ESP_LOGD(SYNC_STATE_TAG, "Not connected to WiFi");
-        return SyncResult::FAILED;
-    }
-
-    String payload;
-    int httpResponseCode = -1;
-    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
-    if (token.length() > 0) {
-        httpResponseCode = getWithDeviceToken(
-            String(RAD_SERVER) + Str::Api::LOCKBOX_V2_STATE, token, &payload);
-    } else {
-        httpResponseCode = getWithDeviceSecret(
-            String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss(),
-            deviceSecretForRequest(), &payload);
-    }
-
+// Applies the dashboard's answer to a state request. Shared by the pull that
+// waits for its answer (pullSession) and the one the delay task polls
+// (startSessionPull, LKBX::serviceStateRead).
+static SyncResult applySessionResponse(int httpResponseCode,
+                                       const String& payload,
+                                       SyncOutcome* outcome = nullptr) {
     if (httpResponseCode != 200) {
         ESP_LOGD(SYNC_STATE_TAG, "Failed to reach server. Response code: %d",
                  httpResponseCode);
@@ -607,6 +595,41 @@ static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
 
     // saveState() resolves the result from lockState (LOCKED / BREAK / FAILED).
     return saveState(session, outcome);
+}
+
+static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
+    if (WiFiClass::status() != WL_CONNECTED) {
+        ESP_LOGD(SYNC_STATE_TAG, "Not connected to WiFi");
+        return SyncResult::FAILED;
+    }
+
+    String payload;
+    int httpResponseCode = -1;
+    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
+    if (token.length() > 0) {
+        httpResponseCode = getWithDeviceToken(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_V2_STATE, token, &payload);
+    } else {
+        httpResponseCode = getWithDeviceSecret(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss(),
+            deviceSecretForRequest(), &payload);
+    }
+
+    return applySessionResponse(httpResponseCode, payload, outcome);
+}
+
+// The same request, handed to the HTTP worker for a caller that polls for the
+// answer (takeHttpResult) and gives it to applySessionResponse. Null when the
+// worker could not take it.
+inline HttpPending* startSessionPull(int timeoutMs) {
+    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
+    if (token.length() > 0) {
+        return getDetachedWithDeviceToken(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_V2_STATE, token, timeoutMs);
+    }
+    return getDetachedWithDeviceSecret(
+        String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss(),
+        deviceSecretForRequest(), timeoutMs);
 }
 
 // return true if we pulled the state.

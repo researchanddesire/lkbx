@@ -400,6 +400,15 @@ void LKBX::drawNotice(const char* title, const String& body,
     xSemaphoreGive(displayMutex);
 }
 
+// The Wi-Fi setup page without its setup network: the portal could not be
+// opened. Drawn by the activity log task over the QR code, with the buttons
+// the page had, which leave it as they did.
+void LKBX::drawWifiSetupUnavailable() {
+    drawNotice(Str::Screen::WIFI_SETUP_UNAVAILABLE_TITLE,
+               Str::Screen::WIFI_SETUP_UNAVAILABLE_DESC, continueAction,
+               backAction);
+}
+
 // The answer to a Chaster question that did not open the box: Chaster's
 // refusal with its reason, or that nobody could be asked. Either button opens
 // the lock menu.
