@@ -27,6 +27,7 @@
 #include "utils/offeredLock.h"
 #include "utils/syncEffect.h"
 #include "utils/getEfuseMac.h"
+#include "utils/voteLink.h"
 
 static String createStateMessage(const String& state,
                                  bool includeState = true,
@@ -192,6 +193,11 @@ struct SyncMessage {
     // payload carried the field, as for the freeze fields above.
     bool chasterControlled;
     bool hasChasterControlled;
+    // Voting link shown as a QR code from the lock menu. hasVoteUrl is false
+    // when the payload left it out (older servers, unencrypted commands, BLE
+    // writes without it): the stored link is then kept. See utils/voteLink.h.
+    bool hasVoteUrl;
+    String voteUrl;
 };
 
 // Separate persisted metadata from physical transitions. Runtime callers use
@@ -249,6 +255,40 @@ inline void applyChasterSync(const TJsonObject& document, SyncMessage& message) 
         combineAskFlags(hasControlled, controlled, hasPermission, permission);
     message.hasChasterControlled = flag.present;
     message.chasterControlled = flag.asks;
+}
+
+// Apply the voting-link presence rules to a parsed payload, for the same three
+// parsers as applyFreezeSync.
+template <typename TJsonObject>
+inline void applyVoteUrlSync(const TJsonObject& document, SyncMessage& message) {
+    const VoteUrlSync sync = voteUrlFromJson(document, Str::Json::VOTE_URL);
+    message.hasVoteUrl = sync.present;
+    message.voteUrl = String(sync.url);
+}
+
+// Store the voting link a sync carried. The caller holds preferencesMutex with
+// the session namespace open for writing.
+inline void persistVoteUrlLocked(const SyncMessage& message) {
+    if (!message.hasVoteUrl) return;
+    if (message.voteUrl.isEmpty()) {
+        if (preferences.isKey(Keys::Session::voteUrl))
+            preferences.remove(Keys::Session::voteUrl);
+        return;
+    }
+    if (preferences.getString(Keys::Session::voteUrl, "") != message.voteUrl)
+        preferences.putString(Keys::Session::voteUrl, message.voteUrl);
+}
+
+// The stored voting link, or "" when the session has none.
+inline String readVoteUrl() {
+    String url;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::session);
+        url = preferences.getString(Keys::Session::voteUrl, "");
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+    return voteUrlUsable(url.c_str()) ? url : String();
 }
 
 // Read the persisted freeze state. The caller must already hold
@@ -401,6 +441,7 @@ static SyncResult saveState(SyncMessage lockSession,
         !preferences.getBool(Keys::Session::isActiveBreak, false)) {
         preferences.putBool(Keys::Session::breakKeyholderOnly,
                             lockSession.breakKeyholderOnly);
+        persistVoteUrlLocked(lockSession);
         persistFreeze();
         return finish(SyncResult::NO_CHANGE);
     }
@@ -436,6 +477,8 @@ static SyncResult saveState(SyncMessage lockSession,
         preferences.putString(Keys::Session::lockName, lockSession.lockName);
     if (!lockSession.requestedBy.isEmpty())
         preferences.putString(Keys::Session::requestedBy, lockSession.requestedBy);
+    // Read only when the lock menu opens, so it never repaints the screen.
+    persistVoteUrlLocked(lockSession);
 
     // boolean values
     preferences.putBool(Keys::Session::isBreak, lockSession.isBreak);
@@ -611,6 +654,7 @@ static SyncResult applySessionResponse(int httpResponseCode,
     };
     applyFreezeSync(lockSession, session);
     applyChasterSync(lockSession, session);
+    applyVoteUrlSync(lockSession, session);
     session.breakKeyholderOnly =
         lockSession[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
 

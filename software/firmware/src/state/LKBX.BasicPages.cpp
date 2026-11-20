@@ -279,6 +279,23 @@ void LKBX::drawBreakEndRequest(const String& requestedBy) {
     xSemaphoreGive(displayMutex);
 }
 
+void LKBX::drawVoteQR() {
+    const String url = readVoteUrl();
+    if (url.isEmpty()) {
+        // The link went away after the menu was drawn.
+        const TextPage page{.header = Str::Screen::VOTE_TITLE,
+                            .content = "This lock has no voting link right now. Press Back to return."};
+        drawPage(&page);
+        if (xSemaphoreTake(displayMutex, 100) == pdTRUE) {
+            drawButtons(display, Action{.visible = false}, backAction);
+            xSemaphoreGive(displayMutex);
+        }
+        return;
+    }
+    drawQRCode(Str::Screen::VOTE_TITLE, Str::Screen::VOTE_DESC, url,
+               Str::Label::VOTE, Action{.visible = false}, backAction);
+}
+
 void LKBX::drawLockedActions() {
     // A new page clears the timer framebuffer even when its value is unchanged.
     bumpFreezeDisplayVersion();

@@ -707,18 +707,19 @@ radble::Result handleCommand(JsonObjectConst request, void*) {
             currentState == "locked" || currentState == "locked.timer" ||
             currentState == "locked.frozen" ||
             currentState == "lockMenu" || currentState == "lockMenu.sleep" ||
-            currentState == "locked.break";
+            currentState == "lockMenu.vote" || currentState == "locked.break";
         const bool canApplyBreak =
             currentState == "locked" || currentState == "locked.timer" ||
             currentState == "locked.frozen" ||
-            currentState == "lockMenu" || currentState == "lockMenu.sleep";
+            currentState == "lockMenu" || currentState == "lockMenu.sleep" ||
+            currentState == "lockMenu.vote";
         const bool canApplyLock =
             currentState == "home.idle" || currentState == "home.settings" ||
             currentState == "locked.ready" || currentState == "locked.ready.addTime" ||
             currentState == "timer" || currentState == "locked" ||
             currentState == "locked.timer" || currentState == "locked.frozen" ||
             currentState == "lockMenu" ||
-            currentState == "lockMenu.sleep";
+            currentState == "lockMenu.sleep" || currentState == "lockMenu.vote";
         if ((lockState == Str::Protocol::UNLOCKED && !canApplyUnlocked) ||
             (lockState == Str::Protocol::BREAK && !canApplyBreak) ||
             (lockState == Str::Protocol::LOCKED && !canApplyLock))
@@ -734,7 +735,7 @@ radble::Result handleCommand(JsonObjectConst request, void*) {
         if (lockState == Str::Protocol::UNLOCKED) {
             saved = clearState();
         } else {
-            saved = saveState({
+            SyncMessage definition = {
                 .isBreak = sessionArgs["breakEnabled"] | false,
                 .lockEnd = lockEnd,
                 .breakMax = breakMax,
@@ -753,7 +754,11 @@ radble::Result handleCommand(JsonObjectConst request, void*) {
                     sessionArgs["displayElapsedTime"] | false,
                 .breakKeyholderOnly =
                     sessionArgs["breakKeyholderOnly"] | false,
-            }, &outcome);
+            };
+            // The app may pass the session's voting link; without it the
+            // stored link is kept.
+            applyVoteUrlSync(sessionArgs, definition);
+            saved = saveState(definition, &outcome);
             if (!timed && saved == SyncResult::LOCKED &&
                 xSemaphoreTake(preferencesMutex, pdMS_TO_TICKS(250)) == pdTRUE) {
                 preferences.begin(Keys::base, false);

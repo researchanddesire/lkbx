@@ -4,6 +4,7 @@
 "locked.timer"_s + timerExpired[acceptLocalTimerUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
 "lockMenu"_s + timerExpired[acceptLocalTimerUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
 "lockMenu.sleep"_s + timerExpired[acceptLocalTimerUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
+"lockMenu.vote"_s + timerExpired[acceptLocalTimerUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
 "locked.ready"_s + timerExpired[acceptLocalTimerUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
 "locked.ready.addTime"_s + timerExpired[acceptLocalTimerUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
 "locked.break"_s + timerExpired[acceptLocalTimerUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
@@ -16,3 +17,4 @@
 // otherwise close it again at once.
 "locked.break"_s + timerExpired[isReadyToUnlock && !isBreakEndRequested && !isChasterSession] / (clearActiveBreak, movePaddleToLock) = "locking"_s,
 "lockMenu.sleep"_s + timerExpired[isReadyToUnlock] = "locked.ready"_s,
+"lockMenu.vote"_s + timerExpired[isReadyToUnlock] = "locked.ready"_s,
