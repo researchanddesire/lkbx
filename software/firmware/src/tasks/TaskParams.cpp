@@ -33,7 +33,6 @@ TaskHandle_t checkUpdates = nullptr;
 TaskHandle_t pairingCheck = nullptr;
 TaskHandle_t pairingPoll = nullptr;
 TaskHandle_t syncLockState = nullptr;
-TaskHandle_t confirmClear = nullptr;
 TaskHandle_t syncClock = nullptr;
 TaskHandle_t wifiConnect = nullptr;
 TaskHandle_t mqttConnect = nullptr;

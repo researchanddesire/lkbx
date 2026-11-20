@@ -15,9 +15,14 @@
 #include "services/getId.h"
 #include "services/hardwareHealth.h"
 #include "services/machine.h"
+#include "services/tlsTurn.h"
 #include "state/LKBX.h"
 #include "structs/Version.h"
 #include "utils/dashboard.hpp"
+#include "utils/emergencyReport.h"
+#include "utils/emergencyStore.h"
+#include "utils/heldSession.h"
+#include "utils/lastWill.h"
 #include "utils/lockedReport.h"
 #include "utils/serverClear.h"
 
@@ -61,16 +66,38 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
     String mqtt_data_string;
     JsonDocument doc;
     ParsedMessage message;
+    // Whether the held session shows its timer (MQTT_EVENT_DATA only).
+    bool timerDisplayed = true;
 
     switch (event->event_id) {
+        case MQTT_EVENT_BEFORE_CONNECT:
+            // From here until MQTT_EVENT_DISCONNECTED the client is
+            // connecting or connected (services/mqtt.cpp).
+            noteMqttLink(true);
+            // One secure connection is set up at a time (utils/tlsGate.h):
+            // while an HTTPS request is opening its connection the client
+            // waits here, a few seconds at most, and then connects anyway. A
+            // stop of the client ends the wait at once. The turn is given
+            // back when the client has connected or the attempt has failed
+            // (the two events below); one that is never given back runs out.
+            waitForTlsTurn(TlsUser::MQTT, tlsGate::kMqttWaitMs,
+                           [] { return mqttStopRequested(); });
+            // Every connection attempt gets its own last will: a new seal for
+            // a box that signs, a new id otherwise. Built once per boot, the
+            // dashboard saw the second disconnect of a boot as a repeat of the
+            // first, and refused the plain will of a box that signs.
+            applyLastWill(buildLastWill(mqttClientId()));
+            break;
         case MQTT_EVENT_CONNECTED:
             hardwareHealthMqttConnected(mqtt_server);
             Serial.println(Str::Protocol::MQTT_CONNECTED);
             strncpy(mqttTopic, cloudTopic().c_str(), sizeof(mqttTopic) - 1);
             esp_mqtt_client_subscribe(mqttClient, mqttTopic, 2);
             mqttConnected = true;
-            // An unconfirmed LOCKED report gets a fresh retry budget.
+            // An unconfirmed LOCKED report gets a fresh retry budget, and so
+            // does an emergency report that is still owed.
             lockedReport::tracker.onConnected();
+            emergencyReport::owed.onConnected();
             {
                 const auto token = firmware::provenance::currentToken();
                 JsonDocument provenance;
@@ -90,8 +117,16 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                                         payload.c_str(), payload.length(), 1,
                                         true);
             }
+            // Connected. The turn is kept a moment longer: the subscription,
+            // the provenance record and any waiting reports go out now, and
+            // an HTTPS connection set up on top of them is what ran R8 out
+            // of memory.
+            endTlsTurnAfter(TlsUser::MQTT, tlsGate::kMqttSettleMs);
             break;
         case MQTT_EVENT_DISCONNECTED:
+            // Also how a failed connection attempt ends.
+            endTlsTurn(TlsUser::MQTT);
+            noteMqttLink(false);
             mqttFrame.reset();
             Serial.println(Str::Protocol::MQTT_DISCONNECTED);
             mqttConnected = false;
@@ -100,6 +135,7 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
             // QoS 2 completes the full handshake before this fires, so the
             // broker really has the message.
             lockedReport::tracker.onPublished(event->msg_id);
+            emergencyReport::owed.onPublished(event->msg_id);
             break;
         case MQTT_EVENT_SUBSCRIBED:
             Serial.println(Str::Protocol::MQTT_SUBSCRIBED);
@@ -123,23 +159,36 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                 break;
             }
 
-            setNotIdle(Str::Input::MQTT_DATA);
+            // A message lights the screen, except a sync while the session
+            // hides its timer: that one waits until it is known to change the
+            // page (syncWakesScreen), so a silent change of the end date
+            // cannot say the end is near.
+            timerDisplayed = isTimerDisplayed();
+            if (timerDisplayed || message.type != MessageType::SYNC) {
+                setNotIdle(Str::Input::MQTT_DATA);
+            }
 
             if (message.type == MessageType::SYNC) {
                 auto isLocalPlay = false;
                 String savedSessionId;
+                String savedLockState;
 
                 if (xSemaphoreTake(preferencesMutex,
-                                   portTICK_PERIOD_MS * 1000) == pdTRUE) {
-                    preferences.begin(Keys::base);
-                    isLocalPlay =
-                        preferences.getBool(Keys::Base::isLocalPlay, false);
-                    preferences.end();
-                    preferences.begin(Keys::session);
-                    savedSessionId = preferences.getString(Keys::Session::sessionId, "");
-                    preferences.end();
-                    xSemaphoreGive(preferencesMutex);
+                                   portTICK_PERIOD_MS * 1000) != pdTRUE) {
+                    // Without the held session the sync cannot be checked
+                    // against it, so the state is read from the dashboard.
+                    ESP_LOGW(MQTT_TAG, "Could not read the held session -- asking the dashboard");
+                    lkbx->confirmServerClear();
+                    return;
                 }
+                preferences.begin(Keys::base);
+                isLocalPlay = preferences.getBool(Keys::Base::isLocalPlay, false);
+                preferences.end();
+                preferences.begin(Keys::session);
+                savedSessionId = preferences.getString(Keys::Session::sessionId, "");
+                savedLockState = preferences.getString(Keys::Session::lockState, "");
+                preferences.end();
+                xSemaphoreGive(preferencesMutex);
 
                 const String incomingSessionId = doc[Str::Json::SESSION_ID].as<String>();
                 if (isLocalPlay && (incomingSessionId.isEmpty() || incomingSessionId == savedSessionId)) {
@@ -150,10 +199,27 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                 if (doc[Str::Json::CLEAR].as<bool>()) {
                     switch (classifyServerClear(doc[Str::Json::SESSION_ID] | "",
                                                 savedSessionId.c_str())) {
-                        case ServerClear::APPLY:
+                        case ServerClear::APPLY: {
+                            // The dashboard ended the session the box holds.
+                            // It also does that in answer to the box's own
+                            // emergency report, and the lockout outlives
+                            // that clear (utils/emergencyRecord.h).
+                            bool recordRead = false;
+                            const bool lockoutStays =
+                                emergencyLockoutOutlastsClear(recordRead);
+                            if (!recordRead) {
+                                ESP_LOGW(MQTT_TAG,
+                                         "Could not read the emergency record "
+                                         "-- asking the dashboard");
+                                lkbx->confirmServerClear();
+                                break;
+                            }
                             clearState();
-                            lkbx->sm->process_event(Unlock{});
+                            if (!lockoutStays) {
+                                lkbx->sm->process_event(Unlock{});
+                            }
                             break;
+                        }
                         case ServerClear::CONFIRM:
                             ESP_LOGW(MQTT_TAG,
                                      "Clear names no session -- asking the "
@@ -165,6 +231,20 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                                      "Ignoring a clear for another session");
                             break;
                     }
+                    return;
+                }
+
+                // A locked session only ends through its own messages. A sync
+                // for any other session is checked with the dashboard first.
+                if (!isLocalPlay &&
+                    classifyHeldSessionSync(doc[Str::Json::SESSION_ID] | "",
+                                            savedSessionId.c_str(),
+                                            savedLockState.c_str()) ==
+                        HeldSessionSync::CONFIRM) {
+                    ESP_LOGW(MQTT_TAG,
+                             "Sync names another session while one is locked "
+                             "-- asking the dashboard");
+                    lkbx->confirmServerClear();
                     return;
                 }
 
@@ -188,12 +268,19 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                     .displayElapsedTime = doc[Str::Json::DISPLAY_ELAPSED_TIME].as<bool>(),
                 };
                 applyFreezeSync(doc, session);
+                applyChasterSync(doc, session);
+                applyVoteUrlSync(doc, session);
                 session.breakKeyholderOnly =
                     doc[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
 
                 SyncOutcome outcome;
                 saveState(session, &outcome);
                 if (outcome.freezeChanged) bumpFreezeDisplayVersion();
+                // The sync may have revealed the timer; read it again.
+                if (!timerDisplayed &&
+                    syncWakesScreen(outcome.effect, isTimerDisplayed())) {
+                    setNotIdle(Str::Input::MQTT_DATA);
+                }
 
                 // Metadata changes reconcile the main display only. Identical
                 // syncs emit no event and no acknowledgement echo.

@@ -1,6 +1,8 @@
 """Actual provenance verifier/serializer/reply gate with a real OpenSSL host port.
 
-Uses the repository's public ES256 vector. No signer secrets, network or devices.
+Uses the repository's public ES256 vector, signed by a throwaway key rather
+than a release key: the verifier is compiled from a copy whose staging key slot
+holds the vector's public key. No signer secrets, network or devices.
 Prepare development-r8 RadBLE and native test ArduinoJson dependencies first.
 """
 from pathlib import Path
@@ -41,6 +43,20 @@ class ProvenanceResponseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="lkbx-provenance-") as temp:
             directory = Path(temp)
             (directory / "mbedtls").mkdir()
+            # The real verifier, trusting the vector's throwaway key in place of
+            # the staging release key. The include path finds this copy first.
+            verifier = (ROOT / "lib/FirmwareUpdateProtocol/src/FirmwareProvenance.h").read_text()
+            staging_key = re.search(
+                r'(STAGING_PUBLIC_KEY = R"KEY\()(-----BEGIN PUBLIC KEY-----\n.*?-----END PUBLIC KEY-----\n)(\)KEY")',
+                verifier, re.S)
+            staging_id = re.search(r'(STAGING_KEY_ID = ")([^"]+)(")', verifier)
+            self.assertIsNotNone(staging_key)
+            self.assertIsNotNone(staging_id)
+            self.assertNotEqual(staging_id.group(2), vector["keyId"])
+            self.assertNotIn(vector["publicKeyPem"], verifier)
+            verifier = verifier.replace(staging_key.group(0), staging_key.group(1) + vector["publicKeyPem"] + staging_key.group(3), 1)
+            verifier = verifier.replace(staging_id.group(0), staging_id.group(1) + vector["keyId"] + staging_id.group(3), 1)
+            (directory / "FirmwareProvenance.h").write_text(verifier)
             (directory / "Preferences.h").write_text('''#pragma once
 inline std::map<std::string,std::string> fixturePreferences;
 struct Preferences {

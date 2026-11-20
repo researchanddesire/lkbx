@@ -15,16 +15,36 @@ FIXTURE = json.loads(
     (Path(__file__).with_name("firmware_provenance_test_vector.json")).read_text()
 )
 
+# The vector is signed by a throwaway key, never a release key. Tests trust it
+# for the staging track explicitly; the real trust map never does.
+TRUST_VECTOR_KEY = mock.patch.dict(
+    downloader.PROVENANCE_KEYS,
+    {FIXTURE["keyId"]: ("staging", FIXTURE["publicKeyPem"])},
+)
+
 
 class FirmwareProvenanceTests(unittest.TestCase):
+    @TRUST_VECTOR_KEY
     def test_shared_vector_verifies(self):
         claims = downloader.verify_provenance(FIXTURE["compactJws"], "staging")
         self.assertEqual(claims, FIXTURE["claims"])
 
+    @TRUST_VECTOR_KEY
     def test_staging_vector_is_not_valid_for_production(self):
         with self.assertRaisesRegex(RuntimeError, "does not match the track"):
             downloader.verify_provenance(FIXTURE["compactJws"], "main")
 
+    def test_vector_is_not_signed_by_a_release_key(self):
+        self.assertNotIn(FIXTURE["keyId"], downloader.PROVENANCE_KEYS)
+        self.assertNotIn(
+            FIXTURE["publicKeyFingerprintSha256"],
+            {fingerprint for _, fingerprint in publisher.PROVENANCE_KEYS.values()},
+        )
+        for track in ("staging", "main"):
+            with self.assertRaisesRegex(RuntimeError, "does not match the track"):
+                downloader.verify_provenance(FIXTURE["compactJws"], track)
+
+    @TRUST_VECTOR_KEY
     def test_malformed_and_truncated_signatures_fail(self):
         with self.assertRaises(RuntimeError):
             downloader.verify_provenance("!" + FIXTURE["compactJws"], "staging")

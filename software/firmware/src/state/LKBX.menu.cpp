@@ -98,15 +98,50 @@ void LKBX::drawMenu() {
     encoder.setBoundaries(0, menuSize - 1, true);
     encoder.setEncoderValue(0);
 
+    // A page being entered and restoreMenu can both get here.
+    std::lock_guard<std::mutex> lock(menuTaskStart);
+
     // if the task is already running, don't start it again
     if (TaskHandles::drawMenu != nullptr) {
         vTaskDelete(TaskHandles::drawMenu);
+        // Not left pointing at the deleted task if the new one cannot start.
+        TaskHandles::drawMenu = nullptr;
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating draw menu task");
-    xTaskCreatePinnedToCore(
-        drawMenuTask, Tasks::drawMenu.name, Tasks::drawMenu.stackSize, this,
-        Tasks::drawMenu.priority, &TaskHandles::drawMenu, Tasks::drawMenu.core);
+    // The stack of the task deleted above is freed a moment later, so a first
+    // attempt can fail where a second succeeds. If it still does not fit, the
+    // menu is drawn once it does (restoreMenu).
+    startTaskWithRetry(drawMenuTask, Tasks::drawMenu, this,
+                       &TaskHandles::drawMenu);
+}
+
+// A menu page needs its task: it draws the menu and follows the dial. If the
+// task could not be created when the page was entered (no free block of
+// internal RAM for its stack), the page stayed blank under its header for as
+// long as the box sat on it, and after a memory shortage that is the home
+// menu. So the task is started here once it fits (utils/missingTask.h). The
+// page was cleared when it was entered, and the task paints the whole menu
+// on its first pass. Called from the activity log task.
+void LKBX::restoreMenu() {
+    const bool onMenu = sm->is("home.idle"_s) || sm->is("home.settings"_s) ||
+                        sm->is("lockMenu"_s);
+    if (!menuWatch.due(onMenu, TaskHandles::drawMenu != nullptr, millis())) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(menuTaskStart);
+    // The page started its own task since the look.
+    if (TaskHandles::drawMenu != nullptr) return;
+
+    // One attempt: this is tried again at the next look. A task started for
+    // a page that has just been left ends by itself on its first pass.
+    if (startTaskChecked(drawMenuTask, Tasks::drawMenu, this,
+                         &TaskHandles::drawMenu)) {
+        ESP_LOGW(MENU_UI_TAG,
+                 "The menu task was not running; started it, the menu is "
+                 "drawn now");
+    }
 }
 
 void LKBX::drawEmergencyMenu() {
@@ -142,12 +177,28 @@ void LKBX::drawEmergencyMenu() {
                    sizeof(lockedMenuNoBreakNoEUnlock[0]);
     }
 
+    // With a voting link the menu offers it right after Go Back.
+    static MenuItem lockedMenuWithVote[maxLockedMenuItems];
+    if (!readVoteUrl().isEmpty() && menuSize < maxLockedMenuItems) {
+        int size = 0;
+        for (int i = 0; i < menuSize; i++) {
+            lockedMenuWithVote[size++] = activeMenu[i];
+            if (activeMenu[i].id == MenuItemE::BACK)
+                lockedMenuWithVote[size++] = voteMenuItem;
+        }
+        activeMenu = lockedMenuWithVote;
+        menuSize = size;
+    }
+
     encoder.setAcceleration(0);
     encoder.setBoundaries(0, menuSize - 1, true);
     encoder.setEncoderValue(0);
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating draw emergency menu task");
-    xTaskCreatePinnedToCore(
-        drawMenuTask, Tasks::drawMenu.name, Tasks::drawMenu.stackSize, this,
-        Tasks::drawMenu.priority, &TaskHandles::drawMenu, Tasks::drawMenu.core);
+    // The lock menu leads to Emergency Unlock: it must not stay blank because
+    // the page before it had not yet given its stack back. If its task still
+    // does not fit, restoreMenu starts it once it does.
+    std::lock_guard<std::mutex> lock(menuTaskStart);
+    startTaskWithRetry(drawMenuTask, Tasks::drawMenu, this,
+                       &TaskHandles::drawMenu);
 }

@@ -17,6 +17,8 @@ namespace Keys {
         constexpr char commandLastTimestamp[] = "cmdLastTs";
         // The command replay ring and timestamp (CommandGate replay state).
         constexpr char commandReplay[] = "cmdReplay";
+        // Set once a command key was stored: signing never turns off again.
+        constexpr char signingRequired[] = "cmdSigned";
         // The dashboard's answer to the one-time v2 key request: it will
         // never send a key (refused), or the earliest time to ask again.
         constexpr char keyRequestRefused[] = "v2Refused";
@@ -42,6 +44,14 @@ namespace Keys {
 
         constexpr char lastUpdated[] = "lastUpdated";
         constexpr char emergencyEnd[] = "emergencyEnd";
+        // The emergency unlock's record (utils/emergencyRecord.h). The
+        // session it ended, until the dashboard is seen to have ended it too;
+        // empty for a local session.
+        constexpr char emergencySession[] = "eSession";
+        // The EMERGENCY report in plain form, and whether the broker has yet
+        // to acknowledge it (utils/emergencyReport.h).
+        constexpr char emergencyReport[] = "eReport";
+        constexpr char emergencyOwed[] = "eOwed";
         constexpr char pairingCode[] = "pairingCode";
         constexpr char hueShift[] = "hueShift";
         constexpr char isPaired[] = "isPaired";
@@ -81,6 +91,12 @@ namespace Keys {
         constexpr char isFrozen[] = "isFrozen";
         constexpr char frozenAt[] = "frozenAt";
         constexpr char freezeReason[] = "freezeReason";
+        // Chaster controls this session: the box asks the dashboard before it
+        // opens for a break or unlocks. Cleared with the session.
+        constexpr char chasterControlled[] = "chaster";
+        // Page where others vote on the session (Chaster's Share links page),
+        // shown as a QR code from the lock menu. Empty when there is none.
+        constexpr char voteUrl[] = "voteUrl";
     }
 }
 

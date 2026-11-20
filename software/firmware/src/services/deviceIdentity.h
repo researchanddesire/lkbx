@@ -11,27 +11,38 @@
 // Never log the returned value.
 String deviceSecretForRequest();
 
-// Applies the commandKey from a valid /auth 200 response. A response without
-// one withdraws any stored key, so the server can turn command signing off,
-// except on a box with a burned key, which keeps its key and stays signed.
+// Applies the commandKey from a valid /auth 200 response. A new key replaces
+// the stored one. A response without one changes nothing: once a box has held
+// a key (or has a burned one) it never accepts plain commands again.
 void applyAuthCommandKey(const String& commandKey);
 
 // Copies the command received on `topic` into `command`. A "v2/<device id>"
 // topic takes v3 envelopes bound to the device id, the MAC topic v2 envelopes
 // bound to the MAC. Returns false, with nothing to process, when the frame is
 // not a valid envelope for a box that holds a key or has a burned one, or was
-// already accepted once (the replay ring survives reboots and sign-ins).
+// already accepted once (the replay ring survives reboots and sign-ins). Also
+// false, without a log line, for one of this box's own state reports: the
+// broker returns them on the topic they were published to (utils/ownReports.h).
 bool openCloudCommand(const char* topic, const char* frame, size_t size,
                       String& command);
 
 // Seals a state report or activity log for `topic` (r3 with its kind and a
 // nonce on a v2 topic, r2 on the MAC topic), so other broker clients can
-// neither read nor forge it. A box without a key and without a burned one
-// sends the report unchanged. Returns empty when a report must not be sent:
-// a box with a burned key never reports in plain JSON. Call only on a
-// trusted clock.
+// neither read nor forge it. A box that never held a key and has no burned
+// one sends the report unchanged. Returns empty when a report must not be
+// sent: a box that signs never reports in plain JSON, and nothing is sent
+// before the stored key has loaded. Call only on a trusted clock.
 String sealCloudReport(const char* topic, lockbox::security::ReportKind kind,
                        const String& report);
+
+// The last will for a connection made as `clientId`: the v4 "will" seal for a
+// box that holds a command key, `plainWill` unchanged for a box that has never
+// signed, and empty when the connection must have no will (a box that signs
+// never registers a plain one). Every call uses a new nonce, IV and timestamp.
+// See utils/lastWill.h and utils/lastWillPolicy.h.
+String lastWillForConnection(const char* clientId,
+                             const char* firmwareProvenanceId,
+                             const String& plainWill);
 
 // The broker topic this boot speaks on: "v2/<device id>" after a v2 sign-in,
 // the MAC otherwise. Logs go to "<topic>/log", provenance to "<topic>/firmware".

@@ -1,5 +1,6 @@
 #include <unity.h>
 #include <PortalPeer.h>
+#include <PortalRoutes.h>
 #include "WebServer.h"
 #include "../../src/services/portal_guard.h"
 
@@ -95,10 +96,23 @@ void authorized_setup_flow_proceeds_and_missing_policy_denies() {
     TEST_ASSERT_EQUAL(0, downstream.uploads);
 }
 
+void setup_pages_stay_and_reset_erase_info_and_upload_are_refused() {
+    using lockbox::security::portalRouteRefused;
+    for (const char* path : {"/", "/wifi", "/0wifi", "/wifisave", "/exit"}) {
+        TEST_ASSERT_FALSE_MESSAGE(portalRouteRefused(path), path);
+    }
+    for (const char* path : {"/erase", "/restart", "/info", "/param", "/paramsave",
+                             "/close", "/status", "/update", "/u"}) {
+        TEST_ASSERT_TRUE_MESSAGE(portalRouteRefused(path), path);
+    }
+    TEST_ASSERT_TRUE(portalRouteRefused(nullptr));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(only_associated_setup_clients_are_allowed);
     RUN_TEST(lan_requests_never_reach_save_reset_erase_or_upload);
     RUN_TEST(authorized_setup_flow_proceeds_and_missing_policy_denies);
+    RUN_TEST(setup_pages_stay_and_reset_erase_info_and_upload_are_refused);
     return UNITY_END();
 }

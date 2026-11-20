@@ -212,7 +212,8 @@ void no_key_passes_plain_json_through_unchanged() {
     TEST_ASSERT_TRUE(gate.setKey(COMMAND_KEY, std::strlen(COMMAND_KEY)));
     TEST_ASSERT_EQUAL(CommandGateResult::malformed,
                       gate.open(MAC, PLAINTEXT, std::strlen(PLAINTEXT), command));
-    // The server can withdraw the key over its TLS-authenticated auth response.
+    // A cleared gate that does not require signatures is plain again. The
+    // firmware never clears a key it was given (SigningPolicy.h).
     gate.clearKey();
     TEST_ASSERT_EQUAL(CommandGateResult::plain,
                       gate.open(MAC, PLAINTEXT, std::strlen(PLAINTEXT), command));
@@ -545,6 +546,135 @@ void v3_reports_seal_to_the_shared_vector() {
     TEST_ASSERT_TRUE(std::strcmp(V3_REPORT_SIG, logDocument["sig"].as<const char*>()) != 0);
 }
 
+// Shared with rad-app's lib/lockbox-device/__tests__/lastWill.spec.ts. The
+// will is bound to the MQTT client id, the topic the broker publishes it on.
+const char* WILL_CLIENT_ID = "05e461ba-c17c-4585-888a-d95c3ad3f701";
+const char* WILL_PLAINTEXT =
+    R"({"id":"8PHy8_T19vf4-fr7_P3-_w","state":"disconnected","createdAt":0,"firmwareProvenanceId":""})";
+const char* WILL_CT =
+    "_rXf39t6ewGJSsm4BAvpt4kodu_1bQtIwEVrY3pN-hcW067DAlNa32ZWEEGalj2BZcuPsw8JXxXGr7e7"
+    "tfXUeSi2O9WGqyYIs_FwphQfX-xrPUvWZC5OnVUoFUwRT4W3";
+const char* WILL_SIG = "9tfxsWlJibkZex4XCC2vgHbLwaThMsmROMFJ_qMhO2E";
+
+void last_will_seals_to_the_shared_vector() {
+    CommandGate gate = keyedGate();
+    std::uint8_t iv[COMMAND_IV_BYTES], nonce[REPORT_NONCE_BYTES];
+    for (std::size_t index = 0; index < sizeof(iv); ++index) {
+        iv[index] = static_cast<std::uint8_t>(index);
+        nonce[index] = static_cast<std::uint8_t>(0xf0 + index);
+    }
+    // The report inside names the nonce as its id and carries no clock.
+    TEST_ASSERT_EQUAL_STRING(WILL_PLAINTEXT,
+                             lastWillReport(V3_REPORT_NONCE, "").c_str());
+    TEST_ASSERT_EQUAL_STRING(WILL_PLAINTEXT,
+                             lastWillReport(V3_REPORT_NONCE, nullptr).c_str());
+
+    std::string sealed;
+    TEST_ASSERT_TRUE(gate.sealLastWill(WILL_CLIENT_ID, "", TS, iv, nonce, sealed));
+    JsonDocument document;
+    TEST_ASSERT_FALSE(deserializeJson(document, sealed));
+    // Exactly the seven fields the dashboard accepts.
+    TEST_ASSERT_EQUAL_UINT32(7, document.as<JsonObjectConst>().size());
+    TEST_ASSERT_TRUE(document["v"].is<int>());
+    TEST_ASSERT_EQUAL_INT(4, document["v"].as<int>());
+    TEST_ASSERT_EQUAL_STRING("will", document["k"].as<const char*>());
+    TEST_ASSERT_TRUE(document["ts"].is<std::uint64_t>());
+    TEST_ASSERT_TRUE(document["ts"].as<std::uint64_t>() == TS);
+    TEST_ASSERT_EQUAL_STRING(V3_REPORT_NONCE, document["n"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(IV, document["iv"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(WILL_CT, document["ct"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING(WILL_SIG, document["sig"].as<const char*>());
+}
+
+void last_will_is_bound_to_the_client_id_and_new_every_time() {
+    CommandGate gate = keyedGate();
+    std::uint8_t iv[COMMAND_IV_BYTES], nonce[REPORT_NONCE_BYTES];
+    for (std::size_t index = 0; index < sizeof(iv); ++index) {
+        iv[index] = static_cast<std::uint8_t>(index);
+        nonce[index] = static_cast<std::uint8_t>(0xf0 + index);
+    }
+    const auto field = [](const std::string& sealed, const char* key) {
+        JsonDocument document;
+        TEST_ASSERT_FALSE(deserializeJson(document, sealed));
+        return std::string(document[key].as<const char*>());
+    };
+    std::string sealed;
+
+    // Another client id signs differently: a will cannot be moved to another
+    // box's topic.
+    TEST_ASSERT_TRUE(gate.sealLastWill("15e461ba-c17c-4585-888a-d95c3ad3f701", "",
+                                       TS, iv, nonce, sealed));
+    TEST_ASSERT_EQUAL_STRING(WILL_CT, field(sealed, "ct").c_str());
+    TEST_ASSERT_TRUE(field(sealed, "sig") != WILL_SIG);
+
+    // A later connection attempt: its time is signed.
+    TEST_ASSERT_TRUE(gate.sealLastWill(WILL_CLIENT_ID, "", TS + 1, iv, nonce, sealed));
+    TEST_ASSERT_TRUE(field(sealed, "sig") != WILL_SIG);
+
+    // A fresh nonce changes the id inside, and with it the ciphertext.
+    nonce[0] ^= 0x01;
+    TEST_ASSERT_TRUE(gate.sealLastWill(WILL_CLIENT_ID, "", TS, iv, nonce, sealed));
+    TEST_ASSERT_TRUE(field(sealed, "n") != V3_REPORT_NONCE);
+    TEST_ASSERT_TRUE(field(sealed, "ct") != WILL_CT);
+    TEST_ASSERT_TRUE(field(sealed, "sig") != WILL_SIG);
+    nonce[0] ^= 0x01;
+
+    // A fresh IV changes the ciphertext too.
+    iv[0] ^= 0x01;
+    TEST_ASSERT_TRUE(gate.sealLastWill(WILL_CLIENT_ID, "", TS, iv, nonce, sealed));
+    TEST_ASSERT_TRUE(field(sealed, "ct") != WILL_CT);
+}
+
+void a_sealed_last_will_never_opens_as_a_command_or_a_report() {
+    CommandGate gate = keyedGate();
+    std::uint8_t iv[COMMAND_IV_BYTES] = {}, nonce[REPORT_NONCE_BYTES] = {};
+    std::string sealed, command;
+    TEST_ASSERT_TRUE(gate.sealLastWill(WILL_CLIENT_ID, "", TS, iv, nonce, sealed));
+    // Seven fields and version 4: not a command envelope for any binding.
+    TEST_ASSERT_EQUAL(CommandGateResult::malformed,
+                      gate.open(WILL_CLIENT_ID, EnvelopeBinding::deviceId,
+                                sealed.data(), sealed.size(), command));
+    TEST_ASSERT_EQUAL(CommandGateResult::malformed,
+                      gate.open(MAC, sealed.data(), sealed.size(), command));
+    TEST_ASSERT_TRUE(command.empty());
+
+    // The same nonce, IV and time sealed as a v3 state report for the same
+    // name signs differently: neither can stand in for the other.
+    std::string report;
+    TEST_ASSERT_TRUE(gate.seal(WILL_CLIENT_ID, EnvelopeBinding::deviceId,
+                               ReportKind::state, lastWillReport(
+                                   base64UrlEncode(nonce, sizeof(nonce)), ""),
+                               TS, iv, nonce, report));
+    JsonDocument will, state;
+    TEST_ASSERT_FALSE(deserializeJson(will, sealed));
+    TEST_ASSERT_FALSE(deserializeJson(state, report));
+    TEST_ASSERT_EQUAL_STRING(will["ct"].as<const char*>(),
+                             state["ct"].as<const char*>());
+    TEST_ASSERT_TRUE(std::strcmp(will["sig"].as<const char*>(),
+                                 state["sig"].as<const char*>()) != 0);
+}
+
+void sealing_a_last_will_needs_a_key_a_client_id_and_a_plausible_clock() {
+    std::uint8_t iv[COMMAND_IV_BYTES] = {}, nonce[REPORT_NONCE_BYTES] = {};
+    std::string sealed = "stale";
+    CommandGate keyless;
+    TEST_ASSERT_FALSE(keyless.sealLastWill(WILL_CLIENT_ID, "", TS, iv, nonce, sealed));
+    TEST_ASSERT_TRUE(sealed.empty());
+
+    CommandGate gate = keyedGate();
+    TEST_ASSERT_FALSE(gate.sealLastWill("", "", TS, iv, nonce, sealed));
+    TEST_ASSERT_FALSE(gate.sealLastWill(nullptr, "", TS, iv, nonce, sealed));
+    // A clock that was never set would only earn a refusal.
+    TEST_ASSERT_FALSE(gate.sealLastWill(WILL_CLIENT_ID, "", 0, iv, nonce, sealed));
+    TEST_ASSERT_FALSE(gate.sealLastWill(WILL_CLIENT_ID, "", LAST_WILL_EARLIEST_MS - 1,
+                                        iv, nonce, sealed));
+    TEST_ASSERT_TRUE(sealed.empty());
+    TEST_ASSERT_TRUE(gate.sealLastWill(WILL_CLIENT_ID, "", LAST_WILL_EARLIEST_MS, iv,
+                                       nonce, sealed));
+    gate.clearKey();
+    TEST_ASSERT_FALSE(gate.sealLastWill(WILL_CLIENT_ID, "", TS, iv, nonce, sealed));
+}
+
 void sealing_needs_a_key_and_a_clock() {
     CommandGate gate;
     std::uint8_t iv[COMMAND_IV_BYTES] = {};
@@ -584,5 +714,9 @@ int main() {
     RUN_TEST(replay_state_survives_a_reboot);
     RUN_TEST(a_verified_clock_refuses_old_recordings);
     RUN_TEST(v3_reports_seal_to_the_shared_vector);
+    RUN_TEST(last_will_seals_to_the_shared_vector);
+    RUN_TEST(last_will_is_bound_to_the_client_id_and_new_every_time);
+    RUN_TEST(a_sealed_last_will_never_opens_as_a_command_or_a_report);
+    RUN_TEST(sealing_a_last_will_needs_a_key_a_client_id_and_a_plausible_clock);
     return UNITY_END();
 }

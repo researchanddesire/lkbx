@@ -34,7 +34,7 @@ is an HMAC that the chip computes internally.
 
 | Step | Request | Outcome |
 |------|---------|---------|
-| Pre-auth, only while no key is burned | `POST /api/lockbox/v2/provision` with `mac`, `chip`, `md5`, `device`, `version`, the v1 `deviceSecret` and any previous `failureCode` | 201 `{deviceKey}`: burn now. 409 or 403: never ask again (stored in `identity/v2Refused`). 429: wait 24 hours (`identity/v2RetryAt`). Anything else: try on a later boot |
+| Pre-auth, only while no key is burned | `POST /api/lockbox/v2/provision` with `mac`, `chip`, `md5`, `device`, `version`, the v1 `deviceSecret` and any previous `failureCode` | 201 `{deviceKey}`: burn now. 409 or 403: never ask again (stored in `identity/v2Refused`). 429: wait an hour, the dashboard's window (`identity/v2RetryAt`). 428 (a new box, not enrolled yet): sign in with v1, which enrolls it, then ask once more in the same boot and, once the key is burned, sign in again with v2 before connecting. Anything else: try on a later boot. The request has 20 s, sign-in 15 s |
 | Sign-in | `POST /api/lockbox/v2/auth` with `deviceToken` = base64url HMAC-SHA256 of `lkbx-device-token-v2` | The v1 response shape plus `deviceId`, which must be this chip's, and a required `commandKey`. Only a 404 or a 401 `unknown_device` falls back to `/api/lockbox/auth` for that boot; an outage, a rate limit or any other refusal is retried on v2 |
 | Pairing status | `POST /api/lockbox/v2/is-paired` with `deviceToken` | 200 paired (it must name this chip's `deviceId`, or its MAC when the dashboard sends no `deviceId`), 418 not paired |
 | State | `GET /api/lockbox/v2/state` with header `x-lkbx-device-token` | The v1 state payload |
@@ -88,10 +88,33 @@ wrong route or one it has already seen. Each LOCKED retry is sealed afresh
 from the stored plain report, with a new nonce; the report's own `id` dedupes
 it. The dashboard opens them in Postgres, accepts plain reports from firmware
 without a key, and refuses plain reports for a hardware-bound device. A box
-with a burned key never reports in plain JSON: a report it cannot seal is
-dropped, and a LOCKED report stays pending until it can be sealed. The
-retained `/firmware` provenance and the last will stay plain; neither carries
-session data.
+that has ever held a command key, or has a burned key, never reports in plain
+JSON: a report it cannot seal is dropped, and so is any report sent before the
+stored key has loaded, and a LOCKED report stays pending until it can be sealed. The
+retained `/firmware` provenance stays plain; it carries no session data.
+
+### Last will
+
+The broker publishes a client's last will on its client id when the connection
+drops. The box builds a new one before every connection attempt, including the
+MQTT client's own reconnects, so each disconnect is recorded once.
+
+| Box | Will | Signed text |
+|-----|------|-------------|
+| Holds a command key (keyed v1, v2) | `{"v":4,"k":"will","ts","n","iv","ct","sig"}` | `r4.{ts}.{clientId}.will.{n}.{iv}.{ct}` |
+| Never signed | `{"id","state":"disconnected","createdAt":0,"firmwareProvenanceId"}` | none |
+
+It is the v3 report seal with a third binding: the MQTT client id, exactly as
+sent to the broker, instead of the device id, with prefix `r4.`, version 4 and
+kind `will`. The keys are the two report keys. `ct` is AES-256-CBC with PKCS#7
+over `{"id":"{n}","state":"disconnected","createdAt":0,"firmwareProvenanceId"}`;
+`n` and `iv` are 16 fresh random bytes each and `ts` is the time the will is
+built. The dashboard does not compare `ts` with the time of arrival, which can
+be days later, but refuses one before 2024. A box that signs never registers a
+plain will: when it holds no key yet, or its clock was never set, it connects
+without one. `CommandGate::sealLastWill` builds the seal, and `buildLastWill`
+in `src/utils/lastWill.h` is the one place that chooses the will.
+`test/test_command_envelope` holds the vector shared with the dashboard.
 
 ## Physical access
 
@@ -123,8 +146,8 @@ needs to reflash freely.
 
 | Response | Device behaviour |
 |----------|------------------|
-| 200 with `commandKey` | Stores the key in NVS (`identity/cmdKey`) and requires signed commands |
-| 200 without `commandKey` | Erases any stored key and accepts plain commands, unless a key is burned: that box keeps its stored key and never accepts plain commands, even with no key at all |
+| 200 with `commandKey` | Stores the key in NVS (`identity/cmdKey`), records that the box signs (`identity/cmdSigned`) and requires signed commands from then on |
+| 200 without `commandKey` | Changes nothing. A box that has ever held a key, or has a burned one, keeps its stored key and never accepts plain commands again (`SigningPolicy.h`); only erasing NVS resets this. A box that never held one keeps accepting plain JSON |
 | 401 | Keeps its state and retries every 60 seconds |
 | Any other failure | Keeps its state and retries as before |
 
@@ -146,6 +169,6 @@ After a v2 sign-in the box takes only `"v":3`, signed over `v3.{ts}.{deviceId}.{
 
 The signature is verified in constant time before anything is decrypted. A command is then accepted only if `ts + 30000` is at least the highest timestamp seen, its signature is not among the last 8 accepted, and, once the clock is server-verified, `ts` is no more than 10 minutes old. The window allows for messages delivered out of order. The timestamp and the ring of 8 persist in NVS (`identity/cmdReplay`, and `identity/cmdLastTs` for older images) after every accepted command, and a sign-in does not empty them, so a reboot never makes a recorded command acceptable again.
 
-A device without a key processes plain JSON unchanged.
+A device that has never held a key, and has no burned one, processes plain JSON unchanged. Until the stored key and replay ring have loaded from NVS, no command is accepted at all.
 
 Devices drop retained messages on the command topic in both modes. The only commands are `sync` and `reboot`.

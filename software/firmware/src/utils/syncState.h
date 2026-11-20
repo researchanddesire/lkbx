@@ -19,12 +19,15 @@
 #include "services/wm.h"
 #include "state/Guard.h"
 #include "utils/breakTiming.h"
+#include "utils/chasterAsk.h"
+#include "utils/emergencyStore.h"
 #include "utils/freezeState.h"
 #include "utils/generateId.h"
 #include "utils/lockReportReconcile.h"
 #include "utils/offeredLock.h"
 #include "utils/syncEffect.h"
 #include "utils/getEfuseMac.h"
+#include "utils/voteLink.h"
 
 static String createStateMessage(const String& state,
                                  bool includeState = true,
@@ -185,6 +188,16 @@ struct SyncMessage {
     // Only the keyholder may start a break. Missing in older payloads, which
     // keeps the wearer's break button working as before.
     bool breakKeyholderOnly;
+    // Chaster controls the session: the box asks the dashboard before it
+    // opens for a break or unlocks. hasChasterControlled records whether the
+    // payload carried the field, as for the freeze fields above.
+    bool chasterControlled;
+    bool hasChasterControlled;
+    // Voting link shown as a QR code from the lock menu. hasVoteUrl is false
+    // when the payload left it out (older servers, unencrypted commands, BLE
+    // writes without it): the stored link is then kept. See utils/voteLink.h.
+    bool hasVoteUrl;
+    String voteUrl;
 };
 
 // Separate persisted metadata from physical transitions. Runtime callers use
@@ -228,6 +241,56 @@ inline void applyFreezeSync(const TJsonObject& document, SyncMessage& message) {
         sync.reason != nullptr ? String(sync.reason) : String();
 }
 
+// Apply the Chaster-controlled flag of a parsed payload. Templated so the HTTP
+// (`data`) object and the MQTT sync document use one implementation.
+template <typename TJsonObject>
+inline void applyChasterSync(const TJsonObject& document, SyncMessage& message) {
+    bool controlled = false;
+    bool permission = false;
+    const bool hasControlled = sessionFlagFromJson(
+        document, Str::Json::CHASTER_CONTROLLED, controlled);
+    const bool hasPermission = sessionFlagFromJson(
+        document, Str::Json::REQUIRES_PERMISSION, permission);
+    const AskFlag flag =
+        combineAskFlags(hasControlled, controlled, hasPermission, permission);
+    message.hasChasterControlled = flag.present;
+    message.chasterControlled = flag.asks;
+}
+
+// Apply the voting-link presence rules to a parsed payload, for the same three
+// parsers as applyFreezeSync.
+template <typename TJsonObject>
+inline void applyVoteUrlSync(const TJsonObject& document, SyncMessage& message) {
+    const VoteUrlSync sync = voteUrlFromJson(document, Str::Json::VOTE_URL);
+    message.hasVoteUrl = sync.present;
+    message.voteUrl = String(sync.url);
+}
+
+// Store the voting link a sync carried. The caller holds preferencesMutex with
+// the session namespace open for writing.
+inline void persistVoteUrlLocked(const SyncMessage& message) {
+    if (!message.hasVoteUrl) return;
+    if (message.voteUrl.isEmpty()) {
+        if (preferences.isKey(Keys::Session::voteUrl))
+            preferences.remove(Keys::Session::voteUrl);
+        return;
+    }
+    if (preferences.getString(Keys::Session::voteUrl, "") != message.voteUrl)
+        preferences.putString(Keys::Session::voteUrl, message.voteUrl);
+}
+
+// The stored voting link, or "" when the session has none.
+inline String readVoteUrl() {
+    String url;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::session);
+        url = preferences.getString(Keys::Session::voteUrl, "");
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+    return voteUrlUsable(url.c_str()) ? url : String();
+}
+
 // Read the persisted freeze state. The caller must already hold
 // preferencesMutex with the session namespace open.
 inline FreezeState readStoredFreezeLocked() {
@@ -266,11 +329,26 @@ static SyncResult saveState(SyncMessage lockSession,
         return SyncResult::FAILED;
     }
 
+    // A session this box ended by emergency unlock is never taken up again
+    // (utils/emergencyRecord.h). The dashboard still names it when the
+    // emergency report never arrived; taken as any other answer, it locked
+    // the box again at the next boot. Nothing is stored and nothing moves;
+    // the report is sent again.
+    if (refusesEmergencyEndedSessionLocked(lockSession.sessionId)) {
+        xSemaphoreGive(preferencesMutex);
+        return SyncResult::NO_CHANGE;
+    }
+
     preferences.begin(Keys::session, false);
 
     const String savedId = preferences.getString(Keys::Session::sessionId, "");
     const String savedState = preferences.getString(Keys::Session::lockState, "");
     const bool sameSession = !savedId.isEmpty() && savedId == lockSession.sessionId;
+    // Read before the namespace is cleared for a new session below.
+    const bool chasterControlled = mergeChasterControlled(
+        savedId != lockSession.sessionId,
+        preferences.getBool(Keys::Session::chasterControlled, false),
+        lockSession.hasChasterControlled, lockSession.chasterControlled);
 
     // The box's own deadline for the session it holds. The server learns the
     // dates only from the box's reports; when the accept report was lost it
@@ -363,6 +441,7 @@ static SyncResult saveState(SyncMessage lockSession,
         !preferences.getBool(Keys::Session::isActiveBreak, false)) {
         preferences.putBool(Keys::Session::breakKeyholderOnly,
                             lockSession.breakKeyholderOnly);
+        persistVoteUrlLocked(lockSession);
         persistFreeze();
         return finish(SyncResult::NO_CHANGE);
     }
@@ -398,11 +477,14 @@ static SyncResult saveState(SyncMessage lockSession,
         preferences.putString(Keys::Session::lockName, lockSession.lockName);
     if (!lockSession.requestedBy.isEmpty())
         preferences.putString(Keys::Session::requestedBy, lockSession.requestedBy);
+    // Read only when the lock menu opens, so it never repaints the screen.
+    persistVoteUrlLocked(lockSession);
 
     // boolean values
     preferences.putBool(Keys::Session::isBreak, lockSession.isBreak);
     preferences.putBool(Keys::Session::breakKeyholderOnly,
                         lockSession.breakKeyholderOnly);
+    preferences.putBool(Keys::Session::chasterControlled, chasterControlled);
     preferences.putBool(Keys::Session::isEUnlock, lockSession.isEUnlock);
     preferences.putBool(Keys::Session::isTimeDisp, lockSession.isTimeDisp);
     preferences.putBool(Keys::Session::displayElapsedTime,
@@ -500,24 +582,12 @@ static bool serverBreakOnCooldown() {
     return isServerBreakEcho(breakLast, now);
 }
 
-static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
-    if (WiFiClass::status() != WL_CONNECTED) {
-        ESP_LOGD(SYNC_STATE_TAG, "Not connected to WiFi");
-        return SyncResult::FAILED;
-    }
-
-    String payload;
-    int httpResponseCode = -1;
-    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
-    if (token.length() > 0) {
-        httpResponseCode = getWithDeviceToken(
-            String(RAD_SERVER) + Str::Api::LOCKBOX_V2_STATE, token, &payload);
-    } else {
-        httpResponseCode = getWithDeviceSecret(
-            String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss(),
-            deviceSecretForRequest(), &payload);
-    }
-
+// Applies the dashboard's answer to a state request. Shared by the pull that
+// waits for its answer (pullSession) and the one the delay task polls
+// (startSessionPull, LKBX::serviceStateRead).
+static SyncResult applySessionResponse(int httpResponseCode,
+                                       const String& payload,
+                                       SyncOutcome* outcome = nullptr) {
     if (httpResponseCode != 200) {
         ESP_LOGD(SYNC_STATE_TAG, "Failed to reach server. Response code: %d",
                  httpResponseCode);
@@ -542,8 +612,18 @@ static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
     bool shouldClear = data[Str::Json::CLEAR].as<bool>();
 
     if (shouldClear) {
+        // The dashboard has no active session for the box. That ends the
+        // session the box holds, but not every emergency lockout
+        // (utils/emergencyRecord.h): one that stays keeps its page, so no
+        // unlock is sent for it. The paddle is open already.
+        bool recordRead = false;
+        const bool lockoutStays = emergencyLockoutOutlastsClear(recordRead);
+        if (!recordRead) return SyncResult::FAILED;
         const SyncResult result = clearState();
-        if (outcome) outcome->effect = SyncEffect::MOTOR_UNLOCK;
+        if (outcome) {
+            outcome->effect =
+                lockoutStays ? SyncEffect::NONE : SyncEffect::MOTOR_UNLOCK;
+        }
         return result;
     }
 
@@ -573,11 +653,48 @@ static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
             lockSession[Str::Json::DISPLAY_ELAPSED_TIME].as<bool>(),
     };
     applyFreezeSync(lockSession, session);
+    applyChasterSync(lockSession, session);
+    applyVoteUrlSync(lockSession, session);
     session.breakKeyholderOnly =
         lockSession[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
 
     // saveState() resolves the result from lockState (LOCKED / BREAK / FAILED).
     return saveState(session, outcome);
+}
+
+static SyncResult pullSession(SyncOutcome* outcome = nullptr) {
+    if (WiFiClass::status() != WL_CONNECTED) {
+        ESP_LOGD(SYNC_STATE_TAG, "Not connected to WiFi");
+        return SyncResult::FAILED;
+    }
+
+    String payload;
+    int httpResponseCode = -1;
+    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
+    if (token.length() > 0) {
+        httpResponseCode = getWithDeviceToken(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_V2_STATE, token, &payload);
+    } else {
+        httpResponseCode = getWithDeviceSecret(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss(),
+            deviceSecretForRequest(), &payload);
+    }
+
+    return applySessionResponse(httpResponseCode, payload, outcome);
+}
+
+// The same request, handed to the HTTP worker for a caller that polls for the
+// answer (takeHttpResult) and gives it to applySessionResponse. Null when the
+// worker could not take it.
+inline HttpPending* startSessionPull(int timeoutMs) {
+    const String token = signedInWithV2() ? deviceTokenForRequest() : String();
+    if (token.length() > 0) {
+        return getDetachedWithDeviceToken(
+            String(RAD_SERVER) + Str::Api::LOCKBOX_V2_STATE, token, timeoutMs);
+    }
+    return getDetachedWithDeviceSecret(
+        String(RAD_SERVER) + Str::Api::LOCKBOX_STATE + getMacAddresss(),
+        deviceSecretForRequest(), timeoutMs);
 }
 
 // return true if we pulled the state.

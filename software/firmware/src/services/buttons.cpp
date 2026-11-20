@@ -93,7 +93,7 @@ void initButtons() {
     });
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating button task");
-    xTaskCreatePinnedToCore(
+    const BaseType_t created = xTaskCreatePinnedToCore(
         [](void *pvParameters) {
             while (true) {
                 buttonEnter->tick();
@@ -114,4 +114,12 @@ void initButtons() {
         },
         Tasks::button.name, Tasks::button.stackSize, nullptr,
         Tasks::button.priority, &TaskHandles::button, Tasks::button.core);
+    if (created != pdPASS) {
+        // Without this task no button works: a locked box could not reach its
+        // lock menu or Emergency Unlock. This runs in setup(), before TLS and
+        // the page tasks take memory, so starting again is the way out.
+        ESP_LOGE(TASKDEBUG_TAG, "Could not start the button task; restarting");
+        delay(1000);
+        ESP.restart();
+    }
 }

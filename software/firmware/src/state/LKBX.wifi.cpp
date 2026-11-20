@@ -2,10 +2,12 @@
 
 #include <NimBLEDevice.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
 
 #include "constants/dashboard.h"
 #include "services/deviceKeyProvisioning.h"
+#include "services/http_worker.h"
 #include "services/mqtt.h"
 #include "services/ntp.h"
 #include "services/rad_ble.h"
@@ -84,9 +86,7 @@ void LKBX::checkWifiTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
-void LKBX::startWifiConnectionTask(void *pvParameters) {
-    LKBX *plkbx = static_cast<LKBX *>(pvParameters);
-
+void LKBX::runWifiConnection(LKBX *plkbx) {
     // Uses global WIFI_CONNECT_TAG from LogTags.h
     constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 10000;
     constexpr uint32_t WIFI_CONNECT_POLL_MS = 250;
@@ -121,7 +121,6 @@ void LKBX::startWifiConnectionTask(void *pvParameters) {
         ESP_LOGW(WIFI_CONNECT_TAG,
                  "Timed out waiting for WiFi connection (status=%d)", status);
         plkbx->sm->process_event(Error{.error = error});
-        vTaskDelete(nullptr);
         return;
     }
 
@@ -136,7 +135,6 @@ void LKBX::startWifiConnectionTask(void *pvParameters) {
     if (WiFi.localIP() == IPAddress(INADDR_NONE)) {
         ESP_LOGW(WIFI_CONNECT_TAG, "Timed out waiting for IP assignment");
         plkbx->sm->process_event(Error{.error = ErrorT::WIFI_NO_IP});
-        vTaskDelete(nullptr);
         return;
     }
 
@@ -172,16 +170,24 @@ void LKBX::startWifiConnectionTask(void *pvParameters) {
                  responseCode);
         plkbx->sm->process_event(Error{.error = ErrorT::SERVER_UNREACHABLE});
     }
+}
 
+void LKBX::startWifiConnectionTask(void *pvParameters) {
+    // The work, and the strings it builds, are in runWifiConnection: nothing
+    // declared here would be destroyed, because vTaskDelete never returns.
+    runWifiConnection(static_cast<LKBX *>(pvParameters));
     vTaskDelete(nullptr);
 }
 
 void LKBX::startWifiConnection() {
     ESP_LOGD(TASKDEBUG_TAG, "Creating wifi connection task");
-    xTaskCreatePinnedToCore(startWifiConnectionTask, Tasks::wifiConnect.name,
-                            Tasks::wifiConnect.stackSize, this,
-                            Tasks::wifiConnect.priority,
-                            &TaskHandles::wifiConnect, Tasks::wifiConnect.core);
+    if (!startTaskWithRetry(startWifiConnectionTask, Tasks::wifiConnect, this,
+                            &TaskHandles::wifiConnect)) {
+        // Nothing would ever end this boot step. Report it as a network that
+        // could not be reached: a returning box resumes its saved session
+        // offline, a new one gets the Wi-Fi error page with Retry.
+        sm->process_event(Error{.error = ErrorT::WIFI_NETWORK_UNREACHABLE});
+    }
 }
 
 // Onboarding update check task.
@@ -305,6 +311,44 @@ void LKBX::pollPairingTask(void *pvParameters) {
 void LKBX::syncLockStateOnBootTask(void *pvParameters) {
     LKBX *plkbx = static_cast<LKBX *>(pvParameters);
 
+    // A local session is the box's own, and the dashboard is not asked about
+    // it (utils/emergencyRecord.h, bootKeepsLocalSession). The dashboard has
+    // no session for a local lock and answers "no session", which cleared the
+    // stored lock and opened the box before its timer had run out (2026-11-16
+    // rig run on R2, on every restart with Wi-Fi up). The box carries on to
+    // its saved lock, as it does when it starts offline, and the timer ends
+    // it.
+    bool keepsLocalSession = true;
+    bool stateKnown = false;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::base);
+        keepsLocalSession = bootKeepsLocalSession(
+            preferences.getBool(Keys::Base::isLocalPlay, false),
+            preferences.getBool(Keys::Base::isLocked, false));
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+        stateKnown = true;
+    }
+    if (keepsLocalSession) {
+        if (stateKnown) {
+            ESP_LOGI(SYNC_LOCK_STATE_TAG,
+                     "Local session held - keeping it; the dashboard is not "
+                     "asked");
+        } else {
+            // Not known to be local: the stored state is restored untouched,
+            // which is safe for any session, and the dashboard is asked once
+            // the box is up. That read leaves a local session alone.
+            ESP_LOGW(SYNC_LOCK_STATE_TAG,
+                     "Could not read the stored session - restoring it and "
+                     "asking the dashboard later");
+            plkbx->confirmServerClear();
+        }
+        bootHttpDone = true;
+        plkbx->sm->process_event(Done{});
+        vTaskDelete(nullptr);
+        return;
+    }
+
     bool offline = isOffline();
     // The pairing endpoint can wait for a network route. Do not call it
     // before resuming a saved session when WiFi is unavailable.
@@ -335,6 +379,8 @@ void LKBX::syncLockStateOnBootTask(void *pvParameters) {
             plkbx->sm->process_event(Break{});
             break;
         case SyncResult::UNLOCKED:
+            // An emergency lockout that outlasts this answer is restored by
+            // the home state (utils/emergencyRecord.h).
             ESP_LOGI(SYNC_LOCK_STATE_TAG, "Server reports no active session");
             if (isPaddleLocked()) {
                 ESP_LOGW(SYNC_LOCK_STATE_TAG,
@@ -357,9 +403,7 @@ void LKBX::syncLockStateOnBootTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
-void LKBX::startMqttConnectionTask(void *pvParameters) {
-    LKBX *plkbx = static_cast<LKBX *>(pvParameters);
-
+void LKBX::runMqttConnection(LKBX *plkbx) {
     constexpr int AUTH_MAX_ATTEMPTS = 3;
     constexpr uint32_t AUTH_RETRY_MS = 5000;
     constexpr uint32_t AUTH_REJECTED_RETRY_MS = 60000;
@@ -367,6 +411,7 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     constexpr uint32_t MQTT_CONNECT_TIMEOUT_MS = 30000;
     constexpr uint32_t MQTT_POLL_MS = 500;
     constexpr int MQTT_START_ATTEMPTS = 10;
+    constexpr int MQTT_START_ATTEMPTS_RETURNING = 3;
     constexpr uint32_t MQTT_START_RETRY_MS = 2000;
 
     bool bootPending = true;
@@ -375,10 +420,9 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     // Pre-auth: a chip without its v2 key asks for one and burns it. Any
     // failure leaves the device signing in with v1. Only first setup shows
     // E-LOCK-999; an onboarded device carries on as before.
-    if (prepareDeviceKey() == DeviceKeyOutcome::failed && !returningDevice) {
+    const DeviceKeyOutcome keyOutcome = prepareDeviceKey();
+    if (keyOutcome == DeviceKeyOutcome::failed && !returningDevice) {
         plkbx->sm->process_event(Error{.error = ErrorT::DEVICE_KEY_FAILED});
-        TaskHandles::mqttConnect = nullptr;
-        vTaskDelete(nullptr);
         return;
     }
 
@@ -409,8 +453,6 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
                 .error = response.rateLimited ? ErrorT::AUTH_RATE_LIMITED
                                               : ErrorT::DASHBOARD_SIGN_IN_FAILED});
             if (!returningDevice) {
-                TaskHandles::mqttConnect = nullptr;
-                vTaskDelete(nullptr);
                 return;
             }
         }
@@ -425,13 +467,31 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
         }
     }
 
+    // A new box is asked to sign in first: that v1 sign-in enrolled its
+    // secret, so it asks once more now and, once the key is burned, signs in
+    // again with v2 before it connects. Any failure keeps the v1 sign-in for
+    // this boot; the next boot signs in with the burned key.
+    if (keyOutcome == DeviceKeyOutcome::afterSignIn) {
+        const DeviceKeyOutcome second = prepareDeviceKey();
+        if (second == DeviceKeyOutcome::ready) {
+            AuthResponse signedIn = getAuthToken();
+            if (signedIn.valid) {
+                response = signedIn;
+            } else {
+                ESP_LOGW(MQTT_CONNECT_TAG,
+                         "v2 sign-in after the key burn failed; v1 for this boot");
+            }
+        } else if (second == DeviceKeyOutcome::failed && !returningDevice) {
+            plkbx->sm->process_event(Error{.error = ErrorT::DEVICE_KEY_FAILED});
+            return;
+        }
+    }
+
     vTaskDelay(1);
 
     persistLockboxAuthToNvs(response);
     plkbx->initNeedsPairing = !response.isPaired;
     plkbx->initPairingStatusKnown = response.pairingStatusKnown;
-
-    static String lwt = createStateMessage(Str::Protocol::DISCONNECTED, false);
 
     // RAD BLE v1 remains available after provisioning. LKBX has PSRAM and the
     // MQTT client is now expected to coexist with the peripheral service.
@@ -444,8 +504,9 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     mqtt_cfg.client_id = response.clientId.c_str();
     mqtt_cfg.username = response.username.c_str();
     mqtt_cfg.password = response.password.c_str();
-    mqtt_cfg.lwt_topic = response.clientId.c_str();
-    mqtt_cfg.lwt_msg = lwt.c_str();
+    // The will itself is built before every connection attempt, sealed and
+    // unique to that connection (MQTT_EVENT_BEFORE_CONNECT, utils/lastWill.h).
+    // The client is created without one.
     mqtt_cfg.lwt_qos = 2;
     mqtt_cfg.lwt_retain = true;
     mqtt_cfg.keepalive = 15;
@@ -459,24 +520,57 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
     // also need; 12 KB left none at boot on staging hardware.
     mqtt_cfg.task_stack = 10 * 1024;
 
+    // A sign-in repeated from an error page: the client of the attempt before
+    // must not stay behind, running or waiting to be started.
+    if (mqttClient != nullptr) destroyMqtt();
+
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
+    // The broker names the will by the client id, as it always has.
+    rememberMqttSettings(mqtt_cfg, response.clientId.c_str());
     bool mqttStarted = false;
-    if (mqttClient &&
+    const bool mqttReady =
+        mqttClient &&
         esp_mqtt_client_register_event(mqttClient, MQTT_EVENT_ANY,
-                                       mqtt_event_handler, nullptr) == ESP_OK) {
-        // The client task needs one contiguous block of internal RAM, which
-        // boot-time HTTPS can hold for a few seconds. Wait for it rather than
-        // staying off the broker until the next boot.
-        for (int attempt = 0; attempt < MQTT_START_ATTEMPTS && !mqttStarted; ++attempt) {
+                                       mqtt_event_handler, nullptr) == ESP_OK;
+    if (mqttReady) {
+        // The client task needs one contiguous 10 KB block of internal RAM,
+        // which boot-time HTTPS can hold for a few seconds. A box that has
+        // been set up waits only briefly: it carries on to its saved session
+        // while the client is started in the background (below). First setup
+        // waits longer, because there the next page is an error page.
+        const int attempts =
+            returningDevice ? MQTT_START_ATTEMPTS_RETURNING : MQTT_START_ATTEMPTS;
+        for (int attempt = 0; attempt < attempts && !mqttStarted; ++attempt) {
             mqttStarted = esp_mqtt_client_start(mqttClient) == ESP_OK;
             if (!mqttStarted) vTaskDelay(MQTT_START_RETRY_MS / portTICK_PERIOD_MS);
         }
     }
     if (!mqttStarted) {
-        if (mqttClient) esp_mqtt_client_destroy(mqttClient);
-        mqttClient = nullptr;
-        plkbx->sm->process_event(Error{.error = ErrorT::MQTT_AUTH_FAILED});
-        vTaskDelete(nullptr);
+        if (mqttReady) {
+            // The task still does not fit (2026-11-16 rig run on R8: ten
+            // attempts over 20 s, then off the broker until a restart). Keep
+            // the client: the activity log task starts it every two seconds
+            // until it fits, as it does after the Wi-Fi setup portal, and the
+            // box then reads its state once. This task ends here, which gives
+            // back its own 8.3 KB stack for the client's.
+            ESP_LOGW(MQTT_CONNECT_TAG,
+                     "MQTT client task does not fit yet (largest free "
+                     "internal block %u bytes, %u bytes free); starting it "
+                     "in the background",
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(
+                         MALLOC_CAP_INTERNAL)),
+                     static_cast<unsigned>(
+                         heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+            retryMqttStartLater();
+        } else {
+            destroyMqtt();
+        }
+        TaskHandles::mqttConnect = nullptr;
+        // Only the boot step waits for this. A box that came online after
+        // boot is on some other page, and the error is not about that page.
+        if (bootPending) {
+            plkbx->sm->process_event(Error{.error = ErrorT::MQTT_AUTH_FAILED});
+        }
         return;
     }
 
@@ -518,56 +612,157 @@ void LKBX::startMqttConnectionTask(void *pvParameters) {
             plkbx->sendActivityLog("reconnected");
         }
     }
+}
 
-    TaskHandles::mqttConnect = nullptr;
+void LKBX::startMqttConnectionTask(void *pvParameters) {
+    // The sign-in answer (client id, username, password, command key) and
+    // everything else the sign-in allocates live in runMqttConnection and are
+    // freed when it returns. Declared here they would stay allocated for
+    // good, because vTaskDelete never returns.
+    runMqttConnection(static_cast<LKBX *>(pvParameters));
+
+    // A sign-in that failed has already given the handle up, and Retry may
+    // have started the next one by now: only this task's own handle is
+    // cleared.
+    if (TaskHandles::mqttConnect == xTaskGetCurrentTaskHandle()) {
+        TaskHandles::mqttConnect = nullptr;
+    }
     vTaskDelete(nullptr);
 }
 
 void LKBX::startMqttConnection() {
     ESP_LOGD(TASKDEBUG_TAG, "Creating MQTT connection task");
-    xTaskCreatePinnedToCore(startMqttConnectionTask, Tasks::mqttConnect.name,
-                            Tasks::mqttConnect.stackSize, this,
-                            Tasks::mqttConnect.priority,
-                            &TaskHandles::mqttConnect, Tasks::mqttConnect.core);
-}
-
-// A clear without a session id comes from a dashboard older than this
-// firmware. Unlock only if the dashboard's own state says the box has no
-// active session; any other answer keeps the session the box holds.
-void LKBX::confirmServerClearTask(void *pvParameters) {
-    LKBX *plkbx = static_cast<LKBX *>(pvParameters);
-
-    SyncOutcome outcome;
-    const SyncResult result = syncState(&outcome);
-    if (outcome.freezeChanged) bumpFreezeDisplayVersion();
-    ESP_LOGI(MQTT_TAG, "Confirmed clear: result=%d effect=%d",
-             static_cast<int>(result), static_cast<int>(outcome.effect));
-    applyReconciledEffect(plkbx, outcome.effect);
-
-    TaskHandles::confirmClear = nullptr;
-    vTaskDelete(nullptr);
-}
-
-void LKBX::confirmServerClear() {
-    // One pull answers every clear that arrived while it runs.
-    if (TaskHandles::confirmClear != nullptr) return;
-    if (xTaskCreatePinnedToCore(confirmServerClearTask, Tasks::confirmClear.name,
-                                Tasks::confirmClear.stackSize, this,
-                                Tasks::confirmClear.priority,
-                                &TaskHandles::confirmClear,
-                                Tasks::confirmClear.core) != pdPASS) {
-        // Without memory for the pull the box keeps its session; the next
-        // reconnect or boot reconciles it.
-        TaskHandles::confirmClear = nullptr;
-        ESP_LOGW(MQTT_TAG, "Could not start the clear confirmation");
+    if (!startTaskWithRetry(startMqttConnectionTask, Tasks::mqttConnect, this,
+                            &TaskHandles::mqttConnect)) {
+        // Nothing would ever end this boot step. Report it as a broker that
+        // did not answer: a returning box carries on to its saved session
+        // (off the broker until it restarts), a new one gets the error page
+        // with Retry.
+        TaskHandles::mqttConnect = nullptr;
+        sm->process_event(Error{.error = ErrorT::MQTT_TIMEOUT});
     }
+}
+
+// The state read (utils/stateRead.h). A clear without a session id comes from
+// a dashboard older than this firmware: the box unlocks only if the
+// dashboard's own state says it has no active session, and any other answer
+// keeps the session it holds. The same read follows every MQTT connection
+// after a drop or a stop (the Wi-Fi setup portal, network recovery), a sync
+// that names another session, and an answer from Chaster that does not know
+// the session.
+//
+// One pass of the delay task; never waits for the network. The read used to
+// run on a task of its own (confirmClear, 8.3 KB stack), which after a
+// reconnect could not be created 5 times in 6. Here it needs no task, and it
+// is tried until one read has completed.
+namespace {
+    // The request at the HTTP worker, until its answer has been taken. Only
+    // the delay task touches it.
+    HttpPending *stateReadPending = nullptr;
+}  // namespace
+
+void LKBX::serviceStateRead() {
+    if (stateReadPending != nullptr) {
+        int status = -1;
+        String payload;
+        if (!takeHttpResult(stateReadPending, status, &payload)) return;
+
+        // A local session is the box's own: an answer that was on its way
+        // when the wearer started one must not end it.
+        if (isLocalPlay()) {
+            stateReadPlan.finished(true, millis());
+            ESP_LOGI(MQTT_TAG, "State read dropped: a local session started");
+            return;
+        }
+
+        SyncOutcome outcome;
+        const SyncResult result =
+            applySessionResponse(status, payload, &outcome);
+        const bool completed = result != SyncResult::FAILED;
+        stateReadPlan.finished(completed, millis());
+        if (!completed) {
+            ESP_LOGW(MQTT_TAG,
+                     "State read failed (HTTP %d, %u in a row); trying again",
+                     status, static_cast<unsigned>(stateReadPlan.failures()));
+            return;
+        }
+        if (outcome.freezeChanged) bumpFreezeDisplayVersion();
+        ESP_LOGI(MQTT_TAG, "Confirmed clear: result=%d effect=%d",
+                 static_cast<int>(result), static_cast<int>(outcome.effect));
+        // The read now follows every reconnect, so it can land right after
+        // the box has ended a break, before the dashboard has heard of it.
+        // That stale "break" must not open the box again: the same rule as
+        // for a break that arrives by MQTT.
+        if (outcome.effect == SyncEffect::BREAK && serverBreakOnCooldown()) {
+            ESP_LOGW(MQTT_TAG,
+                     "Ignoring the break in the state read -- within "
+                     "post-break cooldown");
+        } else {
+            applyReconciledEffect(this, outcome.effect);
+        }
+        // The server never recorded the lock this box holds: its accept
+        // report was lost. Repeat it; the report carries the box's dates.
+        if (outcome.serverMissedLock && isLocked()) {
+            ESP_LOGW(MQTT_TAG,
+                     "Server has no record of the held lock, re-reporting");
+            sendMessage(Str::Protocol::LOCKED);
+        }
+        // This stack is shared with the Done dispatches and the Chaster
+        // question. Its low-water mark goes to the log for the rig.
+        ESP_LOGI(MQTT_TAG,
+                 "State read on the delay task: at least %u bytes of its "
+                 "stack have stayed free",
+                 static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+        return;
+    }
+
+    const uint32_t now = millis();
+    if (!stateReadPlan.due(now)) return;
+    stateReadPlan.begin(now);
+
+    // Nothing to read for a session the dashboard does not manage.
+    if (isLocalPlay()) {
+        stateReadPlan.finished(true, now);
+        ESP_LOGI(MQTT_TAG, "State read skipped: local session");
+        return;
+    }
+    // Offline there is nobody to ask; the read stays wanted.
+    if (WiFiClass::status() != WL_CONNECTED) {
+        stateReadPlan.finished(false, now);
+        return;
+    }
+
+    stateReadPending = startSessionPull(stateRead::kTimeoutMs);
+    if (stateReadPending == nullptr) {
+        // The HTTP worker's queue is full, or there is no memory for the
+        // request. Tried again like a read that failed.
+        stateReadPlan.finished(false, now);
+        ESP_LOGW(MQTT_TAG,
+                 "Could not send the state read (%u in a row): largest free "
+                 "internal block %u bytes, %u bytes free",
+                 static_cast<unsigned>(stateReadPlan.failures()),
+                 static_cast<unsigned>(
+                     heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                 static_cast<unsigned>(
+                     heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+        return;
+    }
+    stateReadPlan.sent();
 }
 
 // update methods
 void LKBX::startUpdate() {
-    xTaskCreatePinnedToCore(
-        updateTask, Tasks::update.name, Tasks::update.stackSize, this,
-        Tasks::update.priority, &TaskHandles::update, Tasks::update.core);
+    if (!startTaskWithRetry(updateTask, Tasks::update, this,
+                            &TaskHandles::update)) {
+        // The Updating page has no buttons, and a locked box can be sent here
+        // (forceUpdate), so it must not wait for a task that does not exist.
+        // Leave through the "no update" page: any button returns home, which
+        // restores a lock. Restarting instead (as a failed install does) could
+        // loop on a forced update while memory stays short.
+        TaskHandles::update = nullptr;
+        ESP_LOGE(OTA_TAG, "Could not start the update; carrying on without it");
+        sm->process_event(Error{.error = ErrorT::NO_UPDATE_AVAILABLE});
+    }
 }
 
 void LKBX::updateTask(void *pvParameters) {
@@ -605,10 +800,7 @@ void LKBX::updateTask(void *pvParameters) {
     }
 
     if (mqttClient) {
-        esp_mqtt_client_stop(mqttClient);
-        esp_mqtt_client_destroy(mqttClient);
-        mqttClient = nullptr;
-        mqttConnected = false;
+        destroyMqtt();
         ESP_LOGI(OTA_TAG, "Stopped MQTT client");
     }
 

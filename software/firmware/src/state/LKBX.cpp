@@ -76,9 +76,7 @@ void LKBX::retryClockSyncTask(void *) {
  * with version text below, then proceeds to the next state.
  * @param pvParameters
  */
-void LKBX::drawHelloTask(void *pvParameters) {
-    LKBX *plkbx = (LKBX *)pvParameters;
-
+void LKBX::runHello(LKBX *plkbx) {
     constexpr int logoWidth = 64;
     constexpr int logoHeight = 50;
     constexpr int textPadding = 16;
@@ -137,6 +135,13 @@ void LKBX::drawHelloTask(void *pvParameters) {
 
         xSemaphoreGive(displayMutex);
     }
+}
+
+void LKBX::drawHelloTask(void *pvParameters) {
+    LKBX *plkbx = (LKBX *)pvParameters;
+
+    // The page's strings are freed when this returns (see runUnlockTimer).
+    runHello(plkbx);
 
     vTaskDelay(2500 / portTICK_PERIOD_MS);
 
@@ -152,10 +157,12 @@ void LKBX::drawHello() {
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating draw hello task");
-    xTaskCreatePinnedToCore(drawHelloTask, Tasks::drawHello.name,
-                            Tasks::drawHello.stackSize, this,
-                            Tasks::drawHello.priority, &TaskHandles::drawHello,
-                            Tasks::drawHello.core);
+    if (!startTaskChecked(drawHelloTask, Tasks::drawHello, this,
+                          &TaskHandles::drawHello)) {
+        // Boot carries on without the logo: the delay task sends the Done
+        // this task would have sent.
+        delayTimeout = 2500;
+    }
 }
 
 void LKBX::delayTask(void *pvParameters) {
@@ -175,15 +182,31 @@ void LKBX::delayTask(void *pvParameters) {
             }
         }
 
+        // A Chaster session's question runs here, one step per pass, so
+        // asking never depends on memory for a task of its own. So does the
+        // state read from the dashboard.
+        plkbx->serviceChasterAsk();
+        plkbx->serviceStateRead();
+        // And the deadline of a locked page whose countdown task could not
+        // be created.
+        plkbx->serviceCountdownWatch();
+
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
 
 void LKBX::initDelayTask() {
-    xTaskCreatePinnedToCore(
-        delayTask, Tasks::delayDispatch.name, Tasks::delayDispatch.stackSize,
-        this, Tasks::delayDispatch.priority, &TaskHandles::delayDispatch,
-        Tasks::delayDispatch.core);
+    if (startTaskChecked(delayTask, Tasks::delayDispatch, this,
+                         &TaskHandles::delayDispatch)) {
+        return;
+    }
+    // Every timed step (the lock animation, preflight, the boot fallbacks)
+    // and the Chaster question run on this task: without it a locked box
+    // would stop on its first page. This runs in setup(), before TLS and the
+    // page tasks take memory, so starting again is the way out.
+    ESP_LOGE(TASKDEBUG_TAG, "Could not start the delay task; restarting");
+    delay(1000);
+    esp_restart();
 }
 
 void LKBX::drawPreflightTask(void *pvParameters) {
@@ -205,10 +228,11 @@ void LKBX::startPreflightScreen() {
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating preflight screen task");
-    xTaskCreatePinnedToCore(
-        drawPreflightTask, Tasks::preflightScreen.name,
-        Tasks::preflightScreen.stackSize, this, Tasks::preflightScreen.priority,
-        &TaskHandles::preflightScreen, Tasks::preflightScreen.core);
+    if (!startTaskChecked(drawPreflightTask, Tasks::preflightScreen, this,
+                          &TaskHandles::preflightScreen)) {
+        // The delay task sends the Done this task would have sent.
+        delayTimeout = 500;
+    }
 }
 
 void LKBX::startPreflight() const {
@@ -241,15 +265,19 @@ void LKBX::startPreflight() const {
     }
 }
 
-void LKBX::startUnlockTimerTask(void *pvParameters) {
-    // parse ossm from the parameters
-    LKBX *plkbx = (LKBX *)pvParameters;
-
+// The countdown task's work. A function of its own, because the task ends with
+// vTaskDelete, which never returns: nothing declared in the task function
+// itself is ever destroyed. The time canvas below owns a 1,920-byte buffer in
+// internal RAM, and while it was declared in the task function that buffer
+// stayed allocated every time the task ended, which is every time the box
+// left its locked pages (2026-11-17 rig run on R8: about 6 KB less free
+// internal RAM after every visit to the Wi-Fi page and unlock, until TLS could
+// not encrypt and tasks could not be created). Here it is freed on return.
+void LKBX::runUnlockTimer(LKBX *plkbx) {
     auto isInCorrectState = [](LKBX *ossm) {
-        return ossm->sm->is("locked.timer"_s) || ossm->sm->is("lockMenu"_s) ||
+        return ossm->sm->is("locked.timer"_s) || ossm->onLockMenuPage() ||
                ossm->sm->is("locked.ready"_s) ||
                ossm->sm->is("locked.ready.addTime"_s) ||
-               ossm->sm->is("lockMenu.sleep"_s) ||
                ossm->sm->is("emergency.blocked"_s) ||
                ossm->sm->is("locked.frozen"_s);
     };
@@ -273,6 +301,17 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
     bool isFrozen = false;
     uint64_t frozenAtMs = 0;
     char freezeReason[kFreezeReasonDisplayBytes] = "";
+    // The dashboard also holds a session Chaster would refuse to unlock, with
+    // a reason that says so. That page reads "waiting", and its reason line
+    // shows only the detail.
+    bool isUnlockHold = false;
+    auto readHeldReason = [&]() {
+        const String stored =
+            preferences.getString(Keys::Session::freezeReason, "");
+        isUnlockHold = isUnlockHoldReason(stored.c_str());
+        boundedFreezeReason(heldReasonLine(stored.c_str()), freezeReason,
+                            sizeof(freezeReason));
+    };
     uint32_t seenCorrectionVersion = UINT32_MAX;
     uint32_t seenFreezeVersion = freezeDisplayVersion();
     uint32_t refreshedAt = 0;
@@ -314,9 +353,7 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             preferences.getBool(Keys::Session::displayElapsedTime, false);
         isFrozen = preferences.getBool(Keys::Session::isFrozen, false);
         frozenAtMs = preferences.getULong64(Keys::Session::frozenAt, 0);
-        boundedFreezeReason(
-            preferences.getString(Keys::Session::freezeReason, "").c_str(),
-            freezeReason, sizeof(freezeReason));
+        readHeldReason();
         preferences.end();
 
         xSemaphoreGive(preferencesMutex);
@@ -327,6 +364,13 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
     // Define the height for the time canvas
     const int TIME_CANVAS_HEIGHT = 48;
     GFXcanvas1 timeRemainingCanvas(Display::WIDTH, TIME_CANVAS_HEIGHT);
+    // Without its buffer the canvas draws nothing and has nothing to show.
+    // The loop still runs: it is what acts at the deadline.
+    const bool canvasReady = timeRemainingCanvas.getBuffer() != nullptr;
+    if (!canvasReady) {
+        ESP_LOGE(UNLOCK_TIMER_TAG,
+                 "No memory for the countdown canvas; the time is not drawn");
+    }
 
     while (isInCorrectState(plkbx)) {
         if (!isEmergencyBlocked) {
@@ -354,10 +398,7 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
                         preferences.getBool(Keys::Session::isTimeDisp, true);
                     displayElapsedTime = preferences.getBool(
                         Keys::Session::displayElapsedTime, false);
-                    boundedFreezeReason(
-                        preferences.getString(Keys::Session::freezeReason, "")
-                            .c_str(),
-                        freezeReason, sizeof(freezeReason));
+                    readHeldReason();
                     preferences.end();
                     xSemaphoreGive(preferencesMutex);
                     seenCorrectionVersion = correctionVersion;
@@ -371,17 +412,6 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             }
         }
 
-        // Only the main timer pages reconcile automatically. Menus, break
-        // acceptance and emergency screens keep their focus until user input.
-        if (!isEmergencyBlocked &&
-            ((isFrozen && (plkbx->sm->is("locked.timer"_s) ||
-                           plkbx->sm->is("locked.ready"_s) ||
-                           plkbx->sm->is("locked.ready.addTime"_s))) ||
-             (!isFrozen && plkbx->sm->is("locked.frozen"_s)))) {
-            plkbx->sm->process_event(FreezeChange{});
-        }
-        if (!shouldDrawCountdown(plkbx)) lastFrozenDisplay.valid = false;
-
         struct timeval tv{};
         lockboxGetTimeOfDay(&tv, nullptr);
         currentDatetimeMs =
@@ -393,21 +423,47 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
         // unlock is unaffected.
         const bool freezeHolds =
             freezeHoldsCountdown(isFrozen) && !isEmergencyBlocked;
+        // Whether the hold has its own page. With a hidden timer an unlock
+        // hold stays off the screen until the deadline has passed: shown
+        // earlier, it would say the end is near. It holds all the same.
+        const bool freezeShown =
+            freezeHolds &&
+            holdShownOnScreen(true, isUnlockHold, isTimeDisp, isTimeSynced,
+                              lockEndDatetimeMs, currentDatetimeMs);
+
+        // Only the main timer pages reconcile automatically. Menus, break
+        // acceptance and emergency screens keep their focus until user input.
+        if (!isEmergencyBlocked &&
+            ((freezeShown && (plkbx->sm->is("locked.timer"_s) ||
+                              plkbx->sm->is("locked.ready"_s) ||
+                              plkbx->sm->is("locked.ready.addTime"_s))) ||
+             (!freezeShown && plkbx->sm->is("locked.frozen"_s)))) {
+            plkbx->sm->process_event(FreezeChange{});
+        }
+        // A freeze can turn into an unlock hold, or back, without leaving the
+        // page: repaint its heading. The repaint also redraws the band below.
+        if (freezeShown && plkbx->sm->is("locked.frozen"_s) &&
+            plkbx->heldPageShowsWaiting != isUnlockHold) {
+            plkbx->drawLockedActions();
+        }
+        if (!shouldDrawCountdown(plkbx)) lastFrozenDisplay.valid = false;
+
         // Only a visible timer with a server-supplied anchor may show a paused
         // value: the anchor is the same before and after a reboot, and a hidden
         // timer is never revealed.
         const bool freezeShowsTime =
-            freezeHolds && freezeShowsPausedTime(isTimeDisp, frozenAtMs);
+            freezeShown && freezeShowsPausedTime(isTimeDisp, frozenAtMs);
 
-        // ms remaining, held while frozen
+        // ms remaining, held while a freeze is shown
         const uint64_t remainingTimeMs =
-            freezeHolds ? frozenRemainingAtAnchor(frozenAtMs, lockEndDatetimeMs)
+            freezeShown ? frozenRemainingAtAnchor(frozenAtMs, lockEndDatetimeMs)
                         : (lockEndDatetimeMs > currentDatetimeMs
                                ? lockEndDatetimeMs - currentDatetimeMs
                                : 0);
 
-        // if there's less than 30 seconds remaining, then set "notIdle"
-        if (!freezeHolds && remainingTimeMs > 0 && remainingTimeMs < 30000) {
+        // Light the screen for the last 30 seconds of a visible countdown. A
+        // hidden timer stays dark: waking by itself would say the end is near.
+        if (wakesScreenNearExpiry(isTimeDisp, freezeHolds, remainingTimeMs)) {
             setNotIdle(Str::Input::UNLOCK_TIMER);
         }
 
@@ -441,7 +497,7 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             y = Display::HEIGHT - 24;
         }
 
-        if (freezeHolds) {
+        if (freezeShown) {
             // Keep the paused value and reason in their own 48-pixel band,
             // below the dedicated frozen heading and above the snowflake.
             y = 96;
@@ -509,7 +565,9 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
                 timeStr = Str::Screen::TIME_HIDDEN;
             }
 
-            if (remainingTimeMs > 365 * 24 * 60 * 60 * 1000ULL) {
+            // The smaller face is for a long visible countdown only: a hidden
+            // timer's page must look the same however much time is left.
+            if (isTimeDisp && remainingTimeMs > 365 * 24 * 60 * 60 * 1000ULL) {
                 timeRemainingCanvas.setFont(
                     &Workbench_Regular_VariableFont_BLED_SCAN16pt7b);
             } else {
@@ -537,15 +595,15 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             FrozenDisplay snapshot;
             snapshot.valid = true;
             snapshot.isEmergencyBlocked = isEmergencyBlocked;
-            snapshot.freezeHolds = freezeHolds;
+            snapshot.freezeHolds = freezeShown;
             snapshot.isTimeDisp = isTimeDisp;
             snapshot.displayElapsedTime = displayElapsedTime;
-            snapshot.remainingTimeMs = freezeHolds
+            snapshot.remainingTimeMs = freezeShown
                 ? frozenPausedDisplayMs(frozenAtMs, lockEndDatetimeMs,
                                         lockStartDatetimeMs, displayElapsedTime)
                 : remainingTimeMs;
             snapshot.counter = freezeDisplayVersion();
-            if (freezeHolds) {
+            if (freezeShown) {
                 strncpy(snapshot.reason, freezeReason,
                         sizeof(snapshot.reason) - 1);
             }
@@ -562,7 +620,8 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
             lastFrozenDisplay.counter == nextDisplay.counter &&
             strcmp(lastFrozenDisplay.reason, nextDisplay.reason) == 0;
 
-        if (shouldDrawCountdown(plkbx) && !frozenFrameUnchanged &&
+        if (canvasReady && shouldDrawCountdown(plkbx) &&
+            !frozenFrameUnchanged &&
             xSemaphoreTake(displayMutex, 100) == pdTRUE) {
             plkbx->display.drawBitmap(0, y, timeRemainingCanvas.getBuffer(),
                                       Display::WIDTH, TIME_CANVAS_HEIGHT,
@@ -582,6 +641,14 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
     }
 
     sleepDuration = 0;
+}
+
+void LKBX::startUnlockTimerTask(void *pvParameters) {
+    // Everything the countdown allocates lives in runUnlockTimer and is
+    // released when it returns. Keep this function free of objects that own
+    // memory: vTaskDelete does not return, so they would never be destroyed.
+    runUnlockTimer(static_cast<LKBX *>(pvParameters));
+
     // set the handle to null
     TaskHandles::unlockTimer = nullptr;
 
@@ -590,17 +657,138 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
 }
 
 void LKBX::startUnlockTimer() {
+    // A page being entered and restoreUnlockTimer can both get here.
+    std::lock_guard<std::mutex> lock(unlockTimerStart);
     if (TaskHandles::unlockTimer != nullptr) {
         ESP_LOGW(UNLOCK_TIMER_TAG, "UnlockTimer already running");
         return;
     }
 
     ESP_LOGD(TASKDEBUG_TAG, "Creating unlock timer task");
-    xTaskCreatePinnedToCore(startUnlockTimerTask, Tasks::unlockTimer.name,
-                            Tasks::unlockTimer.stackSize, this,
-                            Tasks::unlockTimer.priority,
-                            &TaskHandles::unlockTimer, Tasks::unlockTimer.core);
+    startTaskWithRetry(startUnlockTimerTask, Tasks::unlockTimer, this,
+                       &TaskHandles::unlockTimer);
 }
+
+// A locked timer needs its countdown task: it draws the time left, and at the
+// end it releases a local timer, moves a session to Ready to unlock or lifts
+// the emergency block. If the task could not be created when its page was
+// entered (no free block of internal RAM for its stack), or ended just as the
+// page was entered again, the box would stay on that page with nothing
+// counting. So the task is started again here for as long as it is missing.
+// Called from the activity log task.
+void LKBX::restoreUnlockTimer() {
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - unlockTimerCheckedMs) < 2000) return;
+    unlockTimerCheckedMs = now;
+
+    const bool onCountdownPage =
+        sm->is("locked.timer"_s) || sm->is("locked.ready"_s) ||
+        sm->is("locked.ready.addTime"_s) || sm->is("locked.frozen"_s) ||
+        sm->is("emergency.blocked"_s);
+    // Lock menu pages keep the countdown when the session has a deadline.
+    const bool missing =
+        TaskHandles::unlockTimer == nullptr &&
+        (onCountdownPage || (onLockMenuPage() && lockMenuNeedsCountdown()));
+    // Two looks in a row, so a page that is just being entered starts its own
+    // task first.
+    if (!missing) {
+        unlockTimerMissing = false;
+        countdownNeedsWatch.store(false);
+        return;
+    }
+    if (!unlockTimerMissing) {
+        unlockTimerMissing = true;
+        return;
+    }
+
+    ESP_LOGW(UNLOCK_TIMER_TAG, "The countdown task is not running; starting it");
+    startUnlockTimer();
+    // Still no room for it. The page stays without its time for now, but the
+    // deadline must not: the delay task watches it until the task exists.
+    if (TaskHandles::unlockTimer == nullptr &&
+        !countdownNeedsWatch.exchange(true)) {
+        ESP_LOGW(UNLOCK_TIMER_TAG,
+                 "The countdown task still does not fit; the delay task "
+                 "watches the deadline until it does");
+    }
+}
+
+// The countdown task's work at the deadline, for as long as that task cannot
+// be created (utils/countdownWatch.h): release a local timer, show Ready to
+// unlock, end the emergency lockout. One look a second, from the delay task,
+// which sends the event on its own stack as it does every Done.
+void LKBX::serviceCountdownWatch() {
+    if (!countdownNeedsWatch.load()) return;
+    const uint32_t passMs = millis();
+    if (static_cast<uint32_t>(passMs - countdownWatchedMs) < 1000) return;
+    countdownWatchedMs = passMs;
+    // The task exists after all: it does this itself.
+    if (TaskHandles::unlockTimer != nullptr) return;
+
+    CountdownView view;
+    view.readyPage =
+        sm->is("locked.ready"_s) || sm->is("locked.ready.addTime"_s);
+    const bool countdownPage =
+        view.readyPage || sm->is("locked.timer"_s) ||
+        sm->is("locked.frozen"_s) || sm->is("emergency.blocked"_s) ||
+        (onLockMenuPage() && lockMenuNeedsCountdown());
+    if (!countdownPage) return;
+
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) != pdTRUE) {
+        return;
+    }
+    preferences.begin(Keys::base);
+    view.lockout = preferences.getBool(Keys::Base::isEBlocked, false);
+    if (view.lockout) {
+        view.endMs = preferences.getULong64(Keys::Base::emergencyEnd, 0);
+    }
+    preferences.end();
+    preferences.begin(Keys::session);
+    // A lockout without an end of its own runs to the session's end, as on
+    // the countdown task.
+    if (!view.lockout || view.endMs == 0) {
+        view.endMs = preferences.getULong64(Keys::Session::lockEnd, view.endMs);
+    }
+    view.frozen = freezeHoldsCountdown(
+        preferences.getBool(Keys::Session::isFrozen, false));
+    preferences.end();
+    xSemaphoreGive(preferencesMutex);
+
+    // A local timer's end moves with corrections of the clock.
+    if (!view.lockout && processPendingLocalTimerClockCorrections()) return;
+
+    struct timeval tv{};
+    lockboxGetTimeOfDay(&tv, nullptr);
+    view.nowMs = ((uint64_t)tv.tv_sec) * 1000 + ((uint64_t)tv.tv_usec) / 1000;
+
+    switch (countdownDue(view)) {
+        case CountdownDue::TIMER_EXPIRED:
+            sm->process_event(TimerExpired{});
+            break;
+        case CountdownDue::LOCKOUT_OVER:
+            sm->process_event(Unlock{});
+            break;
+        case CountdownDue::BACK_TO_COUNTDOWN:
+            sm->process_event(LockTimer{});
+            break;
+        case CountdownDue::NOTHING:
+        default:
+            break;
+    }
+}
+
+bool LKBX::onLockMenuPage() const {
+    return sm->is("lockMenu"_s) || sm->is("lockMenu.sleep"_s) ||
+           sm->is("lockMenu.vote"_s);
+}
+
+// Whether the lock menu must run the session's countdown. See
+// utils/lockMenuCountdown.h.
+bool LKBX::lockMenuNeedsCountdown() const {
+    if (!isLockedTimer()) return false;
+    return lockMenuCountsDown(true, isLocalPlay(), isReadyToUnlock());
+}
+
 void LKBX::calibrate() {
     if (TaskHandles::calibrate != nullptr) {
         ESP_LOGW(CALIBRATE_TAG, "Calibration task already running");

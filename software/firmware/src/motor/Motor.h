@@ -16,6 +16,9 @@ class Motor {
 
   private:
     void watchCurrent();
+    // What the current watch does, on its own task or, when that cannot be
+    // created, on the caller's.
+    void runCurrentWatch();
     void waitForLock(); 
     void waitForUnlock();
 
