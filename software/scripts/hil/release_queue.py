@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 import json
+from hashlib import sha256
 import logging
 import os
 from pathlib import Path
@@ -11,15 +12,16 @@ import re
 import sys
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import UUID
 
 # The scheduled task uses -I and loads only this reviewed installation.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from catalog import REPOSITORIES
+from monitor import EvidenceError
 from ossm_guard import GuardWatch
-from run import load_fixture, rig_lock, usb_path
+from release_health import observations, observer_for, runtime_digest
+from run import find_port, load_fixture, observe, rig_lock, usb_path
 
 
 ORIGINS = {"main": "https://dashboard.researchanddesire.com",
@@ -76,9 +78,6 @@ class Bench(Client):
     def command(self, action, **args):
         return self.request("/command", {"action": action, "args": args})
 
-    def report(self, run_id):
-        return self.request("/test-report?" + urlencode({"run": str(UUID(run_id))}))
-
 
 def enrolled_devices(fixture):
     targets = {}
@@ -121,40 +120,31 @@ def verify_board(record, fixture):
         raise Blocked("Probed board identity or capacity differs from its enrollment")
 
 
-def assess_report(report, job, board, digest):
-    checks = []
-    for case in report["cases"][:32]:
-        evidence = [seq for seq in case.get("evidenceSequences", []) if type(seq) is int and seq > 0]
-        check = {"title": str(case.get("title") or case.get("id") or "Hardware check")[:120],
-                 "state": case["state"], "evidenceCount": len(evidence)}
-        if evidence:
-            check.update(firstEvent=min(evidence), lastEvent=max(evidence))
-        if case.get("reason"):
-            check["reason"] = str(case["reason"])[:400]
-        checks.append(check)
-    detail = {"board": board, "runId": report["id"], "suite": "all", "checks": checks}
-    if report["state"] not in ("passed", "failed"):
-        return "blocked", {**detail, "detail": "Full hardware suite incomplete: " + first_reason(report)}
-    fw = report["firmware"]
-    if (report["suiteId"] != "all" or report["family"] != job["deviceType"]
-            or report["deviceId"] != board or not fw.get("verified")
-            or fw.get("version") != job["version"] or fw.get("buildSha") != job["buildSha"]
-            or fw.get("releaseId") != job["releaseId"]):
-        return "blocked", {**detail, "detail": "Full-suite report lacks verified board and release identity"}
-    if report["state"] == "failed":
-        return "failed", {**detail, "detail": "Full hardware suite failed: " + first_reason(report)}
-    coverage = report["coverage"]
-    if (not coverage["complete"] or not coverage["required"] or coverage["missing"]
-            or not report["cases"] or any(c["state"] != "passed" for c in report["cases"])
-            or (report["cleanup"]["attempted"] and not report["cleanup"]["verified"])):
-        return "blocked", {**detail, "detail": "Full-suite report lacks exact release identity, coverage or stop evidence"}
-    return "success", {**detail, "applicationSha256": digest,
-                       "detail": f"Verified flash readback and {len(report['cases'])} physical checks"}
-
-
-def first_reason(report):
-    return next((str(case.get("reason") or case["title"])[:400]
-                 for case in report.get("cases", []) if case["state"] != "passed"), report["state"])
+def qualification(job):
+    family, variant, version, sha = (job[key] for key in ("deviceType", "hardwareVariant", "version", "buildSha"))
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[+-][A-Za-z0-9.-]+)?", version) or not re.fullmatch("[0-9a-f]{40}", sha):
+        raise Blocked("Release version or build SHA is invalid")
+    application = [a for a in job["artifacts"] if a["role"] == "application"]
+    if len(application) != 1:
+        raise Blocked("Registered application missing or ambiguous")
+    asset = application[0]
+    size, digest = asset["sizeBytes"], asset["sha256"]
+    prefix = f"https://acjajruwevyyatztbkdf.supabase.co/storage/v1/object/public/{family}-firmware/releases/{version}/{sha}"
+    suffix = "" if variant == "default" else "/" + variant
+    if (asset["url"] != f"{prefix}{suffix}/firmware.bin" or type(size) is not int or not 0 < size <= 16*1024*1024
+            or not re.fullmatch("[0-9a-f]{64}", digest)):
+        raise Blocked("Application is outside the immutable release or has invalid metadata")
+    with build_opener(NoRedirect).open(asset["url"], timeout=30) as response:
+        data = response.read(size+1)
+    if len(data) != size or sha256(data).hexdigest() != digest:
+        raise Blocked("Downloaded application size or SHA-256 differs from the release")
+    observer = observer_for(data, family)
+    if observer is None:
+        raise Blocked(
+            f"{family.upper()} {version} lacks telemetry for a three-minute application/network observation. "
+            "A reviewed production observer or an instrumented candidate is required."
+        )
+    return observer, runtime_digest(data), digest
 
 
 class Worker:
@@ -234,11 +224,9 @@ class Worker:
             raise Blocked("Enrolled USB board is disconnected, ambiguous or unassigned in Test Bench")
         if status.get("fixtureValidationProtocol") != 1:
             raise Blocked("Install the reviewed Test Bench release fixture adapter")
+        observer_type, runtime_sha, app_sha = qualification(job)
         if family == "ossm" and fixture["device_id"] not in self.motion:
-            raise Blocked("Full OSSM suite requires operator-enabled motion on this enrolled fixture")
-        app = [a["sha256"] for a in job["artifacts"] if a["role"] == "application"]
-        if len(app) != 1 or not re.fullmatch("[a-f0-9]{64}", app[0]):
-            raise Blocked("Registered application digest missing")
+            raise Blocked("Starting an OSSM release requires operator-enabled homing on this enrolled fixture")
         board_id = board["id"]
         locks = self.home / "locks"
         owner = "release " + str(UUID(job["releaseId"]))
@@ -258,8 +246,6 @@ class Worker:
                                    self.state.parent / str(UUID(job["releaseId"])))
                 stack.callback(guard.close)
                 guard.require()  # Do not clear latches or trigger guard recovery for a release.
-            if not board.get("monitoring"):
-                stack.callback(self.bench.command, "monitor.stop", deviceId=board_id)
             stack.callback(self.drain)
             def before_command():
                 self.heartbeat(job)
@@ -280,32 +266,46 @@ class Worker:
                                        confirm=True, erase=False, fixtureValidation={
                                            "macAddress": fixture["device_id"], "variant": job["hardwareVariant"],
                                            "buildSha": job["buildSha"], "version": job["version"], "artifacts": job["artifacts"],
-                                           "applicationSha256": app[0],
+                                           "applicationSha256": app_sha,
                                            "allowDttV1On16Mb": fixture.get("allow_larger_flash") is True})
             completed, _ = self.wait_operation(flash, guard)
-            if completed.get("verifiedApplicationSha256") != app[0]:
+            if completed.get("verifiedApplicationSha256") != app_sha:
                 raise Blocked("Bench did not return verified application readback")
             before_command()
-            if not board.get("monitoring"):
-                self.bench.command("monitor.start", deviceId=board_id)
-            readiness = self.bench.request("/tests?" + urlencode({"device": board_id}))
-            if family == "ossm" and not (readiness.get("fixture") or {}).get("valid"):
-                raise Blocked("Full OSSM suite requires a measured fixture")
-            before_command()
-            run = self.bench.command("test.start", deviceId=board_id, suiteId="all",
-                                     confirmMotion=family == "ossm")
-            run_id = str(UUID(run["runId"]))
-            stopped = False
-            while True:
-                report = self.until_reachable(lambda: self.bench.report(run_id))
-                if report["state"] not in ("pending", "running"):
-                    if guard:
-                        guard.check()
-                    return assess_report(report, job, board_id, app[0])
-                if guard and guard.failure and not stopped:
-                    self.until_reachable(lambda: self.bench.command("test.cancel", runId=run_id))
-                    stopped = True
-                self.sleep(3)
+            if board.get("monitoring"):
+                self.bench.command("monitor.stop", deviceId=board_id)
+                stack.callback(self.bench.command, "monitor.start", deviceId=board_id)
+            expected = dict(schema=1, product=fixture["product"], variant=(
+                {"v1":"4mb","v2":"16mb"}[job["hardwareVariant"]] if family == "ossm"
+                else "r8" if family == "radr" else job["hardwareVariant"]),
+                device_id=fixture["device_id"], flash_bytes=fixture["flash_bytes"],
+                build_sha=job["buildSha"], image_sha256=runtime_sha, track=job["track"])
+            observer = observer_type(expected, time.monotonic())
+            outcome, detail = "success", "Verified application readback, running identity and 180-second hardware observation"
+            try:
+                # The same serial reset, line framing, fault detection, heartbeat
+                # and guard polling used by the reviewed PR harness.
+                with open(os.devnull, "w", encoding="utf-8") as log:
+                    observe(fixture, find_port(fixture), observer, log, guard)
+                if guard:
+                    guard.check()
+                if not observer.passed:
+                    raise EvidenceError("Required physical observation did not complete")
+            except EvidenceError as error:
+                detail = str(error)
+                no_boot = observer.boot_id is None and detail in {
+                    "startup deadline exceeded",
+                    "Wi-Fi, production MQTT and menu readiness did not arrive within 180 seconds"
+                }
+                if no_boot:
+                    outcome, detail = "blocked", "No boot evidence was received. Check the enrolled UART and fixture power."
+                else:
+                    outcome = "failed"
+            except (RuntimeError, OSError) as error:
+                outcome, detail = "blocked", str(error)
+            return outcome, {"board": board_id, "applicationSha256": app_sha,
+                             "runtimeImageSha256": runtime_sha, "detail": detail[:400],
+                             "suite": "release-health", "checks": observations(observer, outcome, detail)}
 
     def process(self, job, targets, status):
         from threading import Event, Thread
