@@ -106,6 +106,7 @@ class LKBX {
     // for it.
     void serviceStateRead();
     StateRead stateReadPlan;
+    bool onLockMenuPage() const;
     // Whether the lock menu must run the countdown (utils/lockMenuCountdown.h).
     bool lockMenuNeedsCountdown() const;
     // A locked timer must have its countdown task (LKBX.cpp).
@@ -356,6 +357,8 @@ class LKBX {
                 ESP_LOGD(BLE_TAG, "Stored WiFi credentials for SSID: %s",
                          e.ssid.c_str());
             };
+
+            auto drawVoteQR = [](LKBX &o) { o.drawVoteQR(); };
 
             auto drawSleepQR = [](LKBX &o) {
                 o.drawQRCode(Str::Screen::SLEEP_TITLE, Str::Screen::SLEEP_DESC,
@@ -993,6 +996,7 @@ class LKBX {
                 "lockMenu"_s + buttonPress[(isOption(MenuItemE::RESTART))] = "restart"_s,
                 "lockMenu"_s + buttonPress[(isOption(MenuItemE::BREAK))] = "locked.breaking"_s,
                 "lockMenu"_s + buttonPress[(isOption(MenuItemE::EMERGENCY))] = "emergency.unlock"_s,
+                "lockMenu"_s + buttonPress[(isOption(MenuItemE::VOTE))] = "lockMenu.vote"_s,
                 "lockMenu"_s + lock / (switchToLock) = "locking"_s,
                 "lockMenu"_s + locktimer / (switchToTimer) = "locking"_s,
                 "lockMenu"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
@@ -1049,6 +1053,17 @@ class LKBX {
                 "lockMenu.sleep"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
                 "lockMenu.sleep"_s + breakE = "locked.break"_s,
                 "lockMenu.sleep"_s + forceUpdate = "update"_s,
+
+                // The session's voting link as a QR code; either button returns.
+                "lockMenu.vote"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "lockMenu.vote"_s + on_entry<_> / (drawVoteQR),
+                "lockMenu.vote"_s + buttonPress = "lockMenu"_s,
+                "lockMenu.vote"_s + backPress = "lockMenu"_s,
+                "lockMenu.vote"_s + lock / (switchToLock) = "locking"_s,
+                "lockMenu.vote"_s + locktimer / (switchToTimer) = "locking"_s,
+                "lockMenu.vote"_s + unlock / (clearLocalPlay, unlockAction) = "locking"_s,
+                "lockMenu.vote"_s + breakE = "locked.break"_s,
+                "lockMenu.vote"_s + forceUpdate = "update"_s,
 
                 "emergency.unlock"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "emergency.unlock"_s + on_entry<_> / (drawEUnlockQR),
@@ -1226,6 +1241,7 @@ class LKBX {
                     const Action &left = backAction,
                     bool descriptionOnly = false);
     void drawBreakEndRequest(const String &requestedBy);
+    void drawVoteQR();
 
     void sendMessage(const String &message, const String &sessionId = "") {
         // Only LOCKED is tracked until the broker acknowledges it. Any other

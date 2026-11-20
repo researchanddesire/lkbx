@@ -94,6 +94,9 @@ namespace Keys {
         // Chaster controls this session: the box asks the dashboard before it
         // opens for a break or unlocks. Cleared with the session.
         constexpr char chasterControlled[] = "chaster";
+        // Page where others vote on the session (Chaster's Share links page),
+        // shown as a QR code from the lock menu. Empty when there is none.
+        constexpr char voteUrl[] = "voteUrl";
     }
 }
 

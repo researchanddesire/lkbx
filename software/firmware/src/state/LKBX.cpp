@@ -275,10 +275,9 @@ void LKBX::startPreflight() const {
 // not encrypt and tasks could not be created). Here it is freed on return.
 void LKBX::runUnlockTimer(LKBX *plkbx) {
     auto isInCorrectState = [](LKBX *ossm) {
-        return ossm->sm->is("locked.timer"_s) || ossm->sm->is("lockMenu"_s) ||
+        return ossm->sm->is("locked.timer"_s) || ossm->onLockMenuPage() ||
                ossm->sm->is("locked.ready"_s) ||
                ossm->sm->is("locked.ready.addTime"_s) ||
-               ossm->sm->is("lockMenu.sleep"_s) ||
                ossm->sm->is("emergency.blocked"_s) ||
                ossm->sm->is("locked.frozen"_s);
     };
@@ -686,12 +685,10 @@ void LKBX::restoreUnlockTimer() {
         sm->is("locked.timer"_s) || sm->is("locked.ready"_s) ||
         sm->is("locked.ready.addTime"_s) || sm->is("locked.frozen"_s) ||
         sm->is("emergency.blocked"_s);
-    // The lock menu and its sleep page keep a countdown too, when the session
-    // has one that still has to act (lockMenuNeedsCountdown).
-    const bool onLockMenu = sm->is("lockMenu"_s) || sm->is("lockMenu.sleep"_s);
+    // Lock menu pages keep the countdown when the session has a deadline.
     const bool missing =
         TaskHandles::unlockTimer == nullptr &&
-        (onCountdownPage || (onLockMenu && lockMenuNeedsCountdown()));
+        (onCountdownPage || (onLockMenuPage() && lockMenuNeedsCountdown()));
     // Two looks in a row, so a page that is just being entered starts its own
     // task first.
     if (!missing) {
@@ -731,11 +728,10 @@ void LKBX::serviceCountdownWatch() {
     CountdownView view;
     view.readyPage =
         sm->is("locked.ready"_s) || sm->is("locked.ready.addTime"_s);
-    const bool onLockMenu = sm->is("lockMenu"_s) || sm->is("lockMenu.sleep"_s);
     const bool countdownPage =
         view.readyPage || sm->is("locked.timer"_s) ||
         sm->is("locked.frozen"_s) || sm->is("emergency.blocked"_s) ||
-        (onLockMenu && lockMenuNeedsCountdown());
+        (onLockMenuPage() && lockMenuNeedsCountdown());
     if (!countdownPage) return;
 
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) != pdTRUE) {
@@ -779,6 +775,11 @@ void LKBX::serviceCountdownWatch() {
         default:
             break;
     }
+}
+
+bool LKBX::onLockMenuPage() const {
+    return sm->is("lockMenu"_s) || sm->is("lockMenu.sleep"_s) ||
+           sm->is("lockMenu.vote"_s);
 }
 
 // Whether the lock menu must run the session's countdown. See

@@ -70,6 +70,22 @@ void test_local_timer_expires_from_menus() {
     TEST_ASSERT_EQUAL_INT(2, c.unlocks);
 }
 
+void test_timer_expires_from_the_vote_screen() {
+    Context c;
+    Machine machine{c};
+    machine.set_current_states("lockMenu.vote"_s);
+    machine.process_event(TimerExpired{});
+    TEST_ASSERT_TRUE(machine.is("locking"_s));
+    TEST_ASSERT_EQUAL_INT(1, c.unlocks);
+
+    // A managed session shows Ready to unlock instead.
+    c.local = false;
+    machine.set_current_states("lockMenu.vote"_s);
+    machine.process_event(TimerExpired{});
+    TEST_ASSERT_TRUE(machine.is("locked.ready"_s));
+    TEST_ASSERT_EQUAL_INT(1, c.unlocks);
+}
+
 void test_managed_timer_waits_for_wearer() {
     Context c;
     c.local = false;
@@ -251,6 +267,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_local_timer_releases_paddle_once);
     RUN_TEST(test_local_timer_expires_from_menus);
+    RUN_TEST(test_timer_expires_from_the_vote_screen);
     RUN_TEST(test_managed_timer_waits_for_wearer);
     RUN_TEST(test_restored_local_timer_releases_from_ready_pages);
     RUN_TEST(test_local_break_expiry_does_not_relock);
