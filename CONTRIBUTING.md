@@ -6,7 +6,7 @@ Branch feature work from **`staging`** and open the pull request back into `stag
 
 ## Developer documentation
 
-Edit **`developer-docs/`** in this repo in the same PR as firmware changes when behavior changes. Published site: [dev.researchanddesire.com/lockbox](https://dev.researchanddesire.com/lockbox/) (aggregated by the [`dev-docs`](https://github.com/researchanddesire/dev-docs) repo).
+Edit **`developer-docs/`** in this repo in the same PR as firmware changes when behavior changes. Published site: [dev.researchanddesire.com/lkbx](https://dev.researchanddesire.com/lkbx) (aggregated by the [`dev-docs`](https://github.com/researchanddesire/dev-docs) repo).
 
 Cross-product docs (rad-json, MQTT ecosystem): PR to [`dev-docs`](https://github.com/researchanddesire/dev-docs).
 
