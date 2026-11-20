@@ -700,14 +700,15 @@ class LKBX {
                 "init.preflight.syncLockState"_s + lock / (stopLoadingAnimation, lockAction) = "locking"_s,
                 "init.preflight.syncLockState"_s + locktimer [isOnActiveBreak] / stopLoadingAnimation = "locked.break"_s,
                 "init.preflight.syncLockState"_s + locktimer / (stopLoadingAnimation, lockTimerAction) = "locking"_s,
-                "init.preflight.syncLockState"_s + lockOffered / (stopLoadingAnimation, movePaddleToUnlock) = "acceptLock"_s,
+                "init.preflight.syncLockState"_s + lockOffered[isEmergencyKnownHeld] / (stopLoadingAnimation, declineLockAction) = "home"_s,
+                "init.preflight.syncLockState"_s + lockOffered[!isEmergencyHeld] / (stopLoadingAnimation, movePaddleToUnlock) = "acceptLock"_s,
                 "init.preflight.syncLockState"_s + breakE / stopLoadingAnimation = "locked.break"_s,
                 "init.preflight.syncLockState"_s + done / stopLoadingAnimation = "home"_s,
 
 
                 "home"_s + on_entry<_> / [](LKBX &) { bootHttpDone = true; },
-                "home"_s [isLockOffered] / movePaddleToUnlock = "acceptLock"_s,
                 "home"_s [isEmergencyBlocked] / (clearLocalPlay, unlockAction) = "emergency.blocked"_s,
+                "home"_s [isLockOffered] / movePaddleToUnlock = "acceptLock"_s,
                 "home"_s [isOnActiveBreak] = "locked.break"_s,
                 "home"_s [isLockedTimer] / lockTimerAction = "locking"_s,
                 "home"_s [isLocked] / lockAction = "locking"_s,
@@ -820,7 +821,7 @@ class LKBX {
 
                 "permalock.confirm"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "acceptLock"_s + on_entry<_> / drawAcceptLockQR,
-                "acceptLock"_s + buttonPress[acceptOfferedLockSession] / (clearEBlock, lockTimerAction) = "locking"_s,
+                "acceptLock"_s + buttonPress[!isEmergencyHeld && acceptOfferedLockSession] / (clearEBlock, lockTimerAction) = "locking"_s,
                 "acceptLock"_s + backPress / declineLockAction = "home"_s,
                 "acceptLock"_s + decline / declineLockAction = "home"_s,
                 "acceptLock"_s + lockOffered / drawAcceptLockQR,
@@ -942,25 +943,18 @@ class LKBX {
                 "emergency.unlock"_s + breakE = "locked.break"_s,
                 "emergency.unlock"_s + forceUpdate = "update"_s,
 
-                "emergency.blocked"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "emergency.blocked"_s + on_entry<_> / (drawEBlockedQR, startUnlockTimer),
-                "emergency.blocked"_s + unlock / (clearEBlock, clearLocalPlay, unlockAction) = "home"_s,
-                "emergency.blocked"_s + lock / (clearEBlock, clearLocalPlay, lockAction) = "locking"_s,
-                "emergency.blocked"_s + locktimer / (clearEBlock, clearLocalPlay, lockTimerAction) = "locking"_s,
                 "emergency.blocked"_s + buttonPress = "emergency.wifi"_s,
                 "emergency.blocked"_s + forceUpdate = "update"_s,
 
-                "emergency.wifi"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "emergency.wifi"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
                 "emergency.wifi"_s + buttonPress = "emergency.blocked"_s,
                 "emergency.wifi"_s + backPress = "emergency.blocked"_s,
                 "emergency.wifi"_s + buttonPress[isOnline] = "emergency.blocked"_s,
                 "emergency.wifi"_s + buttonPress[isOffline] = "emergency.blocked"_s,
                 "emergency.wifi"_s + wifiConnected = "emergency.blocked"_s,
-                "emergency.wifi"_s + unlock / (clearEBlock, clearLocalPlay, unlockAction) = "home"_s,
-                "emergency.wifi"_s + lock / (clearEBlock, clearLocalPlay, lockAction) = "locking"_s,
-                "emergency.wifi"_s + locktimer / (clearEBlock, clearLocalPlay, lockTimerAction) = "locking"_s,
                 "emergency.wifi"_s + forceUpdate = "update"_s,
+#include "EmergencyTransitions.inc"
 
                 "wmConfig"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "wmConfig"_s + on_entry<_> / (drawWifiSetupQR, startTask(processWifiTask, Tasks::wifi, TaskHandles::wifi)),
@@ -997,7 +991,8 @@ class LKBX {
                 "update.failed"_s + done / restart = X,
 
                 "update.none"_s + on_entry<_> / ([](LKBX &) { bootHttpDone = true; }, drawNoUpdateQR),
-                "update.none"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
+                "update.none"_s + lockOffered[isEmergencyKnownHeld] / declineLockAction,
+                "update.none"_s + lockOffered[!isEmergencyHeld] / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "update.none"_s + buttonPress = "home"_s,
                 "update.none"_s + backPress = "home"_s,
 

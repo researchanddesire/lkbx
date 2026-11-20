@@ -413,8 +413,12 @@ void LKBX::startUnlockTimerTask(void *pvParameters) {
 
         if (!freezeHolds && lockEndDatetimeMs <= currentDatetimeMs) {
             if (isEmergencyBlocked) {
-                plkbx->sm->process_event(Unlock{});
-                break;
+                // The guard reads the clock again; a step backwards between
+                // the two reads rejects the unlock. Keep offering it every
+                // second rather than exiting with the box still blocked.
+                if (plkbx->sm->process_event(Unlock{})) break;
+                vTaskDelay(1000 / portTICK_PERIOD_MS);
+                continue;
             }
             // Also reconcile a local timer restored to Ready after reboot.
             // Managed Ready pages reject this event and keep waiting for input.

@@ -10,6 +10,7 @@
 #include "services/serverOnline.h"
 #include "services/settings.h"
 #include "services/wm.h"
+#include "utils/emergencyBlockState.h"
 #include "utils/freezeState.h"
 
 static auto isOnline = []() { return WiFiClass::status() == WL_CONNECTED; };
@@ -120,6 +121,27 @@ static auto isEmergencyBlocked = []() {
     ESP_LOGD(GUARD_TAG, "isEmergencyBlocked: %d", lockState);
 
     return lockState;
+};
+
+// The emergency block ends on the clock only. A server clear or unlock that
+// arrives while the box is blocked (the server's own reaction to the
+// emergency report, a dashboard or Chaster unlock) and any lock offer must
+// leave the block in place; the countdown task fires the unlock once the
+// stored end has passed. Not tied to isTimeSynced on purpose: a box that
+// cannot reach the server for a day must still release on its own clock.
+static auto isEmergencyHeld = []() {
+    const bool held = emergencyBlockHeldNow();
+    ESP_LOGD(GUARD_TAG, "isEmergencyHeld: %d", held);
+    return held;
+};
+
+// True only when storage was readable and the block is running: the answer
+// that lets the box decline an offer. A read failure matches neither guard,
+// so the offer is left stored and the activity task retries it shortly.
+static auto isEmergencyKnownHeld = []() {
+    const bool held = emergencyBlockKnownHeldNow();
+    ESP_LOGD(GUARD_TAG, "isEmergencyKnownHeld: %d", held);
+    return held;
 };
 
 static auto isLockedTimer = []() {
