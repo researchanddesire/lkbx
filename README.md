@@ -1,5 +1,16 @@
 # Chastity Lockbox
 
+<p align="center">
+  <a href="https://www.researchanddesire.com/products/lockbox">
+    <img src=".github/readme/chastity-lockbox.jpg" alt="The Chastity Lockbox with its key drawer slid open" width="420">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.researchanddesire.com/products/lockbox"><b>Get the Chastity Lockbox</b></a><br>
+  Black Friday: use code <code>BLACK_FRIDAY_2026</code> at checkout.
+</p>
+
 Open-source ESP32-S3 smart lock firmware (MPL 2.0) and hardware designs (CERN-OHL-S v2).
 
 | Resource | Location |
