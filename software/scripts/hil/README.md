@@ -166,11 +166,11 @@ claims, tokens and journals are private to the bench operator.
 The task starts in the current session and on operator logon. Before cutover it sends an empty-lane heartbeat and cannot reserve jobs. At idle it
 polls every 15 seconds. Inspect `RAD Firmware Validation Queue` in Task
 Scheduler and check **Firmware validation** in the admin dashboard for its
-heartbeat and enrolled variants. A full OSSM suite may operate the fixture
+heartbeat and enrolled variants. An OSSM candidate that can emit the required physical evidence may boot on the fixture
 only when its enrolled factory ID is in the operator-owned JSON array
 `C:\rad-hil\release-worker\motion-devices.json`. Independent guard monitoring,
-its verified stop path and the full suite's measured fixture remain required.
-Missing instrumentation, incomplete coverage and disconnected fixtures are
+its verified stop path and its verified handback remain required.
+The worker checks the SHA-256 of the published application and whether it can emit the required release health records before claiming operator control. On supported binaries it verifies flash readback, resets the enrolled board, and observes the exact running image and continuing application/network progress for 180 seconds. Ordinary Lockbox images report Wi-Fi, production MQTT and menu progress in `LKBX_HEALTH`; instrumented images use the shared `RAD_HEALTH` observer. A serial identity reply or a BLE connection alone cannot qualify a release. Missing instrumentation, incomplete coverage and disconnected fixtures are
 visible in the queue. No run can certify another board or another binary.
 The published artifacts are downloaded by their immutable production URLs;
 the worker does not require the optional Test Bench catalog credential.

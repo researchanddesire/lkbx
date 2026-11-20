@@ -34,6 +34,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_admission.py') -Destina
 $launcher = Join-Path $worker 'start-release-queue.ps1'
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start-release-queue.ps1') -Destination $launcher -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_queue.py') -Destination $harness -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_health.py') -Destination $harness -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'launch.py') -Destination $harness -Force
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -File "{0}" -HomeDirectory "{1}" -Track {2}' -f $launcher,$HomeDirectory,$Track)
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name

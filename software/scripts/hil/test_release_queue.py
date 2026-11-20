@@ -1,4 +1,7 @@
 """Exercise admission, exact-variant intake and fail-closed physical results offline."""
+from contextlib import nullcontext
+from hashlib import sha256
+import io
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,7 +11,8 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from release_admission import require_admission
-from release_queue import Blocked, LeaseLost, Worker, assess_report, matching_board, verify_board
+from release_health import PRODUCTION_MQTT
+from release_queue import Blocked, LeaseLost, Worker, matching_board, verify_board
 
 
 DIGEST = "a"*64
@@ -122,19 +126,59 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(Blocked):
             verify_board(board,dict(fixture,flash_bytes=4<<20))
 
-    def test_only_complete_verified_suite_can_pass(self):
-        job = dict(deviceType="ossm", releaseId=str(uuid4()), buildSha=SHA, version="1.2.3")
-        report = dict(id=str(uuid4()), suiteId="all", state="passed",family="ossm",deviceId="fixture",
-                      coverage=dict(complete=True,required=["identity"],missing=[]),
-                      firmware=dict(releaseId=job["releaseId"],buildSha=SHA,version=job["version"],verified=True),
-                      cases=[{"state":"passed"}], cleanup={"attempted":True,"verified":True})
-        self.assertEqual(assess_report(report,job,"fixture",DIGEST)[0],"success")
-        for case in [dict(report,suiteId="smoke"), dict(report,deviceId="other"),
-                     dict(report,firmware=dict(report["firmware"],buildSha="wrong")),
-                     dict(report,cleanup={"attempted":True,"verified":False}),dict(report,cases=[])]:
-            self.assertEqual(assess_report(case,job,"fixture",DIGEST)[0],"blocked")
-        blocked = dict(report,state="blocked",cases=[dict(state="blocked",title="Measurement",reason="No sensor")])
-        self.assertIn("No sensor",assess_report(blocked,job,"fixture",DIGEST)[1]["detail"])
+    def test_release_queue_to_qualified_lockbox_and_missing_telemetry(self):
+        image = bytearray(64)
+        image[0] = 0xe9
+        image.extend(b" ".join(b'LKBX_HEALTH {"event":"' + event + b'"' for event in
+                               (b"boot", b"heartbeat", b"mqtt_connected", b"wifi_connected")))
+        job = {"source":"merge", "kind":"firmware", "releaseId":str(uuid4()),"jobId":str(uuid4()),
+               "leaseToken":str(uuid4()),"version":"2.0.0","buildSha":SHA,"deviceType":"lkbx",
+               "hardwareVariant":"r2","track":"main"}
+        usb = dict(id="board",label="test",connected=True,family="lkbx",vid=123,pid=456,location="1-2",monitoring=False,
+                   identity=dict(macAddress="AA:BB:CC:DD:EE:FF",flashSizeBytes=16<<20,chipFamily="ESP32-S3",lkbxVariant="r2"))
+        fixture = dict(device_id="AABBCCDDEEFF",flash_bytes=16<<20,chip="esp32s3",psram="r2",
+                       usb_vid=123,usb_pid=456,usb_location="1-2",product="lockbox")
+        self.enrollment.stop()
+        with patch("release_queue.enrolled_devices",return_value={("lkbx","r2"):fixture}), \
+             patch("release_queue.rig_lock",return_value=nullcontext()),patch("release_queue.find_port",return_value="TEST"):
+            for available in (True, False):
+                data = bytes(image if available else image[:64])
+                digest = sha256(data).hexdigest()
+                job["artifacts"] = [dict(role="application",filename="firmware.bin",sha256=digest,sizeBytes=len(data),
+                                         url=f"https://acjajruwevyyatztbkdf.supabase.co/storage/v1/object/public/lkbx-firmware/releases/2.0.0/{SHA}/r2/firmware.bin")]
+                self.q.job = job
+                recorded = []
+                def status(route):
+                    return {"operator":None,"devices":[usb],"activeRun":None,"fixtureValidationProtocol":1,
+                            "jobs":[dict(id="local-job",status="completed",verifiedApplicationSha256=digest)]}
+                def command(action, **args):
+                    recorded.append(action)
+                    return {"id":"local-job"}
+                def observe_fixture(device, port, monitor, log, guard):
+                    def send(seconds, event, **kwargs):
+                        monitor.feed("LKBX_HEALTH "+json.dumps(dict(event=event,boot_id=5,uptime_ms=seconds*1000,**kwargs)),
+                                     monitor.started+seconds)
+                    send(1,"boot", **{k:monitor.expected[k] for k in ("variant","device_id","track","build_sha","image_sha256")})
+                    send(2,"wifi_connected",ip="192.168.1.3")
+                    send(3,"mqtt_connected",broker=PRODUCTION_MQTT)
+                    for i in range(5,186,5):
+                        send(i,"heartbeat",main_menu=True,menu_age_ms=10)
+                with patch.object(self.bench,"request",side_effect=status), \
+                     patch.object(self.bench,"command",create=True,side_effect=command), \
+                     patch("release_queue.build_opener") as http, patch("release_queue.observe",side_effect=observe_fixture):
+                    http.return_value.open.return_value = io.BytesIO(data)
+                    self.worker.tick()
+                result=self.q.requests[-1]
+                self.assertEqual(result["action"],"complete")
+                self.assertEqual(result["status"],"success" if available else "blocked")
+                self.assertEqual("firmware.flash" in recorded,available)
+                if available:
+                    self.assertEqual(result["summary"]["applicationSha256"],digest)
+                    soak = result["summary"]["checks"][-1]
+                    self.assertEqual(soak["evidenceCount"], 37)
+                    self.assertEqual(soak["reason"], "180s host time, 180s device time")
+                else:
+                    self.assertEqual(recorded,[])
 
 
 if __name__ == "__main__":
