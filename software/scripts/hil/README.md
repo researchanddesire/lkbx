@@ -147,16 +147,67 @@ harness watches the guard throughout the run and fails it on any guard fault,
 latch or stale status. The guard's before/after state is
 `results/rs485-guard.json`, and the comment shows motor stills from camera 2.
 
-### Pull-request runs take precedence
+### Install the release queue worker
 
-A pull-request run does not fail because of what the bench was doing before it.
+Use the reviewed LKBX checkout as the source of the shared worker. Upgrade the
+local Test Bench agent with the matching Dashboard revision, then install the
+reviewed base harness. Enroll the USB fixtures before starting the worker. The
+queue endpoint needs a dedicated `FIRMWARE_VALIDATION_RIG_TOKEN` scoped to
+this rig and its deployment. Configure the same value at the console prompt
+below. The task stores it using the bench operator's Windows DPAPI account.
+The runner service can read only the short-lived admission receipt. Release
+claims, tokens and journals are private to the bench operator.
+
+```powershell
+# In the bench operator's elevated PowerShell, from the reviewed checkout
+.\software\scripts\hil\install-release-queue.ps1 -Track main
+```
+
+The task starts in the current session and on operator logon. Before cutover it sends an empty-lane heartbeat and cannot reserve jobs. At idle it
+polls every 15 seconds. Inspect `RAD Firmware Validation Queue` in Task
+Scheduler and check **Firmware validation** in the admin dashboard for its
+heartbeat and enrolled variants. A full OSSM suite may operate the fixture
+only when its enrolled factory ID is in the operator-owned JSON array
+`C:\rad-hil\release-worker\motion-devices.json`. Independent guard monitoring,
+its verified stop path and the full suite's measured fixture remain required.
+Missing instrumentation, incomplete coverage and disconnected fixtures are
+visible in the queue. No run can certify another board or another binary.
+The published artifacts are downloaded by their immutable production URLs;
+the worker does not require the optional Test Bench catalog credential.
+
+**Cutover.** Install the worker first and confirm it polls. Roll out the hosted
+admission workflows and default-branch reconciliation workflows in all four firmware repositories. Set the repository variable `FIRMWARE_VALIDATION_QUEUE_ENV=production` in all four, drain existing PR
+hardware jobs, then enable physical admission by creating the marker below.
+The worker checks the authenticated reservation and creates a fresh receipt.
+The approved GitHub wrapper waits for its exact identity. A stale receipt or
+a rerun with a different attempt cannot initiate a flash.
+
+```powershell
+New-Item -ItemType File 'C:\rad-hil\release-admission\enabled'
+```
+
+**Rollback.** Drain the current physical run and its reservation. Disable the
+hosted waiters by clearing the repository variable in all four repositories, stop the idle scheduled task, then remove only the `enabled`
+marker to restore the earlier PR-only behavior. Keep the private journal if a
+lease is still open. Reconcile interrupted runs and their evidence before
+retrying. Keep only one queue environment active per physical rig.
+
+### Shared queue and fixture ownership
+
+The dashboard orders PR and release jobs together. Critical jobs can move ahead
+of queued jobs. A started run keeps its fixture until cleanup and no queue
+reorder interrupts a flash. After queue cutover, the installed launcher
+checks a fresh host receipt for the exact repository, run, attempt and SHA.
+Manual bench sessions still yield to a reviewed PR. The release queue uses
+the same fixture locks as the PR harness and protects a started release run
+from watchdog preemption.
 
 - **Fixture.** `rig_lock` records its holder in `<lock>.holder`. A pull-request
   run that finds a fixture taken leaves `<lock>.preempt` and waits up to five
   minutes. The rig watchdog (`C:\rad-hil\watchdog`, scheduled task
-  `RAD Rig Watchdog`) terminates the holder unless it is another pull-request
-  run; the single worker already serializes those. Bench sessions must hold the
-  fixture through `rig_lock` and expect to be stopped.
+  `RAD Rig Watchdog`) terminates a preemptible manual holder. PR and release jobs mark
+  their owned fixture as protected. Manual sessions must hold the fixture
+  through `rig_lock` and expect to be stopped.
 - **Guard.** When the OSSM guard is missing, latched or not handed back, the run
   first holds every OSSM in its ROM loader, so none sends pulses, then leaves
   `locks\ossm-guard.request`. The watchdog starts a missing guard. The guard
