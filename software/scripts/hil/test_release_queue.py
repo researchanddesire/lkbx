@@ -163,7 +163,10 @@ class QueueTests(unittest.TestCase):
                     send(3,"mqtt_connected",broker=PRODUCTION_MQTT)
                     for i in range(5,186,5):
                         send(i,"heartbeat",main_menu=True,menu_age_ms=10)
-                with patch.object(self.bench,"request",side_effect=status), \
+                # The stub delivers its final heartbeat at exactly 180s. Use a
+                # whole-second epoch so that rounding cannot shorten the simulated soak.
+                with patch("release_queue.time.monotonic", return_value=1_000.0), \
+                     patch.object(self.bench,"request",side_effect=status), \
                      patch.object(self.bench,"command",create=True,side_effect=command), \
                      patch("release_queue.build_opener") as http, patch("release_queue.observe",side_effect=observe_fixture):
                     http.return_value.open.return_value = io.BytesIO(data)
