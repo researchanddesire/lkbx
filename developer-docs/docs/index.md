@@ -2,7 +2,7 @@
 
 Lockbox is ESP32-S3 firmware for a smart chastity lock: DC motor, magnetic sensors, TFT + rotary encoder UI, MQTT/HTTP dashboard sync, BLE.
 
-Published docs are aggregated at [dev.researchanddesire.com/lockbox](https://dev.researchanddesire.com/lockbox/). **Source of truth is this folder** in the Lockbox repo — edit here, not in the dev-docs aggregate repo.
+Published docs are aggregated at [dev.researchanddesire.com/lkbx](https://dev.researchanddesire.com/lkbx). **Source of truth is this folder** in the Lockbox repo — edit here, not in the dev-docs aggregate repo.
 
 ## Tech stack
 

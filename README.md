@@ -16,7 +16,7 @@ Open-source ESP32-S3 smart lock firmware (MPL 2.0) and hardware designs (CERN-OH
 | Resource | Location |
 | -------- | -------- |
 | User guides | [docs.researchanddesire.com/lockbox](https://docs.researchanddesire.com/lockbox/) |
-| Developer docs | [dev.researchanddesire.com/lockbox](https://dev.researchanddesire.com/lockbox/) |
+| Developer docs | [dev.researchanddesire.com/lkbx](https://dev.researchanddesire.com/lkbx) |
 | Assembly docs | [assembly-docs/](assembly-docs/) |
 | PCB hardware | [hardware/pcb/](hardware/pcb/) |
 | Firmware releases | R+D firmware control plane (Supabase Storage); no GitHub Pages |
