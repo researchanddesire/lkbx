@@ -345,7 +345,8 @@ When editing any `hardware/<product>/bom.csv`, follow the RAD BOM standard (fixe
 - The reviewed harness and fixture inventory live outside the runner work directory.
 - Never infer product identity or flash capacity from a COM port or advertising name.
 - Follow software/scripts/hil/README.md for enrollment, shared-device locks, and rollout.
-- The shared rig (`DESKTOP-SGS6GOQ`, `C:\rad-hil`, runner `lkbx-rig-01`) serves every firmware product. `software/scripts/hil/` (including `catalog.py` and `reviewed-workflows.json`) is identical across LKBX, DTT, OSSM and RADR; change them in all four together, reinstall with `install.ps1`, and update the organization runner group `rad-firmware-validation` allowlist to the exact reviewed `hardware-run.yml@<sha>` refs.
+- When dashboard admission is enabled, PRs and merged firmware candidates share one priority queue. The rig finishes the active run before starting the next. Hold fixtures through `rig_lock`. A reviewed PR can still preempt a manual bench session. Its OSSM guard checks, including latch recovery before flashing, still apply.
+- The shared rig (`DESKTOP-SGS6GOQ`, `C:\rad-hil`, runner `lkbx-rig-01`) serves every firmware product. Mirror the shared PR harness files, including `catalog.py` and `reviewed-workflows.json`, across LKBX, DTT, OSSM and RADR. Reinstall the reviewed harness with `install.ps1` and keep the `rad-firmware-validation` runner group allowlist pinned to the exact reviewed `hardware-run.yml@<sha>` refs. Install the dedicated release queue worker from LKBX with `install-release-queue.ps1`.
 - `pr-firmware.yml` calls the reviewed wrapper by full SHA. Keep that commit reachable (branch `AJ/reviewed-hardware-runner`).
 - Keep Wi-Fi credentials, fixture identities, and raw device logs outside the repository.
 - A missing device or incomplete three-minute observation must fail validation.
