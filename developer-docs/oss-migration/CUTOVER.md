@@ -7,7 +7,7 @@ Run during the coordinated RAD open-source cutover window. See the unified plan 
 - [ ] Final rebase `opensource-prep` ← upstream `main` on Lockbox-OSS
 - [ ] Run `git filter-repo` per [FILTER_REPO.md](FILTER_REPO.md)
 - [ ] Validate OTA at `https://researchanddesire.github.io/Lockbox-OSS/`
-- [ ] Validate dev docs at `https://dev.researchanddesire.com/lockbox/`
+- [ ] Validate dev docs at `https://dev.researchanddesire.com/lkbx`
 - [ ] Validate user docs at `https://docs.researchanddesire.com/lockbox/`
 
 ## Cutover window
