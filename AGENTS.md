@@ -389,6 +389,7 @@ When editing any `hardware/<product>/bom.csv`, follow the RAD BOM standard (fixe
 - The reviewed harness and fixture inventory live outside the runner work directory.
 - Never infer product identity or flash capacity from a COM port or advertising name.
 - Follow software/scripts/hil/README.md for enrollment, shared-device locks, and rollout.
+- PR hardware runs take precedence on the Test Rig: they take a fixture from a bench session and have the OSSM guard clear its own latch before flashing. Hold fixtures only through `rig_lock`, and expect a bench session to be stopped when a PR run arrives.
 - The shared Windows Test Rig (`C:\rad-hil`, runner `lkbx-rig-01`; keep its host name and network details out of this repository) serves every firmware product. `software/scripts/hil/` (including `catalog.py` and `reviewed-workflows.json`) is identical across LKBX, DTT, OSSM and RADR; change them in all four together, reinstall with `install.ps1`, and update the organization runner group `rad-firmware-validation` allowlist to the exact reviewed `hardware-run.yml@<sha>` refs.
 - `pr-firmware.yml` calls the reviewed wrapper by full SHA. Keep that commit reachable (branch `AJ/reviewed-hardware-runner`).
 - Keep Wi-Fi credentials, fixture identities, and raw device logs outside the repository.
