@@ -163,7 +163,9 @@ claims, tokens and journals are private to the bench operator.
 .\software\scripts\hil\install-release-queue.ps1 -Track main
 ```
 
-The task starts in the current session and on operator logon. Before cutover it sends an empty-lane heartbeat and cannot reserve jobs. At idle it
+The task starts in the current session and on operator logon. It runs the
+launcher with `-ExecutionPolicy Bypass`, as the hardware workflow does, because
+Windows client editions default to the Restricted policy. Before cutover it sends an empty-lane heartbeat and cannot reserve jobs. At idle it
 polls every 15 seconds. Inspect `RAD Firmware Validation Queue` in Task
 Scheduler and check **Firmware validation** in the admin dashboard for its
 heartbeat and enrolled variants. An OSSM candidate that can emit the required physical evidence may boot on the fixture
