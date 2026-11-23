@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from release_admission import require_admission
 from release_health import PRODUCTION_MQTT
-from release_queue import Blocked, LeaseLost, Worker, matching_board, verify_board
+from release_queue import Blocked, LeaseLost, Worker, default_runner, matching_board, verify_board
 
 
 DIGEST = "a"*64
@@ -182,6 +182,17 @@ class QueueTests(unittest.TestCase):
                     self.assertEqual(soak["reason"], "180s host time, 180s device time")
                 else:
                     self.assertEqual(recorded,[])
+
+
+class RunnerNameTests(unittest.TestCase):
+    def test_configured_name_wins(self):
+        self.assertEqual(default_runner({"FIRMWARE_VALIDATION_RIG_NAME": " bench-a ", "COMPUTERNAME": "HOST"}), "bench-a")
+
+    def test_computer_name_is_lowercased_with_the_runner_suffix(self):
+        self.assertEqual(default_runner({"COMPUTERNAME": "BENCH-HOST"}), "bench-host-lkbx-rig-01")
+
+    def test_unknown_host_has_no_name(self):
+        self.assertEqual(default_runner({}), "")
 
 
 if __name__ == "__main__":

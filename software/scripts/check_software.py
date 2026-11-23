@@ -54,8 +54,8 @@ def check(history=False):
                 shutil.copyfile(p, target)
         subprocess.run(["gitleaks", "dir", str(export), "--redact=100", "--no-banner"], check=True)
     if history:
-        # Git pathspecs cover the retained software ancestry only. Documentation
-        # and hardware are intentionally reserved for their later release pass.
+        # Git pathspecs cover the retained software ancestry only. The
+        # repository-secret-scan job in software-ci.yml scans everything else.
         options = "--all -- " + " ".join(sorted(SOFTWARE_ROOTS | SOFTWARE_FILES | HISTORY_PATHS)) + \
                   " :(exclude)**/*.md :(exclude)**/*.mdx :(exclude)**/*.rst :(exclude)**/README"
         subprocess.run(["gitleaks", "git", str(ROOT), "--redact=100", "--no-banner",
