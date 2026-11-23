@@ -36,7 +36,9 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start-release-queue.ps1') -Dest
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_queue.py') -Destination $harness -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_health.py') -Destination $harness -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'launch.py') -Destination $harness -Force
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -File "{0}" -HomeDirectory "{1}" -Track {2}' -f $launcher,$HomeDirectory,$Track)
+# Windows client defaults to the Restricted execution policy, which makes -File exit 1
+# before the launcher runs. Scope the bypass to this reviewed launcher only.
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -HomeDirectory "{1}" -Track {2}' -f $launcher,$HomeDirectory,$Track)
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
 $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
