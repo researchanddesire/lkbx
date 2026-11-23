@@ -29,6 +29,20 @@ ORIGINS = {"main": "https://dashboard.researchanddesire.com",
 RIG_ROUTE = "/api/internal/firmware/v1/rig-queue"
 BENCH_ORIGIN = "http://127.0.0.1:8766"
 IDLE_SECONDS = 15
+RUNNER_SUFFIX = "-lkbx-rig-01"
+
+
+def default_runner(environ=os.environ):
+    """The rig name the dashboard expects, without naming the host here.
+
+    FIRMWARE_VALIDATION_RIG_NAME wins; otherwise the Windows computer name,
+    lowercased, followed by the runner suffix. Empty when neither is known.
+    """
+    configured = environ.get("FIRMWARE_VALIDATION_RIG_NAME", "").strip()
+    if configured:
+        return configured
+    host = environ.get("COMPUTERNAME", "").strip().lower()
+    return host + RUNNER_SUFFIX if host else ""
 
 
 class Blocked(Exception):
@@ -399,7 +413,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, default=Path("C:/rad-hil"))
     parser.add_argument("--track", choices=ORIGINS, required=True)
-    parser.add_argument("--runner", default="desktop-sgs6goq-lkbx-rig-01")
+    parser.add_argument("--runner", default=default_runner())
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     directory = Path(os.environ.get("BENCH_DATA_DIR") or

@@ -343,7 +343,7 @@ Persistent storage with mutex protection. Namespaces: `lockbox`, `session`, `mqt
 - Tooling: `python -m unittest discover -s software/scripts -p 'test_*.py'`, `python -m unittest discover -s software/dev -p 'test_*.py'`, `python -m unittest discover -s software/scripts/hil -p 'test_*.py'`, and `python -m unittest discover -s .github/scripts -p 'test_*.py'`.
 - Local services: `python software/dev/fixture/test_http_fixture.py` and `python software/dev/fixture/test_rad_app_front.py`, then with `software/dev/dev_services.py up --backend fixture --lan-ip 127.0.0.1 --device-id AA:BB:CC:DD:EE:FF --device-id AA:BB:CC:DD:EE:FE`, `python software/dev/fixture/test_compose_integration.py`.
 - Sanitizer suites: `python software/scripts/test_http_worker_security.py` and `python software/scripts/test_firmware_runtime.py`.
-- Secret/boundary scan: `python software/scripts/check_software.py` (needs gitleaks).
+- Secret/boundary scan: `python software/scripts/check_software.py` (needs gitleaks). CI also scans the whole repository and its history (`gitleaks dir .` and `gitleaks git . --log-opts=--all`) with `.gitleaks.toml`, which waives only the `jwt` rule on the provenance test vector. Allowlist only verified false positives, with a comment.
 
 ## Important Rules
 

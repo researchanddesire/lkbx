@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+# The provenance test vector is a JWS signed by a throwaway key whose private
+# half was destroyed (see AGENTS.md); its history includes the earlier vector.
+# Only the jwt rule is waived, and only for this file.
+[[allowlists]]
+description = "Published non-secret ES256 provenance test vector"
+targetRules = ["jwt"]
+paths = ['''^\.github/scripts/firmware_provenance_test_vector\.json$''']

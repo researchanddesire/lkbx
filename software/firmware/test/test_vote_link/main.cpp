@@ -11,8 +11,9 @@ void tearDown() {}
 
 namespace {
 
+// A made-up share-link token in Chaster's 16-character shape.
 constexpr const char* kChasterLink =
-    "https://chaster.app/sessions/TIT7McrzudRgGKMB";
+    "https://chaster.app/sessions/SyntheticToken01";
 
 VoteUrlSync parse(const char* payload) {
     JsonDocument doc;
@@ -24,7 +25,7 @@ VoteUrlSync parse(const char* payload) {
 
 void test_chaster_share_link_is_kept() {
     const VoteUrlSync sync =
-        parse("{\"voteUrl\":\"https://chaster.app/sessions/TIT7McrzudRgGKMB\"}");
+        parse("{\"voteUrl\":\"https://chaster.app/sessions/SyntheticToken01\"}");
     TEST_ASSERT_TRUE(sync.present);
     TEST_ASSERT_EQUAL_STRING(kChasterLink, sync.url);
 }
@@ -49,7 +50,7 @@ void test_unusable_links_are_never_shown() {
         "{\"voteUrl\":\"https://chaster.app/sessions/" + std::string(100, 'a') +
         "\"}";
     for (const char* payload :
-         {"{\"voteUrl\":\"http://chaster.app/sessions/TIT7McrzudRgGKMB\"}",
+         {"{\"voteUrl\":\"http://chaster.app/sessions/SyntheticToken01\"}",
           "{\"voteUrl\":\"javascript:alert(1)\"}",
           "{\"voteUrl\":\"https://\"}",
           "{\"voteUrl\":\"https://chaster.app/sessions/a b\"}",
@@ -90,7 +91,7 @@ void test_http_and_ble_shapes_read_the_nested_session() {
     TEST_ASSERT_FALSE(deserializeJson(
         doc,
         "{\"ok\":true,\"data\":{\"sessionId\":\"s\",\"voteUrl\":"
-        "\"https://chaster.app/sessions/TIT7McrzudRgGKMB\"}}"));
+        "\"https://chaster.app/sessions/SyntheticToken01\"}}"));
     const auto http = voteUrlFromJson(doc["data"], "voteUrl");
     TEST_ASSERT_TRUE(http.present);
     TEST_ASSERT_EQUAL_STRING(kChasterLink, http.url);

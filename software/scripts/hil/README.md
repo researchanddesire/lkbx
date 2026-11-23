@@ -156,7 +156,9 @@ queue endpoint needs a dedicated `FIRMWARE_VALIDATION_RIG_TOKEN` scoped to
 this rig and its deployment. Configure the same value at the console prompt
 below. The task stores it using the bench operator's Windows DPAPI account.
 The runner service can read only the short-lived admission receipt. Release
-claims, tokens and journals are private to the bench operator.
+claims, tokens and journals are private to the bench operator. The worker
+names the rig as the dashboard does: `FIRMWARE_VALIDATION_RIG_NAME` when set,
+otherwise the lowercased Windows computer name followed by `-lkbx-rig-01`.
 
 ```powershell
 # In the bench operator's elevated PowerShell, from the reviewed checkout
