@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from catalog import PRODUCTS, REPOSITORIES, policy
 from monitor import FAULT, EvidenceError, HAT_PREFIX, Monitor
 from ossm_guard import GuardWatch, read_status, unsafe_reason
-from release_health import (HAT_CASES, OssmMonitor, StartupTimeout, case_checks, observations, observer_for,
-                            readback_check, runtime_digest, skipped_checks)
+from release_health import (HAT_CASES, IncompleteEvidence, OssmMonitor, StartupTimeout, case_checks, observations,
+                            observer_for, readback_check, runtime_digest, skipped_checks)
 from run import esptool, find_port, load_fixture, observe, rig_lock, usb_path
 
 
@@ -464,6 +464,9 @@ class Worker:
             detail = str(error)
             if observer.boot_id is None and (isinstance(error, StartupTimeout) or detail == "startup deadline exceeded"):
                 return "blocked", "No boot evidence was received. Check the enrolled UART and fixture power."
+            if isinstance(error, IncompleteEvidence):
+                # A damaged record may have been the missing event: not proof of a fault.
+                return "blocked", detail
             return "failed", detail
         except (RuntimeError, OSError) as error:
             return "blocked", str(error)
