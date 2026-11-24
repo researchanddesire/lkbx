@@ -2,7 +2,7 @@ import json
 import unittest
 
 from monitor import EvidenceError, HAT_PREFIX, Monitor
-from release_health import (DAMAGED_LIMIT, IncompleteEvidence, LockboxMonitor, NO_HAT, OssmMonitor, PRODUCTION_MQTT,
+from release_health import (DAMAGED_LIMIT, LockboxMonitor, NO_HAT, OssmMonitor, PRODUCTION_MQTT, ReadinessNotReached,
                             RadrMonitor, StartupTimeout, TrainerMonitor, WITH_HAT, case_checks, observations,
                             observer_for, skipped_checks)
 
@@ -328,21 +328,103 @@ class DamagedRecords(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceError, "fresh, continuous boot evidence"):
             monitor.feed('LKBX_HEALTH {"event":"heartbeat","boot_id":12,"uptime_ms":190000,"main_menu":true,"menu_age_ms":3}', 186)
 
-    def test_a_missing_event_behind_damage_is_incomplete_not_a_fault(self):
+    def test_a_missing_event_behind_damage_is_named_with_the_damage(self):
         monitor = LockboxMonitor(EXPECTED, 0)
         feed(monitor, 1, "boot", **IDENTITY)
         feed(monitor, 2, "wifi_connected", ip="192.168.1.20")
         monitor.feed('LKBX_HEALTH {"event":"mqtt_connected","boot_id":93,"uptime_ms":3000,"bro', 3)
         for now in range(5, 180, 5):
             feed(monitor, now, "heartbeat", main_menu=True, menu_age_ms=15)
-        with self.assertRaises(IncompleteEvidence) as raised:
+        with self.assertRaises(ReadinessNotReached) as raised:
             monitor.tick(181)
-        self.assertIn("1 damaged health records were ignored", str(raised.exception))
-        undamaged = LockboxMonitor(EXPECTED, 0)
-        feed(undamaged, 1, "boot", **IDENTITY)
+        self.assertEqual(str(raised.exception), "Readiness not reached in 180 s: production MQTT never connected; "
+                                                "1 damaged health records were ignored (heartbeats continued)")
+
+
+class Readiness(unittest.TestCase):
+    """A healthy board that never becomes ready is blocked by its environment, not failed."""
+    def run_until_deadline(self, monitor, events=(), menu=True, product=None, stop=180, start=5):
+        prefix = monitor.PREFIX
+        emit(monitor, prefix, 1, "boot", **IDENTITY, hat_mode=getattr(monitor, "case", WITH_HAT).mode)
+        for now, event, args in events:
+            emit(monitor, prefix, now, event, **args)
+        for now in range(start, stop, 5):
+            emit(monitor, prefix, now, "heartbeat", main_menu=menu, menu_age_ms=10 if menu else now * 1000,
+                 **(product or {}))
+        monitor.tick(179.5)  # nothing is raised before the deadline
+        with self.assertRaises(ReadinessNotReached) as raised:
+            monitor.tick(181)
+        return str(raised.exception)
+
+    WIFI = (2, "wifi_connected", {"ip": "192.168.1.20"})
+    MQTT = (3, "mqtt_connected", {"broker": PRODUCTION_MQTT})
+
+    def test_lockbox_without_production_sign_in(self):
+        # The rig's Lockboxes hold staging device keys: Wi-Fi only, menu never reached.
+        detail = self.run_until_deadline(LockboxMonitor(EXPECTED, 0), [self.WIFI], menu=False)
+        self.assertEqual(detail, "Readiness not reached in 180 s: production MQTT never connected; "
+                                 "main menu never reached (heartbeats continued)")
+
+    def test_every_product_names_what_is_missing(self):
+        cases = [
+            (LockboxMonitor(EXPECTED, 0), [], True, None, "Wi-Fi never connected; production MQTT never connected"),
+            (TrainerMonitor(EXPECTED, 0), [self.WIFI], True, None, "production cloud health check never succeeded"),
+            (RadrMonitor(EXPECTED, 0), [], False, None, "Wi-Fi never connected; main menu never reached"),
+            (OssmMonitor(EXPECTED, 0, WITH_HAT), [self.WIFI, self.MQTT], True, {"hat": False, "homed": True},
+             "HAT never detected"),
+            (OssmMonitor(EXPECTED, 0, NO_HAT), [self.WIFI], True, {"hat": False, "homed": False},
+             "production MQTT never connected; carriage never homed"),
+        ]
+        for monitor, events, menu, product, missing in cases:
+            with self.subTest(monitor=type(monitor).__name__, missing=missing):
+                detail = self.run_until_deadline(monitor, events, menu, product)
+                self.assertEqual(detail, f"Readiness not reached in 180 s: {missing} (heartbeats continued)")
+
+    def test_a_connection_lost_before_the_soak_is_named(self):
+        monitor = LockboxMonitor(EXPECTED, 0)
+        feed(monitor, 1, "boot", **IDENTITY)
+        feed(monitor, 2, "wifi_connected", ip="192.168.1.20")
+        feed(monitor, 3, "mqtt_connected", broker=PRODUCTION_MQTT)
+        monitor.feed("MQTT Disconnected", 4)
+        for now in range(5, 180, 5):
+            feed(monitor, now, "heartbeat", main_menu=now < 100, menu_age_ms=10)
+        with self.assertRaisesRegex(ReadinessNotReached, "production MQTT dropped and did not reconnect; "
+                                                         "main menu not reached at the deadline"):
+            monitor.tick(181)
+
+    def test_device_faults_still_fail(self):
+        # No heartbeat at all after the boot record.
+        monitor = LockboxMonitor(EXPECTED, 0)
+        feed(monitor, 1, "boot", **IDENTITY)
+        with self.assertRaisesRegex(EvidenceError, "no heartbeat") as raised:
+            monitor.tick(181)
+        self.assertNotIsInstance(raised.exception, StartupTimeout)
+        # Heartbeats that stopped: the gap rule wins over the deadline.
+        monitor = LockboxMonitor(EXPECTED, 0)
+        feed(monitor, 1, "boot", **IDENTITY)
+        for now in range(5, 160, 5):
+            feed(monitor, now, "heartbeat", main_menu=False, menu_age_ms=10)
+        with self.assertRaisesRegex(EvidenceError, "stopped for over 20 seconds") as raised:
+            monitor.tick(181)
+        self.assertNotIsInstance(raised.exception, StartupTimeout)
+        # Faults raised on their own line are never readiness.
+        for line in ("rst:0x1 (POWERON_RESET)", "Guru Meditation Error", "Brownout detector was triggered"):
+            monitor = LockboxMonitor(EXPECTED, 0)
+            monitor.feed("rst:0x1 (POWERON_RESET)", 0.5)
+            feed(monitor, 1, "boot", **IDENTITY)
+            with self.assertRaises(EvidenceError) as raised:
+                monitor.feed(line, 50)
+            self.assertNotIsInstance(raised.exception, ReadinessNotReached)
+        monitor = LockboxMonitor(EXPECTED, 0)
+        feed(monitor, 1, "boot", **IDENTITY)
+        feed(monitor, 5, "heartbeat", main_menu=False, menu_age_ms=10)
+        with self.assertRaisesRegex(EvidenceError, "uptime stopped advancing"):
+            monitor.feed('LKBX_HEALTH {"event":"heartbeat","boot_id":93,"uptime_ms":5000,"main_menu":false,"menu_age_ms":1}', 10)
+
+    def test_no_boot_record_is_still_plain_startup_timeout(self):
         with self.assertRaises(StartupTimeout) as raised:
-            undamaged.tick(181)
-        self.assertNotIsInstance(raised.exception, IncompleteEvidence)
+            OssmMonitor(EXPECTED, 0, NO_HAT).tick(181)
+        self.assertNotIsInstance(raised.exception, ReadinessNotReached)
 
 
 if __name__ == "__main__":
