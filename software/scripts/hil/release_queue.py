@@ -23,7 +23,7 @@ from monitor import FAULT, EvidenceError, HAT_PREFIX, Monitor
 from ossm_guard import GuardWatch, read_status, unsafe_reason
 from release_health import (HAT_CASES, OssmMonitor, ReadinessNotReached, StartupTimeout, case_checks, observations,
                             observer_for, readback_check, runtime_digest, skipped_checks)
-from run import esptool, find_port, load_fixture, observe, rig_lock, usb_path
+from run import esptool, find_port, load_fixture, observe, park, rig_lock, usb_path
 
 
 ORIGINS = {"main": "https://dashboard.researchanddesire.com",
@@ -31,9 +31,10 @@ ORIGINS = {"main": "https://dashboard.researchanddesire.com",
 RIG_ROUTE = "/api/internal/firmware/v1/rig-queue"
 BENCH_ORIGIN = "http://127.0.0.1:8766"
 IDLE_SECONDS = 15
-# The OSSM acknowledges a HAT setting at once; homing after a reset takes under a minute.
-HAT_ACK_SECONDS = 20
-HAT_SETTLE_SECONDS = 120
+# The OSSM answers a HAT setting within a second of its console starting. An armed
+# motor guard (a homing in progress) refuses the write until homing ends.
+HAT_ACK_SECONDS = 15
+HAT_REFUSED_SECONDS = 90
 RELEASE_VARIANTS = {"ossm": {"v1": "4mb", "v2": "16mb"}, "radr": {"default": "r8"}}
 PRODUCT_NAMES = {"lkbx": "Lockbox", "dtt": "DTT", "ossm": "OSSM", "radr": "Radar"}
 
@@ -229,18 +230,16 @@ def _record(line, prefix):
 
 
 def switch_hat(port, mode, guard=None, clock=time.monotonic, ack_seconds=HAT_ACK_SECONDS,
-               settle_seconds=HAT_SETTLE_SECONDS, resend_seconds=2):
-    """Store an OSSM HAT mode for the next boot over its running console.
+               refused_seconds=HAT_REFUSED_SECONDS, resend_seconds=0.5):
+    """Store an OSSM HAT mode for the next boot over the console of a board that just booted.
 
-    The reply names the stored mode. A refused write (the ESP32 motor guard
-    is armed, or NVS failed) adds "error" and names the unchanged mode, so
-    only a reply naming the requested mode counts; refusals are retried until
-    settle_seconds. After that the carriage must report it is homed (at most
-    settle_seconds from the start), so the reset that follows never cuts a
-    homing move. Returns whether the board reported homed.
+    Sent at once and repeatedly. The reply names the stored mode: a refused write
+    (the ESP32 motor guard is armed, or NVS failed) adds "error" and names the
+    unchanged mode, so only a reply naming the requested mode counts. Refusals are
+    retried for refused_seconds. Returns as soon as the reply names the mode, so the
+    caller can park the board before its homing goes further.
     """
     started = clock()
-    acknowledged = homed = False
     refused = None
     next_send = started
     pending = bytearray()
@@ -248,33 +247,25 @@ def switch_hat(port, mode, guard=None, clock=time.monotonic, ack_seconds=HAT_ACK
         now = clock()
         if guard:
             guard.check()
-        if acknowledged and (homed or now - started >= settle_seconds):
-            return homed
-        if not acknowledged:
-            if now - started >= (settle_seconds if refused else ack_seconds):
-                raise HatSwitchError(f"The OSSM refused 'hat {mode}' ({refused})" if refused else
-                                     f"The OSSM did not acknowledge the serial command 'hat {mode}'")
-            if now >= next_send:
-                port.write(f"\nhat {mode}\n".encode())
-                next_send = now + resend_seconds
+        if now - started >= (refused_seconds if refused else ack_seconds):
+            raise HatSwitchError(f"The OSSM refused 'hat {mode}' ({refused})" if refused else
+                                 f"The OSSM did not acknowledge the serial command 'hat {mode}'")
+        if now >= next_send:
+            port.write(f"\nhat {mode}\n".encode())
+            next_send = now + resend_seconds
         pending.extend(port.read(port.in_waiting or 1))
         if len(pending) > 65536:
             raise RuntimeError("serial line exceeded bounded framing")
         while b"\n" in pending:
             raw, _, rest = pending.partition(b"\n"); pending = bytearray(rest)
-            line = raw.decode("utf-8", errors="replace").rstrip("\r")
-            reply = _record(line, HAT_PREFIX)
+            reply = _record(raw.decode("utf-8", errors="replace").rstrip("\r"), HAT_PREFIX)
             # The plain `hat` report also names a mode (this boot's); only the
             # switch reply says when it applies.
-            if reply and reply.get("applies") == "next_boot" and not acknowledged:
+            if reply and reply.get("applies") == "next_boot":
                 if reply.get("mode") == mode:
-                    acknowledged = True
-                else:
-                    error = reply.get("error")
-                    refused = error if error in ("motor_armed", "storage") else "a different mode is stored"
-            heartbeat = _record(line, OssmMonitor.PREFIX)
-            if heartbeat and heartbeat.get("event") == "heartbeat" and heartbeat.get("homed") is True:
-                homed = True
+                    return
+                error = reply.get("error")
+                refused = error if error in ("motor_armed", "storage") else "a different mode is stored"
 
 
 def reset_board(port, device):
@@ -326,16 +317,19 @@ class RadarHold:
     always resets it into its application and restarts any bench monitoring.
     """
     HELD = "Radar held in its bootloader so it cannot connect to the OSSM"
+    PARKED = "OSSM parked in its bootloader before the Radar was released"
     RELEASED = "Radar released into its application afterwards"
     FAILURES = (Blocked, RuntimeError, OSError, ValueError, subprocess.SubprocessError)
 
-    def __init__(self, fixture, bench, board, log_path):
+    def __init__(self, fixture, bench, board, log_path, park_ossm=None):
         self.fixture = fixture
         self.bench = bench
         self.board = board
         self.log_path = log_path
-        self.attempted = self.held = self.monitoring = self.done = False
-        self.error = None
+        # Parks the OSSM in its ROM loader; the Radar is released only after it.
+        self.park_ossm = park_ossm
+        self.attempted = self.held = self.monitoring = self.done = self.parked = False
+        self.error = self.park_error = None
 
     def hold(self):
         port_name = find_port(self.fixture)
@@ -356,6 +350,16 @@ class RadarHold:
             return self.error
         self.done = True
         errors = []
+        if self.attempted and self.park_ossm:
+            try:
+                self.park_ossm()
+                self.parked = True
+            except self.FAILURES as error:
+                # A free Radar beside a running OSSM is what this hold prevents.
+                self.park_error = str(error)
+                self.error = f"the OSSM could not be parked ({error}), so the Radar was left in its bootloader"
+                logging.warning("Radar release: %s", self.error)
+                return self.error
         if self.attempted:
             try:
                 with self.log_path.open("a", encoding="utf-8") as log:
@@ -377,8 +381,43 @@ class RadarHold:
                     "evidenceCount": int(self.done and not self.error)}
         if self.error:
             released["reason"] = self.error[:400]
+        parked = {"title": self.PARKED, "state": "passed" if self.parked else "blocked", "evidenceCount": int(self.parked)}
+        if self.park_error:
+            parked["reason"] = self.park_error[:400]
         return ({"title": self.HELD, "state": "passed" if self.held else "blocked", "evidenceCount": int(self.held)},
-                released)
+                parked, released)
+
+
+class SessionContacts:
+    """The guard watch for one observed boot, noting the most contacts its homing session reached.
+
+    After a cleared session the observed boot's homing is the only one in it:
+    exactly two contacts, lower and upper.
+    """
+    def __init__(self, guard, clock=time.monotonic):
+        self.guard, self.clock = guard, clock
+        self.path = guard.path
+        self.peak, self.ends, self.next_read = 0, [], 0.0
+
+    def check(self):
+        self.guard.check()
+        now = self.clock()
+        if now < self.next_read:
+            return
+        self.next_read = now + 1.0  # the guard watch also reads status.json once a second
+        try:
+            contacts = read_status(self.path).get("contacts") or []
+        except (OSError, ValueError, KeyError, TypeError):
+            return
+        if len(contacts) > self.peak:
+            self.peak, self.ends = len(contacts), [str(c) for c in contacts]
+
+    def check_row(self, prefix):
+        row = {"title": prefix + "Homing was the only one in its guard session (two hard-stop contacts)",
+               "state": "passed" if self.peak == 2 else "blocked", "evidenceCount": self.peak}
+        if self.peak != 2:
+            row["reason"] = f"{self.peak} contacts: {', '.join(self.ends) or 'none'}"
+        return row
 
 
 class RestoreObserver:
@@ -527,8 +566,13 @@ class Worker:
                 guard.require()  # Do not clear latches or trigger guard recovery for a release.
                 # Before the probe, flash or any reset of the OSSM; held through both
                 # HAT cases and the restore, and released on every path out.
+                hold_log = self.state.parent / str(UUID(job["releaseId"])) / "radar-hold.log"
+                def park_ossm():
+                    # After the hat-auto restore; a Radar released next finds no running OSSM.
+                    with hold_log.open("a", encoding="utf-8") as log:
+                        park(fixture, policy("researchanddesire/OSSM", "16mb"), log)
                 radar = RadarHold(radar_fixture, self.bench, matching_board(claimed["devices"], "radr", radar_fixture),
-                                  self.state.parent / str(UUID(job["releaseId"])) / "radar-hold.log")
+                                  hold_log, park_ossm)
                 stack.callback(radar.release)
                 try:
                     radar.hold()
@@ -542,6 +586,17 @@ class Worker:
                 if guard:
                     guard.check()
             before_command()
+            if board.get("monitoring"):
+                self.bench.command("monitor.stop", deviceId=board_id)
+                def resume_monitoring():
+                    # Reopening the port of a parked OSSM could reset it into its application.
+                    if not (radar and radar.parked):
+                        self.bench.command("monitor.start", deviceId=board_id)
+                stack.callback(resume_monitoring)
+            if family == "ossm":
+                # The bench's probe and flash end by booting the OSSM. Start from a
+                # parked board and an empty guard homing session.
+                self.quiet_ossm(fixture, guard, hold_log)
             if board["family"] == "unknown":
                 self.bench.command("device.configure", deviceId=board_id,
                                    mapping={"label": board["label"], "family": family})
@@ -562,10 +617,11 @@ class Worker:
             completed, _ = self.wait_operation(flash, guard)
             if completed.get("verifiedApplicationSha256") != app_sha:
                 raise Blocked("Bench did not return verified application readback")
+            if family == "ossm":
+                # The flash ends by resetting into the application, which starts homing.
+                with hold_log.open("a", encoding="utf-8") as log:
+                    park(fixture, policy("researchanddesire/OSSM", "16mb"), log)
             before_command()
-            if board.get("monitoring"):
-                self.bench.command("monitor.stop", deviceId=board_id)
-                stack.callback(self.bench.command, "monitor.start", deviceId=board_id)
             # Like DTT V1 on its 16 MB board, an OSSM V1 job boots as variant 4mb
             # while the board's identity keeps its measured 16 MB capacity.
             expected = dict(schema=1, product=fixture["product"], variant=board_variant(family, job["hardwareVariant"]),
@@ -576,13 +632,13 @@ class Worker:
                     "suite": "release-health"}
             if family == "ossm":
                 outcome, detail, checks, cases = self.hat_cases(fixture, observer_type, expected, guard,
-                                                                before_command, evidence)
+                                                                before_command, evidence, hold_log)
                 # Released here, after the restore, so the evidence records it; the
                 # cleanup callback then has nothing left to do.
                 if radar.release():
                     detail += f" The Radar was not released: {radar.error}."
-                held, released = radar.checks()
-                checks = [checks[0], held, *checks[1:], released]
+                held, parked, released = radar.checks()
+                checks = [checks[0], held, *checks[1:], parked, released]
                 return outcome, {**base, "detail": detail[:400], "checks": checks, "cases": cases}
             observer = observer_type(expected, time.monotonic())
             outcome, detail = self.observe_case(fixture, observer, guard, evidence / "serial.log")
@@ -617,45 +673,55 @@ class Worker:
             return "blocked", str(error)
         return "success", ""
 
-    def prepare_case(self, fixture, mode, guard, renew):
+    @staticmethod
+    def quiet_ossm(fixture, guard, log_path):
+        """Park the OSSM in its ROM loader and wait until the guard's homing session is empty.
+
+        Before every OSSM boot that homes: the guard allows one homing (two contacts)
+        per session and ends a session only after 10 s without motion.
+        """
+        with log_path.open("a", encoding="utf-8") as log:
+            park(fixture, policy("researchanddesire/OSSM", "16mb"), log)
+        guard.wait_session_clear()
+
+    def prepare_case(self, fixture, mode, guard, renew, log_path):
+        """Store a HAT mode for the observed boot, without that write's boot ever reaching it."""
         renew()
+        self.quiet_ossm(fixture, guard, log_path)
         guard_ready(guard)
         port = open_console(find_port(fixture))
         try:
-            try:
-                switch_hat(port, mode, guard)
-            except HatSwitchError:
-                # The armed motor guard refuses flash writes. Write the setting in the
-                # seconds after a reset, while the OSSM is still discovering its HAT and
-                # before it homes; that boot still homes in full before the case's reset.
-                guard_ready(guard)
-                reset_board(port, fixture)
-                switch_hat(port, mode, guard, ack_seconds=15, resend_seconds=0.5)
+            # A boot only to store the setting: written the moment the console
+            # answers, then parked at once, before or while its homing starts.
+            reset_board(port, fixture)
+            switch_hat(port, mode, guard)
         finally:
             port.close()
-        # Checked again right before the reset that applies the setting.
+        self.quiet_ossm(fixture, guard, log_path)
+        # Checked again right before the observed boot.
         guard_ready(guard)
 
-    def hat_cases(self, fixture, observer_type, expected, guard, renew, evidence):
+    def hat_cases(self, fixture, observer_type, expected, guard, renew, evidence, log_path):
         """Run With HAT, then No HAT, on the one OSSM; always restore `hat auto` after."""
-        results = []
+        results, sessions = [], {}
         try:
             for case in HAT_CASES:
                 if results and results[-1][2] == "blocked":
                     results.append((case, None, "blocked", f"Not run: {results[-1][0].name} could not run"))
                     continue
                 try:
-                    self.prepare_case(fixture, case.mode, guard, renew)
+                    self.prepare_case(fixture, case.mode, guard, renew, log_path)
                 except (Blocked, RuntimeError, OSError) as error:
                     results.append((case, None, "blocked", str(error)))
                     continue
                 observer = observer_type(expected, time.monotonic(), case)
                 slug = case.name.lower().replace(" ", "-")
-                outcome, detail = self.observe_case(fixture, observer, guard, evidence / f"{slug}-serial.log")
+                sessions[case] = SessionContacts(guard)
+                outcome, detail = self.observe_case(fixture, observer, sessions[case], evidence / f"{slug}-serial.log")
                 results.append((case, observer, outcome, detail))
         finally:
             # Also after a failure or a lost lease: PR runs and the next job expect HAT detection.
-            restore_error = self.restore_hat(fixture, expected, guard, renew, evidence)
+            restore_error = self.restore_hat(fixture, expected, guard, renew, evidence, log_path)
         outcomes = [outcome for _, _, outcome, _ in results]
         outcome = "failed" if "failed" in outcomes else "blocked" if "blocked" in outcomes else "success"
         checks = [readback_check()]
@@ -663,6 +729,8 @@ class Worker:
             prefix = case.name + ": "
             checks += (case_checks(observer, case_outcome, detail, prefix, annotate=True) if observer
                        else skipped_checks(case, detail, expected))
+            if case in sessions:
+                checks.append(sessions[case].check_row(prefix))
         restored = {"title": "HAT detection restored for the next run", "state": "passed" if not restore_error else "blocked",
                     "evidenceCount": int(not restore_error)}
         if restore_error:
@@ -680,7 +748,7 @@ class Worker:
         cases = [{"name": case.name, "hatMode": case.mode, "outcome": o} for case, _, o, _ in results]
         return outcome, detail, checks, cases
 
-    def restore_hat(self, fixture, expected, guard, renew, evidence):
+    def restore_hat(self, fixture, expected, guard, renew, evidence, log_path):
         """Leave the OSSM in `hat auto` and homed. Returns None, or why it could not."""
         try:
             evidence.mkdir(parents=True, exist_ok=True)
@@ -696,7 +764,7 @@ class Worker:
                 renew()
             except (Blocked, LeaseLost):
                 pass  # Restore the board even when the result can no longer be posted.
-            self.prepare_case(fixture, "auto", guard, lambda: None)
+            self.prepare_case(fixture, "auto", guard, lambda: None, log_path)
             observer = RestoreObserver(expected, time.monotonic())
             with (evidence / "restore-serial.log").open("w", encoding="utf-8") as log:
                 observe(fixture, find_port(fixture), observer, log, guard)
