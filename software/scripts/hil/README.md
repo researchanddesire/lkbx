@@ -154,6 +154,25 @@ harness watches the guard throughout the run and fails it on any guard fault,
 latch or stale status. The guard's before/after state is
 `results/rs485-guard.json`, and the comment shows motor stills from camera 2.
 
+The rig's Radar is held in its ROM loader for the whole OSSM run. A running
+Radar connects to a booting OSSM over BLE and asks for a mode, which starts a
+second homing that the guard latches on. The run takes `radr.lock` with the
+usual PR precedence and holds the enrolled Radar before any OSSM is flashed or
+reset, checking its factory MAC; a Radar that cannot be held fails the run
+before any write. At the end, on every path, each OSSM is parked in its ROM
+loader first and the Radar is then reset into its application; if an OSSM cannot
+be parked, the Radar stays held. The timeline and `results.json` (`radar`) record
+each step, and `results/radar-hold.log` keeps the esptool output. A rig without
+an enrolled Radar skips the hold and says so in the log.
+
+The guard allows one homing (two hard-stop contacts, lower and upper) per homing
+session, and ends a session only after 10 seconds without motion. Two homings
+inside one session trip "Unexpected repeated hard-stop contact". Flashing leaves
+the OSSM in its loader; before its observed boot the run waits, for 30 seconds
+at most, until the guard reports no contacts and the carriage has been still for
+longer than that. The boot's homing is then the only one in its session. If the
+session never clears, the run fails before the reset.
+
 ### Install the release queue worker
 
 Use the reviewed LKBX checkout as the source of the shared worker. Upgrade the
@@ -223,13 +242,22 @@ heartbeat gap over 20 seconds, uptime that stops, no heartbeat at all, readiness
 lost or a reconnect during the soak, and repeated damaged records still fail.
 
 Every OSSM release job runs two cases on the enrolled board, and passes only if
-both pass. Each case sends a serial HAT setting, which the OSSM acknowledges with
-`RAD_HAT {"mode":...,"applies":"next_boot"}`. Only a reply naming the requested
-mode counts: a refused write adds `error` and names the unchanged mode. Refusals
-are retried while the carriage homes; if the armed motor guard still refuses, the
-worker resets the board and writes the setting before homing starts. It then waits
-for the carriage to finish homing, checks the guard again, and resets and observes
-boot, homing and the soak:
+both pass. Every OSSM boot that homes gets a guard homing session of its own (see
+"OSSM RS-485 interlock"): before it the OSSM is parked in its ROM loader and the
+worker waits until the guard's session is empty, and after it the OSSM is parked
+again. That covers the bench's probe and flash, which start from a parked board
+and are parked right after. Each case then:
+
+- boots the OSSM only to store its HAT setting: `hat auto` or `hat off` is sent
+  the moment the console starts, until the OSSM acknowledges it with
+  `RAD_HAT {"mode":...,"applies":"next_boot"}`. Only a reply naming the requested
+  mode counts; a refused write adds `error` and names the unchanged mode, and is
+  retried. The OSSM is parked at once, before or while its homing starts;
+- waits for the guard's session to clear again and checks the guard;
+- resets the OSSM and observes boot, homing and the soak. That homing is the
+  only one in its session, and the evidence counts its contacts (two expected).
+
+The cases:
 
 1. **With HAT**: `hat auto`. The guard polls the servo, so the HAT only listens
    and motion stays on STEP/DIR, as in PR runs. Boot reports `hat_mode` `auto`;
@@ -244,10 +272,13 @@ homing that the guard latches on. Before the OSSM is probed, flashed or reset,
 the worker takes `radr.lock` (it never preempts a holder), stops bench monitoring
 of the Radar and holds the enrolled Radar in its ROM loader, checking that it
 answers with its factory MAC. The Radar stays there through both cases and the
-restore, and is then reset into its application and monitored again, on every
-path out. If the Radar is not enrolled, its lock is held or it cannot be held,
+restore. On every path out the OSSM is then parked in its ROM loader (checking
+its factory MAC) and the Radar is reset into its application and monitored
+again; if the OSSM cannot be parked, the Radar stays held. A parked OSSM is not
+handed back to bench monitoring, which could reset it. If the Radar is not enrolled, its lock is held or it cannot be held,
 the OSSM job is blocked before anything moves. The evidence lists "Radar held in
-its bootloader so it cannot connect to the OSSM" and whether it was released.
+its bootloader so it cannot connect to the OSSM", "OSSM parked in its bootloader
+before the Radar was released" and whether the Radar was released.
 
 Afterwards, including after a failure, the worker sends `hat auto`, resets and
 waits for the homed boot. If the guard is not ready at that point it never
