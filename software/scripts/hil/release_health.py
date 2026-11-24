@@ -31,8 +31,20 @@ class StartupTimeout(EvidenceError):
     """Readiness did not arrive in time. Without a boot record the board never ran."""
 
 
-class IncompleteEvidence(StartupTimeout):
-    """Readiness did not arrive, but damaged records may have held the missing events."""
+class ReadinessNotReached(StartupTimeout):
+    """A healthy, running board never reached readiness: an environment problem, not a fault.
+
+    The boot record matched and heartbeats kept arriving with advancing uptime,
+    but a required connection or the main menu never arrived (for example a
+    rig Lockbox whose device key production does not accept).
+    """
+
+
+# What each missing piece of readiness is called in the evidence.
+MISSING_EVENTS = {"wifi_connected": ("Wi-Fi never connected", "Wi-Fi dropped and did not reconnect"),
+                  "mqtt_connected": ("production MQTT never connected", "production MQTT dropped and did not reconnect"),
+                  "cloud_ok": ("production cloud health check never succeeded",
+                               "production cloud health check never succeeded")}
 
 
 class ProductionMonitor:
@@ -61,6 +73,9 @@ class ProductionMonitor:
         # the reset tail), and damaged records ignored after it.
         self.before_boot = 0
         self.damaged = 0
+        # Ever seen this boot, for naming what readiness lacked.
+        self.seen = set()
+        self.menu_seen = self.menu_last = False
 
     @property
     def wifi(self):
@@ -71,12 +86,35 @@ class ProductionMonitor:
         return "mqtt_connected" in self.connected
 
     def tick(self, now):
-        if self.soak_started is None and now - self.started > Monitor.STARTUP_SECONDS:
-            if self.boot_id is not None and self.damaged:
-                raise IncompleteEvidence(f"{self.STARTUP}; {self.damaged} damaged health records were ignored")
-            raise StartupTimeout(self.STARTUP)
         if self.last_heartbeat is not None and now - self.last_heartbeat > Monitor.HEARTBEAT_SECONDS:
             raise EvidenceError("Menu heartbeat stopped for over 20 seconds")
+        if self.soak_started is None and now - self.started > Monitor.STARTUP_SECONDS:
+            if self.boot_id is None:
+                raise StartupTimeout(self.STARTUP)
+            if not self.heartbeats:
+                raise EvidenceError(f"{self.NAME} sent no heartbeat within 180 seconds of its boot record")
+            # Boot identity matched, and heartbeats kept arriving within the gap
+            # rule with advancing uptime and no reset or fault (each of those
+            # fails on its own line), so the board ran; readiness did not.
+            missing = self.missing()
+            if self.damaged:
+                missing.append(f"{self.damaged} damaged health records were ignored")
+            raise ReadinessNotReached(f"Readiness not reached in {Monitor.STARTUP_SECONDS} s: "
+                                      + "; ".join(missing or ["readiness came too late to start the soak"])
+                                      + " (heartbeats continued)")
+
+    def missing(self):
+        """Each piece of readiness this boot lacked at the deadline."""
+        phrases = [MISSING_EVENTS[event][event in self.seen] for event in self.REQUIRED
+                   if event not in self.connected]
+        if not self.menu_seen:
+            phrases.append("main menu never reached")
+        elif not self.menu_last:
+            phrases.append("main menu not reached at the deadline")
+        return phrases + self.product_missing()
+
+    def product_missing(self):
+        return []
 
     def console(self, line):
         """Product checks on other console records after boot."""
@@ -151,12 +189,15 @@ class ProductionMonitor:
             if ip.is_unspecified or ip.is_loopback or ip.is_link_local or ip.is_multicast or str(ip) == "255.255.255.255":
                 raise EvidenceError(f"{self.NAME} did not obtain a usable IPv4 address")
             self.connected.add(event)
+            self.seen.add(event)
         elif event == "mqtt_connected":
             if record.get("broker") != PRODUCTION_MQTT:
                 raise EvidenceError(f"{self.NAME} connected to an unexpected MQTT broker")
             self.connected.add(event)
+            self.seen.add(event)
         elif event == "cloud_ok":
             self.connected.add(event)
+            self.seen.add(event)
         else:
             if uptime <= self.last_uptime:
                 raise EvidenceError(f"{self.NAME} device uptime stopped advancing")
@@ -165,6 +206,8 @@ class ProductionMonitor:
             self.heartbeats += 1
             age = record.get("menu_age_ms")
             menu_ready = record.get("main_menu") is True and type(age) is int and 0 <= age <= 20000
+            self.menu_seen |= menu_ready
+            self.menu_last = menu_ready
             if self.soak_started is not None and not menu_ready:
                 raise EvidenceError(f"{self.NAME} menu task stopped making progress")
             ready = self.ready(record, menu_ready)
@@ -207,6 +250,7 @@ class OssmMonitor(ProductionMonitor):
         self.hat_mode = None
         self.case_heartbeats = 0
         self.ossm_hat = None
+        self.hat_seen = self.homed_seen = self.hat_last = self.homed_last = False
 
     def booted(self, record):
         mode = record.get("hat_mode")
@@ -239,6 +283,9 @@ class OssmMonitor(ProductionMonitor):
             raise EvidenceError("OSSM heartbeat did not report HAT detection and homing")
         if self.case and not self.case.hat and hat:
             raise EvidenceError("OSSM detected its HAT although HAT detection was off")
+        self.hat_seen |= hat
+        self.homed_seen |= homed
+        self.hat_last, self.homed_last = hat, homed
         state = homed and (self.case is None or hat is self.case.hat)
         if self.soak_started is not None:
             if not homed:
@@ -247,6 +294,19 @@ class OssmMonitor(ProductionMonitor):
                 raise EvidenceError("OSSM lost its HAT during observation")
         self.case_heartbeats += state
         return menu_ready and state
+
+    def product_missing(self):
+        phrases = []
+        if self.case and self.case.hat:
+            if not self.hat_seen:
+                phrases.append("HAT never detected")
+            elif not self.hat_last:
+                phrases.append("HAT not detected at the deadline")
+        if not self.homed_seen:
+            phrases.append("carriage never homed")
+        elif not self.homed_last:
+            phrases.append("carriage not homed at the deadline")
+        return phrases
 
     def extra_checks(self, check):
         if self.case is None:
