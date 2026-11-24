@@ -2,8 +2,9 @@ import json
 import unittest
 
 from monitor import EvidenceError, HAT_PREFIX, Monitor
-from release_health import (LockboxMonitor, NO_HAT, OssmMonitor, PRODUCTION_MQTT, RadrMonitor, StartupTimeout,
-                            TrainerMonitor, WITH_HAT, case_checks, observations, observer_for, skipped_checks)
+from release_health import (DAMAGED_LIMIT, IncompleteEvidence, LockboxMonitor, NO_HAT, OssmMonitor, PRODUCTION_MQTT,
+                            RadrMonitor, StartupTimeout, TrainerMonitor, WITH_HAT, case_checks, observations,
+                            observer_for, skipped_checks)
 
 EXPECTED = dict(product="lockbox", device_id="TESTUNIT0001", variant="r2",build_sha="a"*40,image_sha256="b"*64,track="main")
 
@@ -69,8 +70,10 @@ class ReleaseHealth(unittest.TestCase):
         monitor.feed('LKBX_HEALTH {"event":"heartbeat","uptime_ms":[RAD BLE] event startup', 31)
         feed(monitor, 35, "heartbeat", main_menu=True, menu_age_ms=5)
         self.assertEqual(monitor.heartbeats, 1)
-        for line in ("MQTT Disconnected", "Wi-Fi station disconnected (reason 8)",
-                     'LKBX_HEALTH {"event":"heartbeat", [RAD BLE] event startup'):
+        # A damaged record during the soak is ignored and counted, not fatal.
+        monitor.feed('LKBX_HEALTH {"event":"heartbeat", [RAD BLE] event startup', 38)
+        self.assertEqual((monitor.damaged, monitor.heartbeats), (2, 1))
+        for line in ("MQTT Disconnected", "Wi-Fi station disconnected (reason 8)"):
             with self.assertRaises(EvidenceError):
                 monitor.feed(line, 40)
         with self.assertRaises(EvidenceError):
@@ -253,10 +256,9 @@ class OssmCases(unittest.TestCase):
         monitor = self.soaking(WITH_HAT)
         monitor.feed('OSSM_HEALTH {"event":"heartbeat","boot_id":7,' + hat_status() + ',"uptime_ms":31000}', 31)
         self.beat(monitor, 35, True)
-        with self.assertRaisesRegex(EvidenceError, "Malformed OSSM"):
-            monitor.feed('OSSM_HEALTH {"event":"wifi_connected",' + hat_status(), 36)
-        with self.assertRaisesRegex(EvidenceError, "Malformed OSSM"):
-            self.soaking(WITH_HAT).feed('OSSM_HEALTH {"event":"heartbeat","boot_id":7,', 31)
+        monitor.feed('OSSM_HEALTH {"event":"wifi_connected",' + hat_status(), 36)
+        self.assertEqual(monitor.damaged, 2)
+        # Dropped records never stand in for heartbeats.
         with self.assertRaisesRegex(EvidenceError, "stopped for over 20 seconds"):
             self.soaking(WITH_HAT).tick(46)
 
@@ -272,6 +274,75 @@ class OssmCases(unittest.TestCase):
         self.assertIn("homed", rows[-1]["reason"])
         rows = case_checks(OssmMonitor(EXPECTED, 0, NO_HAT), "blocked", "No boot evidence", "No HAT: ", annotate=True)
         self.assertEqual((rows[0]["state"], rows[0]["reason"]), ("blocked", "No boot evidence"))
+
+
+class DamagedRecords(unittest.TestCase):
+    """The first line after a reset is often the previous boot's record cut in half."""
+    def lockbox_run(self, before=(), during=()):
+        monitor = LockboxMonitor(EXPECTED, 0)
+        for line in before:
+            monitor.feed(line, 0.5)
+        feed(monitor, 1, "boot", **IDENTITY)
+        feed(monitor, 2, "wifi_connected", ip="192.168.1.20")
+        feed(monitor, 3, "mqtt_connected", broker=PRODUCTION_MQTT)
+        for now in range(5, 186, 5):
+            feed(monitor, now, "heartbeat", main_menu=True, menu_age_ms=15)
+            if now in dict(during):
+                monitor.feed(dict(during)[now], now + 1)
+        return monitor
+
+    def test_reset_tail_and_previous_boot_records_before_boot_are_ignored(self):
+        monitor = self.lockbox_run(before=(
+            'LKBX_HEALTH {"event":"heartbeat","boot_id":12,"upt',
+            'ime_ms":5000}ESP-ROM:esp32s3-20210327 LKBX_HEALTH {"event":"hea',
+            'LKBX_HEALTH {"event":"heartbeat","boot_id":12,"uptime_ms":99000,"main_menu":true,"menu_age_ms":3}',
+            'LKBX_HEALTH [1, 2]'))
+        self.assertTrue(monitor.passed)
+        self.assertEqual((monitor.before_boot, monitor.damaged), (4, 0))
+        rows = observations(monitor)
+        self.assertTrue(all(row["state"] == "passed" for row in rows))
+        self.assertEqual(rows[-1]["reason"], "180s host time, 180s device time; 4 records before boot ignored")
+
+    def test_damaged_records_mid_soak_are_ignored_up_to_the_limit(self):
+        damaged = 'LKBX_HEALTH {"event":"heartbeat","boot_id":93,"uptime_ms":4'
+        monitor = self.lockbox_run(during=[(now, damaged) for now in range(20, 20 + 5 * DAMAGED_LIMIT, 5)])
+        self.assertTrue(monitor.passed)
+        self.assertEqual(monitor.damaged, DAMAGED_LIMIT)
+        self.assertIn(f"{DAMAGED_LIMIT} damaged health records ignored", observations(monitor)[-1]["reason"])
+        with self.assertRaisesRegex(EvidenceError, "Repeated damaged Lockbox health telemetry"):
+            self.lockbox_run(during=[(now, damaged) for now in range(20, 25 + 5 * DAMAGED_LIMIT, 5)])
+
+    def test_every_product_ignores_then_limits_damaged_records(self):
+        for monitor_type, args in ((OssmMonitor, (WITH_HAT,)), (TrainerMonitor, ()), (RadrMonitor, ())):
+            monitor = monitor_type(EXPECTED, 0, *args)
+            monitor.feed(monitor_type.PREFIX + '{"event":"boot","boot_id":', 0.5)
+            emit(monitor, monitor_type.PREFIX, 1, "boot", **IDENTITY, hat_mode="auto")
+            self.assertEqual(monitor.boot_id, 7)
+            for n in range(DAMAGED_LIMIT):
+                monitor.feed(monitor_type.PREFIX + '{"event":"heart', 2 + n / 10)
+            with self.assertRaisesRegex(EvidenceError, "Repeated damaged"):
+                monitor.feed(monitor_type.PREFIX + "}", 3)
+
+    def test_records_of_another_boot_after_this_boot_still_fail(self):
+        monitor = self.lockbox_run()
+        with self.assertRaisesRegex(EvidenceError, "fresh, continuous boot evidence"):
+            monitor.feed('LKBX_HEALTH {"event":"heartbeat","boot_id":12,"uptime_ms":190000,"main_menu":true,"menu_age_ms":3}', 186)
+
+    def test_a_missing_event_behind_damage_is_incomplete_not_a_fault(self):
+        monitor = LockboxMonitor(EXPECTED, 0)
+        feed(monitor, 1, "boot", **IDENTITY)
+        feed(monitor, 2, "wifi_connected", ip="192.168.1.20")
+        monitor.feed('LKBX_HEALTH {"event":"mqtt_connected","boot_id":93,"uptime_ms":3000,"bro', 3)
+        for now in range(5, 180, 5):
+            feed(monitor, now, "heartbeat", main_menu=True, menu_age_ms=15)
+        with self.assertRaises(IncompleteEvidence) as raised:
+            monitor.tick(181)
+        self.assertIn("1 damaged health records were ignored", str(raised.exception))
+        undamaged = LockboxMonitor(EXPECTED, 0)
+        feed(undamaged, 1, "boot", **IDENTITY)
+        with self.assertRaises(StartupTimeout) as raised:
+            undamaged.tick(181)
+        self.assertNotIsInstance(raised.exception, IncompleteEvidence)
 
 
 if __name__ == "__main__":

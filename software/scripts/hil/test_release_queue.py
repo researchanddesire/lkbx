@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from monitor import EvidenceError
 from release_admission import require_admission
-from release_health import NO_HAT, OssmMonitor, PRODUCTION_MQTT, WITH_HAT
+from release_health import IncompleteEvidence, NO_HAT, OssmMonitor, PRODUCTION_MQTT, StartupTimeout, WITH_HAT
 import release_queue
 from release_queue import (Blocked, HatSwitchError, LeaseLost, RestoreObserver, Worker, allows_larger_flash,
                            enrolled_devices, matching_board, switch_hat, verify_board)
@@ -310,6 +310,22 @@ class HatRefusals(unittest.TestCase):
         reset.assert_called_once()
         self.assertEqual(calls[1]["resend_seconds"], 0.5)
         self.assertEqual(ready.call_count, 3)  # before the console, before the reset, before the case's reset
+
+
+class Classification(unittest.TestCase):
+    def outcome(self, error, booted=True):
+        observer = OssmMonitor({}, 0)
+        observer.boot_id = 1 if booted else None
+        with TemporaryDirectory() as directory, patch("release_queue.find_port", return_value="COM6"), \
+             patch("release_queue.observe", side_effect=error):
+            return Worker.observe_case({}, observer, None, Path(directory) / "serial.log")
+
+    def test_damage_hiding_an_event_blocks_instead_of_failing(self):
+        self.assertEqual(self.outcome(IncompleteEvidence("readiness; 1 damaged health records were ignored"))[0], "blocked")
+        self.assertEqual(self.outcome(StartupTimeout("readiness"))[0], "failed")
+        self.assertEqual(self.outcome(StartupTimeout("readiness"), booted=False)[0], "blocked")
+        self.assertEqual(self.outcome(EvidenceError("Repeated damaged OSSM health telemetry (6 records after boot)"))[0],
+                         "failed")
 
 
 class FakeGuard:

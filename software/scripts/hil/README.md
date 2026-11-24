@@ -197,6 +197,13 @@ of any of them during the soak fails the run:
 | dtt | `DTT_HEALTH` | `wifi_connected`, `cloud_ok` (the app's own `/health-check`) |
 | radr | `RADR_HEALTH` | `wifi_connected` |
 
+A damaged record (cut by the reset, merged with the ROM banner, or split by
+another writer) never counts as evidence and never starts or extends a deadline.
+Before this boot's record, damaged records and the previous boot's records are
+ignored. After it, more than five damaged records fail the run; fewer are counted
+in the soak check. A readiness timeout with damaged records after boot is blocked,
+not failed, because a damaged record may have held the missing event.
+
 Every OSSM release job runs two cases on the enrolled board, and passes only if
 both pass. Each case sends a serial HAT setting, which the OSSM acknowledges with
 `RAD_HAT {"mode":...,"applies":"next_boot"}`. Only a reply naming the requested

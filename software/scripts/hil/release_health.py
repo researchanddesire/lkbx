@@ -4,7 +4,7 @@ from hashlib import sha256
 import ipaddress
 import json
 
-from monitor import EvidenceError, FAULT, HAT_PREFIX, Monitor, STOP_PATH_UNVERIFIED, parse_hat_status
+from monitor import EvidenceError, FAULT, Monitor, STOP_PATH_UNVERIFIED, parse_hat_status
 
 PRODUCTION_MQTT = "mqtts://te9acc16.ala.us-east-1.emqxsl.com"
 NETWORK_EVENTS = ("wifi_connected", "mqtt_connected", "cloud_ok")
@@ -23,8 +23,16 @@ NO_HAT = HatCase("No HAT", "off", False)
 HAT_CASES = (WITH_HAT, NO_HAT)
 
 
+# Damaged records after the boot record that one observation may ignore.
+DAMAGED_LIMIT = 5
+
+
 class StartupTimeout(EvidenceError):
     """Readiness did not arrive in time. Without a boot record the board never ran."""
+
+
+class IncompleteEvidence(StartupTimeout):
+    """Readiness did not arrive, but damaged records may have held the missing events."""
 
 
 class ProductionMonitor:
@@ -49,6 +57,10 @@ class ProductionMonitor:
         self.passed = False
         self.last_heartbeat = self.last_uptime = self.soak_started = self.soak_uptime = None
         self.heartbeats = 0
+        # Records ignored before the boot record (the previous boot's output and
+        # the reset tail), and damaged records ignored after it.
+        self.before_boot = 0
+        self.damaged = 0
 
     @property
     def wifi(self):
@@ -60,14 +72,11 @@ class ProductionMonitor:
 
     def tick(self, now):
         if self.soak_started is None and now - self.started > Monitor.STARTUP_SECONDS:
+            if self.boot_id is not None and self.damaged:
+                raise IncompleteEvidence(f"{self.STARTUP}; {self.damaged} damaged health records were ignored")
             raise StartupTimeout(self.STARTUP)
         if self.last_heartbeat is not None and now - self.last_heartbeat > Monitor.HEARTBEAT_SECONDS:
             raise EvidenceError("Menu heartbeat stopped for over 20 seconds")
-
-    def damaged(self, line):
-        """Whether an unparsable record may be dropped. It never starts or extends a deadline."""
-        return (self.boot_id is not None and self.soak_started is None
-                and self.PREFIX + '{"event":"heartbeat"' in line)
 
     def console(self, line):
         """Product checks on other console records after boot."""
@@ -99,15 +108,26 @@ class ProductionMonitor:
             return
         try:
             record = json.loads(line.split(self.PREFIX, 1)[1])
-        except ValueError as error:
-            # Console writers on other tasks can interleave with a record.
-            # A damaged startup heartbeat cannot start or extend any deadline.
-            if self.damaged(line):
-                return
-            raise EvidenceError(f"Malformed {self.NAME} health telemetry") from error
+        except ValueError:
+            record = None
         if not isinstance(record, dict):
-            raise EvidenceError(f"Invalid {self.NAME} health telemetry")
+            # A record cut by the reset, merged with the ROM banner or split by
+            # another writer. It never counts as evidence and never starts or
+            # extends a deadline; missing heartbeats still fail on the 20 s gap.
+            if self.boot_id is None:
+                self.before_boot += 1
+                return
+            self.damaged += 1
+            if self.damaged > DAMAGED_LIMIT:
+                raise EvidenceError(f"Repeated damaged {self.NAME} health telemetry "
+                                    f"({self.damaged} records after boot)")
+            return
         boot, uptime, event = record.get("boot_id"), record.get("uptime_ms"), record.get("event")
+        if self.boot_id is None and event != "boot":
+            # Output of the boot before the reset. Without this boot's record the
+            # run still ends at the startup deadline as "No boot evidence".
+            self.before_boot += 1
+            return
         if type(boot) is not int or not 0 <= boot <= 0xffffffff or type(uptime) is not int or uptime < 0:
             raise EvidenceError("Invalid boot identity or device uptime")
         if event == "boot":
@@ -167,11 +187,6 @@ class LockboxMonitor(ProductionMonitor):
     LOSSES = (("wi-fi station disconnected", ("wifi_connected", "mqtt_connected")),
               ("mqtt disconnected", ("mqtt_connected",)))
 
-    def damaged(self, line):
-        # Arduino and the IDF console can interleave startup messages.
-        return (self.boot_id is not None and self.soak_started is None
-                and 'LKBX_HEALTH {"event":"heartbeat"' in line and "[RAD BLE] event " in line)
-
 
 class OssmMonitor(ProductionMonitor):
     """OSSM_HEALTH for one HAT case: HAT mode at boot, then HAT detection and homing on every heartbeat."""
@@ -192,12 +207,6 @@ class OssmMonitor(ProductionMonitor):
         self.hat_mode = None
         self.case_heartbeats = 0
         self.ossm_hat = None
-
-    def damaged(self, line):
-        # The harness polls `hat` every five seconds; a reply can split a heartbeat.
-        # The 20-second heartbeat limit still applies to the soak.
-        return super().damaged(line) or (
-            self.boot_id is not None and HAT_PREFIX in line and self.PREFIX + '{"event":"heartbeat"' in line)
 
     def booted(self, record):
         mode = record.get("hat_mode")
@@ -294,9 +303,15 @@ def case_checks(observer, outcome="success", detail="", prefix="", annotate=Fals
         extra += observer.extra_checks(check)
     seconds = 0 if observer.soak_started is None else int(observer.last_heartbeat - observer.soak_started)
     elapsed = 0 if observer.soak_uptime is None else int((observer.last_uptime - observer.soak_uptime) / 1000)
+    reason = f"{seconds}s host time, {elapsed}s device time"
+    ignored = [f"{count} {what} ignored" for count, what in (
+        (getattr(observer, "damaged", 0), "damaged health records"),
+        (getattr(observer, "before_boot", 0), "records before boot")) if count]
+    if ignored:
+        reason += "; " + ", ".join(ignored)
     soak = {"title": prefix + "Continuous application and network observation",
             "state": "passed" if observer.passed else "blocked", "evidenceCount": observer.heartbeats,
-            "reason": f"{seconds}s host time, {elapsed}s device time"}
+            "reason": reason}
     identity = check("Running image, board, build SHA and track", int(observer.boot_id is not None))
     if outcome == "failed" or (annotate and outcome == "blocked" and detail):
         attributed = identity if observer.boot_id is None else soak
