@@ -179,6 +179,15 @@ heartbeat and enrolled variants. An OSSM candidate that can emit the required ph
 only when its enrolled factory ID is in the operator-owned JSON array
 `C:\rad-hil\release-worker\motion-devices.json`. Independent guard monitoring,
 its verified stop path and its verified handback remain required.
+The operator can also pause release testing per product with the JSON array
+`C:\rad-hil\release-worker\release-families.json`, for example `["radr"]`,
+naming the families that may run (`lkbx`, `dtt`, `ossm`, `radr`). Without the file
+every family runs. A claimed release job for a family not listed ends blocked,
+before any download, lock, flash or other hardware step, with "Release testing for
+<Product> is paused on this rig (operator setting)". A file that is not such an
+array blocks every release job and names the problem; it never allows everything.
+PR jobs and the advertised lanes are unchanged. The worker reads both files when it
+starts, so restart `RAD Firmware Validation Queue` after changing either.
 The worker checks the SHA-256 of the published application and whether it can emit the required release health records before claiming operator control. On supported binaries it verifies flash readback, resets the enrolled board, and observes the exact running image and continuing application/network progress for 180 seconds. A serial identity reply or a BLE connection alone cannot qualify a release. Missing instrumentation, incomplete coverage and disconnected fixtures are
 visible in the queue. No run can certify another board or another binary.
 
