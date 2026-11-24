@@ -234,6 +234,17 @@ namespace Str {
             "Chaster did not allow this break.";
         constexpr char BREAK_REFUSED_SUFFIX[] PROGMEM =
             " The box stays locked.";
+        // A session Chaster does not control asks the dashboard whether its
+        // end time has passed (utils/chasterAsk.h).
+        constexpr char CHECKING_LOCK_TITLE[] PROGMEM = "Checking";
+        constexpr char CHECKING_LOCK_DESC[] PROGMEM =
+            "Checking this lock with the dashboard. The box stays locked "
+            "while it waits for the answer.";
+        constexpr char STILL_LOCKED_TITLE[] PROGMEM = "Still Locked";
+        constexpr char STILL_LOCKED_DEFAULT[] PROGMEM =
+            "This lock's time has not run out.";
+        constexpr char STILL_LOCKED_SUFFIX[] PROGMEM =
+            " The box stays locked until it has.";
         constexpr char CHASTER_NO_ANSWER_TITLE[] PROGMEM =
             "Can't Reach Chaster";
         constexpr char UNLOCK_NO_ANSWER_DESC[] PROGMEM =

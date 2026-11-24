@@ -23,6 +23,19 @@
 // stays locked: offline, a Chaster session never opens on its own timer.
 // Emergency unlock and a clear from the dashboard do not ask.
 //
+// A session of the dashboard that Chaster does not control asks the unlock
+// question too. The box opens such a session on the end time it holds, and
+// that end time is only as new as the last message that reached it: time
+// added while the box was asleep or out of range is not on it yet, and a box
+// that was woken and unlocked before its Wi-Fi was up opened days early
+// (rad-app#2782). The dashboard answers "timer_running" when its own end time
+// has not passed, and publishes the session again.
+//
+// For such a session the dashboard is asked, not obeyed without limit: with
+// no answer (no Wi-Fi, a timeout, a dashboard that does not know the session)
+// the box opens on the end time it holds, as it always has. A box that has
+// only just started waits a little for its Wi-Fi first.
+//
 // This header has no Arduino dependencies so the rules are unit-tested
 // natively. See test/test_chaster_ask.
 
@@ -46,9 +59,45 @@ namespace chasterAsk {
     // once more after a short wait before it reports that it could not ask.
     constexpr uint8_t kSendAttempts = 2;
     constexpr uint32_t kSendRetryMs = 500;
+    // The unlock question for a session Chaster does not control: the
+    // dashboard answers from its own records, so the box waits less for it.
+    constexpr int kOwnRulesTimeoutMs = 8000;
+    // A box that started less than this long ago may still be joining its
+    // Wi-Fi: such a question waits for the station instead of going
+    // unanswered at once.
+    constexpr uint32_t kStartupWifiWaitMs = 20000;
+    constexpr uint32_t kWifiPollMs = 250;
 }  // namespace chasterAsk
 
 enum class AskAction : uint8_t { BREAK, UNLOCK };
+
+// Whether the box asks before it unlocks at the end of its timer: always for
+// a Chaster session, and for any other session the dashboard gave it. A timer
+// the wearer started on the box is the box's own and asks nobody.
+inline bool asksBeforeUnlock(bool chasterControlled,
+                             bool holdsDashboardSession) {
+    return chasterControlled || holdsDashboardSession;
+}
+
+// What the box does when the unlock question gets no answer.
+enum class NoAnswer : uint8_t {
+    STAY_LOCKED,  // Chaster decides: nobody said yes
+    OWN_RULES,    // the box's own end time decides, as it does offline
+};
+
+inline NoAnswer unlockWithoutAnswer(bool chasterControlled) {
+    return chasterControlled ? NoAnswer::STAY_LOCKED : NoAnswer::OWN_RULES;
+}
+
+// Whether a question that cannot be sent because the Wi-Fi station is down
+// waits for it. Only the unlock question of a session Chaster does not
+// control, and only on a box that has just started: later, a station that is
+// down means the box is offline, and it opens without waiting.
+inline bool askWaitsForWifi(bool chasterControlled, AskAction action,
+                            uint32_t uptimeMs) {
+    return !chasterControlled && action == AskAction::UNLOCK &&
+           uptimeMs < chasterAsk::kStartupWifiWaitMs;
+}
 
 inline const char* askActionText(AskAction action) {
     return action == AskAction::BREAK ? "break" : "unlock";

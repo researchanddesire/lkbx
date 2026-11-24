@@ -34,6 +34,7 @@
 #include "utils/breakTiming.h"
 #include "utils/chasterAsk.h"
 #include "utils/countdownWatch.h"
+#include "utils/decisionReport.h"
 #include "utils/emergencyReport.h"
 #include "utils/emergencyStore.h"
 #include "utils/getPairingCode.h"
@@ -126,6 +127,7 @@ class LKBX {
     std::mutex menuTaskStart;
     MissingTask menuWatch;
     void checkOfferedLock();
+    void repeatDecisionReport(const char *state, const String &sessionId);
     uint32_t offerStartedMs = 0;
     String offerSessionId;
     uint32_t decisionPublishedMs = 0;
@@ -668,8 +670,13 @@ class LKBX {
             auto setAskUnlock = [](LKBX &o) { o.askAction = AskAction::UNLOCK; };
             auto setAskBreak = [](LKBX &o) { o.askAction = AskAction::BREAK; };
             auto drawAskingChaster = [](LKBX &o) {
-                o.drawNotice(Str::Screen::ASKING_CHASTER_TITLE,
-                             Str::Screen::ASKING_CHASTER_DESC,
+                // Chaster is asked for a Chaster session; for any other, the
+                // dashboard checks its own end time.
+                const bool chaster = isChasterSession();
+                o.drawNotice(chaster ? Str::Screen::ASKING_CHASTER_TITLE
+                                     : Str::Screen::CHECKING_LOCK_TITLE,
+                             chaster ? Str::Screen::ASKING_CHASTER_DESC
+                                     : Str::Screen::CHECKING_LOCK_DESC,
                              Action{.visible = false},
                              Action{.visible = false});
             };

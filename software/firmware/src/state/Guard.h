@@ -193,6 +193,30 @@ static auto isChasterSession = []() {
     return chaster;
 };
 
+// True when the box asks the dashboard before it unlocks at the end of its
+// timer: a Chaster session, or any other session the dashboard gave it
+// (utils/chasterAsk.h). When the session cannot be read the box asks.
+static auto asksDashboardBeforeUnlock = []() {
+    bool chaster = false;
+    bool local = false;
+    bool hasSession = true;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::session);
+        chaster = preferences.getBool(Keys::Session::chasterControlled, false);
+        hasSession =
+            !preferences.getString(Keys::Session::sessionId, "").isEmpty();
+        preferences.end();
+        preferences.begin(Keys::base);
+        local = preferences.getBool(Keys::Base::isLocalPlay, false);
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+
+    const bool asks = asksBeforeUnlock(chaster, hasSession && !local);
+    ESP_LOGD(GUARD_TAG, "asksDashboardBeforeUnlock: %d", asks);
+    return asks;
+};
+
 // False while the session hides its timer from the wearer.
 static auto isTimerDisplayed = []() {
     bool displayed = true;
