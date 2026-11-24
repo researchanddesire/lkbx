@@ -17,11 +17,12 @@ from uuid import UUID
 
 # The scheduled task uses -I and loads only this reviewed installation.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from catalog import REPOSITORIES
-from monitor import EvidenceError
-from ossm_guard import GuardWatch
-from release_health import observations, observer_for, runtime_digest
-from run import find_port, load_fixture, observe, rig_lock, usb_path
+from catalog import PRODUCTS, REPOSITORIES, policy
+from monitor import FAULT, EvidenceError, HAT_PREFIX, Monitor
+from ossm_guard import GuardWatch, read_status, unsafe_reason
+from release_health import (HAT_CASES, OssmMonitor, StartupTimeout, case_checks, observations, observer_for,
+                            readback_check, runtime_digest, skipped_checks)
+from run import esptool, find_port, load_fixture, observe, rig_lock, usb_path
 
 
 ORIGINS = {"main": "https://dashboard.researchanddesire.com",
@@ -29,6 +30,10 @@ ORIGINS = {"main": "https://dashboard.researchanddesire.com",
 RIG_ROUTE = "/api/internal/firmware/v1/rig-queue"
 BENCH_ORIGIN = "http://127.0.0.1:8766"
 IDLE_SECONDS = 15
+# The OSSM acknowledges a HAT setting at once; homing after a reset takes under a minute.
+HAT_ACK_SECONDS = 20
+HAT_SETTLE_SECONDS = 120
+RELEASE_VARIANTS = {"ossm": {"v1": "4mb", "v2": "16mb"}, "radr": {"default": "r8"}}
 
 
 class Blocked(Exception):
@@ -43,6 +48,10 @@ class ServiceError(Blocked):
 
 class LeaseLost(Exception):
     """A fenced result can never be posted by this worker."""
+
+
+class HatSwitchError(Blocked):
+    """The running OSSM did not take a serial HAT setting."""
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -91,7 +100,23 @@ def enrolled_devices(fixture):
             release_variant = {"4mb": "v1", "16mb": "v2"}.get(variant, variant)
             family = "lkbx" if product == "lockbox" else product
             targets[(family, "default" if family == "radr" else release_variant)] = device
+            if product == "ossm" and variant == "16mb" and device.get("allow_larger_flash") is True:
+                # The one enrolled OSSM serves both release lanes. Its V1 jobs
+                # install the 4 MB profile; boot evidence still names the 16 MB chip.
+                targets[("ossm", "v1")] = device
     return targets
+
+
+def board_variant(family, release_variant):
+    """The catalog variant (and boot `variant`) a release lane runs."""
+    return RELEASE_VARIANTS.get(family, {}).get(release_variant, release_variant)
+
+
+def allows_larger_flash(fixture, family, release_variant):
+    """A smaller-flash image on this larger chip, approved per fixture (DTT V1, OSSM V1)."""
+    product = "lockbox" if family == "lkbx" else family
+    lane = PRODUCTS[product]["variants"][board_variant(family, release_variant)]
+    return fixture.get("allow_larger_flash") is True and lane["flash_bytes"] < fixture["flash_bytes"]
 
 
 def matching_board(boards, family, fixture):
@@ -144,7 +169,133 @@ def qualification(job):
             f"{family.upper()} {version} lacks telemetry for a three-minute application/network observation. "
             "A reviewed production observer or an instrumented candidate is required."
         )
+    if family == "ossm" and (observer is not OssmMonitor or b"next_boot" not in data):
+        raise Blocked(f"OSSM {version} lacks the OSSM_HEALTH HAT and homing record or the serial HAT "
+                      "switch that the With HAT and No HAT cases need.")
     return observer, runtime_digest(data), digest
+
+
+def open_console(port_name):
+    """The running application's console, opened without resetting the board."""
+    import serial
+    port = serial.Serial(port=None, baudrate=115200, timeout=.25, write_timeout=1)
+    port.dtr = False; port.rts = False; port.port = port_name
+    port.open()
+    return port
+
+
+def _record(line, prefix):
+    if prefix not in line:
+        return None
+    try:
+        record = json.loads(line.split(prefix, 1)[1])
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def switch_hat(port, mode, guard=None, clock=time.monotonic, ack_seconds=HAT_ACK_SECONDS,
+               settle_seconds=HAT_SETTLE_SECONDS, resend_seconds=2):
+    """Store an OSSM HAT mode for the next boot over its running console.
+
+    The reply names the stored mode. A refused write (the ESP32 motor guard
+    is armed, or NVS failed) adds "error" and names the unchanged mode, so
+    only a reply naming the requested mode counts; refusals are retried until
+    settle_seconds. After that the carriage must report it is homed (at most
+    settle_seconds from the start), so the reset that follows never cuts a
+    homing move. Returns whether the board reported homed.
+    """
+    started = clock()
+    acknowledged = homed = False
+    refused = None
+    next_send = started
+    pending = bytearray()
+    while True:
+        now = clock()
+        if guard:
+            guard.check()
+        if acknowledged and (homed or now - started >= settle_seconds):
+            return homed
+        if not acknowledged:
+            if now - started >= (settle_seconds if refused else ack_seconds):
+                raise HatSwitchError(f"The OSSM refused 'hat {mode}' ({refused})" if refused else
+                                     f"The OSSM did not acknowledge the serial command 'hat {mode}'")
+            if now >= next_send:
+                port.write(f"\nhat {mode}\n".encode())
+                next_send = now + resend_seconds
+        pending.extend(port.read(port.in_waiting or 1))
+        if len(pending) > 65536:
+            raise RuntimeError("serial line exceeded bounded framing")
+        while b"\n" in pending:
+            raw, _, rest = pending.partition(b"\n"); pending = bytearray(rest)
+            line = raw.decode("utf-8", errors="replace").rstrip("\r")
+            reply = _record(line, HAT_PREFIX)
+            # The plain `hat` report also names a mode (this boot's); only the
+            # switch reply says when it applies.
+            if reply and reply.get("applies") == "next_boot" and not acknowledged:
+                if reply.get("mode") == mode:
+                    acknowledged = True
+                else:
+                    error = reply.get("error")
+                    refused = error if error in ("motor_armed", "storage") else "a different mode is stored"
+            heartbeat = _record(line, OssmMonitor.PREFIX)
+            if heartbeat and heartbeat.get("event") == "heartbeat" and heartbeat.get("homed") is True:
+                homed = True
+
+
+def reset_board(port, device):
+    """The same hardware reset observe() uses, on an open console."""
+    from esptool.reset import HardReset
+    HardReset(port, uses_usb=device["usb_vid"] == 0x303a and device["usb_pid"] == 0x1001)()
+
+
+def guard_ready(guard):
+    """Never reset the OSSM unless the guard is polling, unlatched and handed back.
+
+    An OSSM that boots without the guard polling makes its HAT bus master and
+    selects serial motion, which is not qualified on hardware.
+    """
+    guard.check()
+    try:
+        status = read_status(guard.path)
+    except (OSError, ValueError, KeyError) as error:
+        raise RuntimeError(f"RS-485 safety guard status unavailable: {error}") from error
+    reason = unsafe_reason(status)
+    if reason:
+        raise RuntimeError("RS-485 safety guard: " + reason)
+
+
+def hold_in_loader(port_name, log):
+    """Park the OSSM in its ROM loader: no STEP pulses and no RS-485 traffic."""
+    esptool(port_name, policy("researchanddesire/OSSM", "16mb"), ["read_mac"], log)
+
+
+class RestoreObserver:
+    """The boot after restoring `hat auto`: HAT detection on, then the carriage homed."""
+    def __init__(self, expected, started):
+        self.expected = expected
+        self.started = started
+        self.boot_id = None
+        self.passed = False
+
+    def tick(self, now):
+        if now - self.started > Monitor.STARTUP_SECONDS:
+            raise EvidenceError("The restored boot did not report HAT mode auto and a homed carriage within 180 seconds")
+
+    def feed(self, line, now):
+        self.tick(now)
+        if FAULT.search(line):
+            raise EvidenceError("The OSSM reported a reset, panic, watchdog or brownout after the restore")
+        record = _record(line, OssmMonitor.PREFIX)
+        if not record:
+            return
+        if record.get("event") == "boot" and self.boot_id is None:
+            if record.get("device_id") != self.expected["device_id"] or record.get("hat_mode") != "auto":
+                raise EvidenceError("The restored boot did not report HAT mode auto on the enrolled board")
+            self.boot_id = record.get("boot_id")
+        elif (record.get("event") == "heartbeat" and self.boot_id is not None
+              and record.get("boot_id") == self.boot_id and record.get("homed") is True):
+            self.passed = True
 
 
 class Worker:
@@ -262,12 +413,14 @@ class Worker:
                 raise Blocked("Board disconnected or USB mapping changed after probing")
             verify_board(current, fixture)
             before_command()
+            larger = allows_larger_flash(fixture, family, job["hardwareVariant"])
             flash = self.bench.command("firmware.flash", deviceId=board_id, releaseId=job["releaseId"],
                                        confirm=True, erase=False, fixtureValidation={
                                            "macAddress": fixture["device_id"], "variant": job["hardwareVariant"],
                                            "buildSha": job["buildSha"], "version": job["version"], "artifacts": job["artifacts"],
                                            "applicationSha256": app_sha,
-                                           "allowDttV1On16Mb": fixture.get("allow_larger_flash") is True})
+                                           # The current Test Bench reads allowLargerFlash; older ones the DTT name.
+                                           "allowLargerFlash": larger, "allowDttV1On16Mb": larger})
             completed, _ = self.wait_operation(flash, guard)
             if completed.get("verifiedApplicationSha256") != app_sha:
                 raise Blocked("Bench did not return verified application readback")
@@ -275,37 +428,134 @@ class Worker:
             if board.get("monitoring"):
                 self.bench.command("monitor.stop", deviceId=board_id)
                 stack.callback(self.bench.command, "monitor.start", deviceId=board_id)
-            expected = dict(schema=1, product=fixture["product"], variant=(
-                {"v1":"4mb","v2":"16mb"}[job["hardwareVariant"]] if family == "ossm"
-                else "r8" if family == "radr" else job["hardwareVariant"]),
-                device_id=fixture["device_id"], flash_bytes=fixture["flash_bytes"],
-                build_sha=job["buildSha"], image_sha256=runtime_sha, track=job["track"])
+            # Like DTT V1 on its 16 MB board, an OSSM V1 job boots as variant 4mb
+            # while the board's identity keeps its measured 16 MB capacity.
+            expected = dict(schema=1, product=fixture["product"], variant=board_variant(family, job["hardwareVariant"]),
+                            device_id=fixture["device_id"], flash_bytes=fixture["flash_bytes"],
+                            build_sha=job["buildSha"], image_sha256=runtime_sha, track=job["track"])
+            evidence = self.state.parent / str(UUID(job["releaseId"]))
+            base = {"board": board_id, "applicationSha256": app_sha, "runtimeImageSha256": runtime_sha,
+                    "suite": "release-health"}
+            if family == "ossm":
+                outcome, detail, checks, cases = self.hat_cases(fixture, observer_type, expected, guard,
+                                                                before_command, evidence)
+                return outcome, {**base, "detail": detail[:400], "checks": checks, "cases": cases}
             observer = observer_type(expected, time.monotonic())
-            outcome, detail = "success", "Verified application readback, running identity and 180-second hardware observation"
+            outcome, detail = self.observe_case(fixture, observer, guard, evidence / "serial.log")
+            if outcome == "success":
+                detail = "Verified application readback, running identity and 180-second hardware observation"
+            return outcome, {**base, "detail": detail[:400], "checks": observations(observer, outcome, detail)}
+
+    @staticmethod
+    def observe_case(fixture, observer, guard, log_path):
+        """Reset the board and observe it. Returns (outcome, detail)."""
+        try:
+            # The same serial reset, line framing, fault detection, heartbeat
+            # and guard polling used by the reviewed PR harness. The local log
+            # keeps only the redacted, credential-free records.
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("w", encoding="utf-8") as log:
+                observe(fixture, find_port(fixture), observer, log, guard)
+            if guard:
+                guard.check()
+            if not observer.passed:
+                raise EvidenceError("Required physical observation did not complete")
+        except EvidenceError as error:
+            detail = str(error)
+            if observer.boot_id is None and (isinstance(error, StartupTimeout) or detail == "startup deadline exceeded"):
+                return "blocked", "No boot evidence was received. Check the enrolled UART and fixture power."
+            return "failed", detail
+        except (RuntimeError, OSError) as error:
+            return "blocked", str(error)
+        return "success", ""
+
+    def prepare_case(self, fixture, mode, guard, renew):
+        renew()
+        guard_ready(guard)
+        port = open_console(find_port(fixture))
+        try:
             try:
-                # The same serial reset, line framing, fault detection, heartbeat
-                # and guard polling used by the reviewed PR harness.
-                with open(os.devnull, "w", encoding="utf-8") as log:
-                    observe(fixture, find_port(fixture), observer, log, guard)
-                if guard:
-                    guard.check()
-                if not observer.passed:
-                    raise EvidenceError("Required physical observation did not complete")
-            except EvidenceError as error:
-                detail = str(error)
-                no_boot = observer.boot_id is None and detail in {
-                    "startup deadline exceeded",
-                    "Wi-Fi, production MQTT and menu readiness did not arrive within 180 seconds"
-                }
-                if no_boot:
-                    outcome, detail = "blocked", "No boot evidence was received. Check the enrolled UART and fixture power."
-                else:
-                    outcome = "failed"
-            except (RuntimeError, OSError) as error:
-                outcome, detail = "blocked", str(error)
-            return outcome, {"board": board_id, "applicationSha256": app_sha,
-                             "runtimeImageSha256": runtime_sha, "detail": detail[:400],
-                             "suite": "release-health", "checks": observations(observer, outcome, detail)}
+                switch_hat(port, mode, guard)
+            except HatSwitchError:
+                # The armed motor guard refuses flash writes. Write the setting in the
+                # seconds after a reset, while the OSSM is still discovering its HAT and
+                # before it homes; that boot still homes in full before the case's reset.
+                guard_ready(guard)
+                reset_board(port, fixture)
+                switch_hat(port, mode, guard, ack_seconds=15, resend_seconds=0.5)
+        finally:
+            port.close()
+        # Checked again right before the reset that applies the setting.
+        guard_ready(guard)
+
+    def hat_cases(self, fixture, observer_type, expected, guard, renew, evidence):
+        """Run With HAT, then No HAT, on the one OSSM; always restore `hat auto` after."""
+        results = []
+        try:
+            for case in HAT_CASES:
+                if results and results[-1][2] == "blocked":
+                    results.append((case, None, "blocked", f"Not run: {results[-1][0].name} could not run"))
+                    continue
+                try:
+                    self.prepare_case(fixture, case.mode, guard, renew)
+                except (Blocked, RuntimeError, OSError) as error:
+                    results.append((case, None, "blocked", str(error)))
+                    continue
+                observer = observer_type(expected, time.monotonic(), case)
+                slug = case.name.lower().replace(" ", "-")
+                outcome, detail = self.observe_case(fixture, observer, guard, evidence / f"{slug}-serial.log")
+                results.append((case, observer, outcome, detail))
+        finally:
+            # Also after a failure or a lost lease: PR runs and the next job expect HAT detection.
+            restore_error = self.restore_hat(fixture, expected, guard, renew, evidence)
+        outcomes = [outcome for _, _, outcome, _ in results]
+        outcome = "failed" if "failed" in outcomes else "blocked" if "blocked" in outcomes else "success"
+        checks = [readback_check()]
+        for case, observer, case_outcome, detail in results:
+            prefix = case.name + ": "
+            checks += (case_checks(observer, case_outcome, detail, prefix, annotate=True) if observer
+                       else skipped_checks(case, detail, expected))
+        restored = {"title": "HAT detection restored for the next run", "state": "passed" if not restore_error else "blocked",
+                    "evidenceCount": int(not restore_error)}
+        if restore_error:
+            restored["reason"] = restore_error[:400]
+        checks.append(restored)
+        if outcome == "success":
+            detail = ("Verified application readback, running identity and 180-second hardware observations "
+                      "With HAT and No HAT")
+        else:
+            detail = "; ".join(f"{case.name}: {d}" for case, _, o, d in results if o != "success")
+        if restore_error:
+            detail = f"HAT auto was not restored ({restore_error}). " + detail
+            # The release may be fine, but the fixture needs service before another run.
+            outcome = "blocked" if outcome == "success" else outcome
+        cases = [{"name": case.name, "hatMode": case.mode, "outcome": o} for case, _, o, _ in results]
+        return outcome, detail, checks, cases
+
+    def restore_hat(self, fixture, expected, guard, renew, evidence):
+        """Leave the OSSM in `hat auto` and homed. Returns None, or why it could not."""
+        try:
+            evidence.mkdir(parents=True, exist_ok=True)
+            port_name = find_port(fixture)
+            try:
+                guard_ready(guard)
+            except RuntimeError as error:
+                # Never boot it unguarded. Park it instead; nothing moves until a person or PR run recovers the guard.
+                with (evidence / "restore-hold.log").open("w", encoding="utf-8") as log:
+                    hold_in_loader(port_name, log)
+                return f"{error}. The OSSM is held in its ROM loader and still needs hat auto"
+            try:
+                renew()
+            except (Blocked, LeaseLost):
+                pass  # Restore the board even when the result can no longer be posted.
+            self.prepare_case(fixture, "auto", guard, lambda: None)
+            observer = RestoreObserver(expected, time.monotonic())
+            with (evidence / "restore-serial.log").open("w", encoding="utf-8") as log:
+                observe(fixture, find_port(fixture), observer, log, guard)
+            guard.check()
+            return None
+        except (Blocked, EvidenceError, RuntimeError, OSError) as error:
+            return str(error) or type(error).__name__
 
     def process(self, job, targets, status):
         from threading import Event, Thread

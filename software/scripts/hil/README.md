@@ -25,6 +25,10 @@ OSSM's 4 MB profiles use the standard 4 MB min_spiffs layout and size optimizati
 Measured capacity alone does not authorize a partition migration. A 16 MB fixture
 still carrying the older 4 MB table fails preflight until a separately reviewed,
 storage-preserving migration has been completed. Never relabel it as a 4 MB board.
+The one exception is the dual-lane OSSM below: release V1 jobs leave the reviewed
+4 MB OSSM table on it, and the next 16 MB write puts its own table back. Both
+tables keep NVS, otadata and app0 at the same offsets, the write verifies NVS
+byte for byte, and the OSSM stores nothing in its filesystem or coredump partitions.
 
 ## Interfaces and trust boundary
 
@@ -68,7 +72,10 @@ reading its factory MAC/chip/flash, and verifying PSRAM where relevant. The owne
 has authorized a 16 MB Trainer to exercise the 4 MB V1 image/partition profile.
 That V1 fixture must retain `flash_bytes: 16777216` and explicitly set
 `allow_larger_flash: true`; boot evidence still verifies the actual 16 MB chip.
-This is profile coverage, not evidence of testing a physically 4 MB chip. The
+This is profile coverage, not evidence of testing a physically 4 MB chip.
+The single enrolled 16 MB OSSM may set `allow_larger_flash: true` too. It stays
+the one `16mb` OSSM fixture (one capacity, one guard) and then serves both
+release lanes, `ossm:v1` and `ossm:v2`; PR runs still flash it as `16mb`. The
 exception is refused for every other product/variant or capacity. Missing, duplicate, ambiguous,
 or incompatible fixtures fail before writes. Every write rechecks chip, MAC,
 flash and PSRAM and reads the installed partition table. A different table
@@ -172,8 +179,55 @@ heartbeat and enrolled variants. An OSSM candidate that can emit the required ph
 only when its enrolled factory ID is in the operator-owned JSON array
 `C:\rad-hil\release-worker\motion-devices.json`. Independent guard monitoring,
 its verified stop path and its verified handback remain required.
-The worker checks the SHA-256 of the published application and whether it can emit the required release health records before claiming operator control. On supported binaries it verifies flash readback, resets the enrolled board, and observes the exact running image and continuing application/network progress for 180 seconds. Ordinary Lockbox images report Wi-Fi, production MQTT and menu progress in `LKBX_HEALTH`; instrumented images use the shared `RAD_HEALTH` observer. A serial identity reply or a BLE connection alone cannot qualify a release. Missing instrumentation, incomplete coverage and disconnected fixtures are
+The worker checks the SHA-256 of the published application and whether it can emit the required release health records before claiming operator control. On supported binaries it verifies flash readback, resets the enrolled board, and observes the exact running image and continuing application/network progress for 180 seconds. A serial identity reply or a BLE connection alone cannot qualify a release. Missing instrumentation, incomplete coverage and disconnected fixtures are
 visible in the queue. No run can certify another board or another binary.
+
+Ordinary production images print one always-on health line, `<PREFIX>_HEALTH {json}`:
+`boot` (identity), network events, and a `heartbeat` at most every 5 seconds with
+`main_menu` and `menu_age_ms`. `release_health.py` picks the product's production
+observer when the image contains its `boot` and `heartbeat` records (the Lockbox:
+also its network records), before falling back to the staging-only `RAD_HEALTH`
+observer. Readiness needs these events before the 180-second soak, and a repeat
+of any of them during the soak fails the run:
+
+| Product | Prefix | Before the soak |
+| --- | --- | --- |
+| lkbx | `LKBX_HEALTH` | `wifi_connected`, `mqtt_connected` (production broker) |
+| ossm | `OSSM_HEALTH` | `wifi_connected`, `mqtt_connected` (production broker), heartbeat `hat` and `homed` for the case |
+| dtt | `DTT_HEALTH` | `wifi_connected`, `cloud_ok` (the app's own `/health-check`) |
+| radr | `RADR_HEALTH` | `wifi_connected` |
+
+Every OSSM release job runs two cases on the enrolled board, and passes only if
+both pass. Each case sends a serial HAT setting, which the OSSM acknowledges with
+`RAD_HAT {"mode":...,"applies":"next_boot"}`. Only a reply naming the requested
+mode counts: a refused write adds `error` and names the unchanged mode. Refusals
+are retried while the carriage homes; if the armed motor guard still refuses, the
+worker resets the board and writes the setting before homing starts. It then waits
+for the carriage to finish homing, checks the guard again, and resets and observes
+boot, homing and the soak:
+
+1. **With HAT**: `hat auto`. The guard polls the servo, so the HAT only listens
+   and motion stays on STEP/DIR, as in PR runs. Boot reports `hat_mode` `auto`;
+   heartbeats need `hat: true` and `homed: true`, and a HAT that takes the bus fails.
+2. **No HAT**: `hat off`. The OSSM never transmits on RS-485 and homes on its own
+   current sensor. Boot reports `hat_mode` `off`; heartbeats need `hat: false`
+   and `homed: true`.
+
+Afterwards, including after a failure, the worker sends `hat auto`, resets and
+waits for the homed boot. If the guard is not ready at that point it never
+resets the board: it parks the OSSM in its ROM loader and reports the job
+blocked. The evidence lists each case's checks ("With HAT: ...", "No HAT: ...")
+and whether HAT detection was restored. An image without `OSSM_HEALTH` or the
+serial HAT switch is blocked before anything is written. The OSSM is never run as
+RS-485 bus master with serial motion (a HAT without the guard); that mode is not
+qualified. A V1 job on the 16 MB board expects boot `variant` `4mb`, as a DTT
+V1 job on its 16 MB board expects `v1`; the board's identity keeps its measured capacity.
+The flash request sends `allowLargerFlash` (and the older `allowDttV1On16Mb`)
+only for such smaller-flash lanes.
+
+Each release job keeps its redacted serial logs (the same `safe_line` filter as
+PR runs, which keeps production and `main` health records) and the OSSM's
+`rs485-guard.json` in `C:\rad-hil\release-worker\<release id>\`.
 The published artifacts are downloaded by their immutable production URLs;
 the worker does not require the optional Test Bench catalog credential.
 
