@@ -23,7 +23,7 @@ from monitor import FAULT, EvidenceError, HAT_PREFIX, Monitor
 from ossm_guard import GuardWatch, read_status, unsafe_reason
 from release_health import (HAT_CASES, OssmMonitor, ReadinessNotReached, StartupTimeout, case_checks, observations,
                             observer_for, readback_check, runtime_digest, skipped_checks)
-from run import esptool, find_port, load_fixture, observe, rig_lock, usb_path
+from run import esptool, find_port, load_fixture, observe, park, rig_lock, usb_path
 
 
 ORIGINS = {"main": "https://dashboard.researchanddesire.com",
@@ -326,16 +326,19 @@ class RadarHold:
     always resets it into its application and restarts any bench monitoring.
     """
     HELD = "Radar held in its bootloader so it cannot connect to the OSSM"
+    PARKED = "OSSM parked in its bootloader before the Radar was released"
     RELEASED = "Radar released into its application afterwards"
     FAILURES = (Blocked, RuntimeError, OSError, ValueError, subprocess.SubprocessError)
 
-    def __init__(self, fixture, bench, board, log_path):
+    def __init__(self, fixture, bench, board, log_path, park_ossm=None):
         self.fixture = fixture
         self.bench = bench
         self.board = board
         self.log_path = log_path
-        self.attempted = self.held = self.monitoring = self.done = False
-        self.error = None
+        # Parks the OSSM in its ROM loader; the Radar is released only after it.
+        self.park_ossm = park_ossm
+        self.attempted = self.held = self.monitoring = self.done = self.parked = False
+        self.error = self.park_error = None
 
     def hold(self):
         port_name = find_port(self.fixture)
@@ -356,6 +359,16 @@ class RadarHold:
             return self.error
         self.done = True
         errors = []
+        if self.attempted and self.park_ossm:
+            try:
+                self.park_ossm()
+                self.parked = True
+            except self.FAILURES as error:
+                # A free Radar beside a running OSSM is what this hold prevents.
+                self.park_error = str(error)
+                self.error = f"the OSSM could not be parked ({error}), so the Radar was left in its bootloader"
+                logging.warning("Radar release: %s", self.error)
+                return self.error
         if self.attempted:
             try:
                 with self.log_path.open("a", encoding="utf-8") as log:
@@ -377,8 +390,11 @@ class RadarHold:
                     "evidenceCount": int(self.done and not self.error)}
         if self.error:
             released["reason"] = self.error[:400]
+        parked = {"title": self.PARKED, "state": "passed" if self.parked else "blocked", "evidenceCount": int(self.parked)}
+        if self.park_error:
+            parked["reason"] = self.park_error[:400]
         return ({"title": self.HELD, "state": "passed" if self.held else "blocked", "evidenceCount": int(self.held)},
-                released)
+                parked, released)
 
 
 class RestoreObserver:
@@ -527,8 +543,13 @@ class Worker:
                 guard.require()  # Do not clear latches or trigger guard recovery for a release.
                 # Before the probe, flash or any reset of the OSSM; held through both
                 # HAT cases and the restore, and released on every path out.
+                hold_log = self.state.parent / str(UUID(job["releaseId"])) / "radar-hold.log"
+                def park_ossm():
+                    # After the hat-auto restore; a Radar released next finds no running OSSM.
+                    with hold_log.open("a", encoding="utf-8") as log:
+                        park(fixture, policy("researchanddesire/OSSM", "16mb"), log)
                 radar = RadarHold(radar_fixture, self.bench, matching_board(claimed["devices"], "radr", radar_fixture),
-                                  self.state.parent / str(UUID(job["releaseId"])) / "radar-hold.log")
+                                  hold_log, park_ossm)
                 stack.callback(radar.release)
                 try:
                     radar.hold()
@@ -565,7 +586,11 @@ class Worker:
             before_command()
             if board.get("monitoring"):
                 self.bench.command("monitor.stop", deviceId=board_id)
-                stack.callback(self.bench.command, "monitor.start", deviceId=board_id)
+                def resume_monitoring():
+                    # Reopening the port of a parked OSSM could reset it into its application.
+                    if not (radar and radar.parked):
+                        self.bench.command("monitor.start", deviceId=board_id)
+                stack.callback(resume_monitoring)
             # Like DTT V1 on its 16 MB board, an OSSM V1 job boots as variant 4mb
             # while the board's identity keeps its measured 16 MB capacity.
             expected = dict(schema=1, product=fixture["product"], variant=board_variant(family, job["hardwareVariant"]),
@@ -581,8 +606,8 @@ class Worker:
                 # cleanup callback then has nothing left to do.
                 if radar.release():
                     detail += f" The Radar was not released: {radar.error}."
-                held, released = radar.checks()
-                checks = [checks[0], held, *checks[1:], released]
+                held, parked, released = radar.checks()
+                checks = [checks[0], held, *checks[1:], parked, released]
                 return outcome, {**base, "detail": detail[:400], "checks": checks, "cases": cases}
             observer = observer_type(expected, time.monotonic())
             outcome, detail = self.observe_case(fixture, observer, guard, evidence / "serial.log")
