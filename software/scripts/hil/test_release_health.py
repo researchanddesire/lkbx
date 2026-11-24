@@ -1,8 +1,9 @@
 import json
 import unittest
 
-from monitor import EvidenceError, Monitor
-from release_health import LockboxMonitor, PRODUCTION_MQTT, observations, observer_for
+from monitor import EvidenceError, HAT_PREFIX, Monitor
+from release_health import (LockboxMonitor, NO_HAT, OssmMonitor, PRODUCTION_MQTT, RadrMonitor, StartupTimeout,
+                            TrainerMonitor, WITH_HAT, case_checks, observations, observer_for, skipped_checks)
 
 EXPECTED = dict(product="lockbox", device_id="TESTUNIT0001", variant="r2",build_sha="a"*40,image_sha256="b"*64,track="main")
 
@@ -74,6 +75,203 @@ class ReleaseHealth(unittest.TestCase):
                 monitor.feed(line, 40)
         with self.assertRaises(EvidenceError):
             feed(monitor, 40, "mqtt_connected", broker=PRODUCTION_MQTT)
+
+    def test_lockbox_startup_message_is_unchanged(self):
+        with self.assertRaises(StartupTimeout) as raised:
+            LockboxMonitor(EXPECTED, 0).tick(181)
+        self.assertEqual(str(raised.exception), "Wi-Fi, production MQTT and menu readiness did not arrive within 180 seconds")
+
+
+def image(prefix, *events):
+    return b" ".join((prefix + '{"event":"' + event + '"').encode() for event in events)
+
+
+IDENTITY = {k: v for k, v in EXPECTED.items() if k != "product"}
+
+
+def emit(monitor, prefix, now, event, **args):
+    monitor.feed(prefix + json.dumps({"event": event, "uptime_ms": int(now * 1000), "boot_id": 7, **args}), now)
+
+
+def hat_status(**flags):
+    status = dict(detected=True, fresh=True, passive=True, guardReady=True, guardArmed=False,
+                  guardLatched=False, outputDisabled=True, guardFault=0)
+    return HAT_PREFIX + json.dumps({**status, **flags})
+
+
+class ObserverSelection(unittest.TestCase):
+    def test_production_prefix_is_checked_before_rad_health(self):
+        staging = image("RAD_HEALTH ", "boot", "heartbeat")
+        for family, monitor in (("ossm", OssmMonitor), ("dtt", TrainerMonitor), ("radr", RadrMonitor)):
+            production = image(monitor.PREFIX, "boot", "heartbeat")
+            self.assertIs(observer_for(production, family), monitor)
+            self.assertIs(observer_for(production + b" " + staging, family), monitor)
+            self.assertIs(observer_for(image(monitor.PREFIX, "boot") + b" " + staging, family), Monitor)
+            self.assertIsNone(observer_for(image(monitor.PREFIX, "heartbeat"), family))
+            # Another product's prefix never qualifies an image.
+            self.assertIsNone(observer_for(image("LKBX_HEALTH ", "boot", "wifi_connected", "mqtt_connected", "heartbeat"), family))
+        self.assertIsNone(observer_for(image("OSSM_HEALTH ", "boot", "heartbeat"), "lkbx"))
+        self.assertIs(observer_for(image("LKBX_HEALTH ", "boot", "wifi_connected", "mqtt_connected", "heartbeat"), "lkbx"),
+                      LockboxMonitor)
+
+
+class TrainerAndRadr(unittest.TestCase):
+    def soak(self, monitor, start=5, stop=186):
+        for now in range(start, stop, 5):
+            emit(monitor, monitor.PREFIX, now, "heartbeat", main_menu=True, menu_age_ms=3, ram_free=9000, ram_largest=4000)
+
+    def test_trainer_needs_wifi_and_its_cloud_health_check(self):
+        monitor = TrainerMonitor(dict(EXPECTED, variant="v1"), 0)
+        emit(monitor, "DTT_HEALTH ", 1, "boot", **dict(IDENTITY, variant="v1"), reset_reason=1)
+        emit(monitor, "DTT_HEALTH ", 2, "wifi_connected", ip="192.168.1.9")
+        emit(monitor, "DTT_HEALTH ", 4, "heartbeat", main_menu=True, menu_age_ms=3)
+        self.assertIsNone(monitor.soak_started)
+        emit(monitor, "DTT_HEALTH ", 5, "cloud_ok")
+        self.soak(monitor, 10, 191)
+        self.assertTrue(monitor.passed)
+        titles = [row["title"] for row in observations(monitor)]
+        self.assertIn("Successful production cloud health check", titles)
+        self.assertNotIn("Authenticated production MQTT connection", titles)
+        self.assertTrue(all(row["state"] == "passed" for row in observations(monitor)))
+
+    def test_trainer_cloud_recovery_during_the_soak_fails(self):
+        monitor = TrainerMonitor(dict(EXPECTED, variant="v2"), 0)
+        emit(monitor, "DTT_HEALTH ", 1, "boot", **dict(IDENTITY, variant="v2"))
+        emit(monitor, "DTT_HEALTH ", 2, "wifi_connected", ip="192.168.1.9")
+        emit(monitor, "DTT_HEALTH ", 3, "cloud_ok")
+        self.soak(monitor, 5, 50)
+        with self.assertRaisesRegex(EvidenceError, "reconnected"):
+            emit(monitor, "DTT_HEALTH ", 51, "cloud_ok")
+        other = TrainerMonitor(EXPECTED, 0)
+        emit(other, "DTT_HEALTH ", 1, "boot", **IDENTITY)
+        with self.assertRaisesRegex(EvidenceError, "Unknown DTT"):
+            emit(other, "DTT_HEALTH ", 2, "mqtt_connected", broker=PRODUCTION_MQTT)
+
+    def test_radr_needs_wifi_only(self):
+        monitor = RadrMonitor(dict(EXPECTED, variant="r8"), 0)
+        emit(monitor, "RADR_HEALTH ", 1, "boot", **dict(IDENTITY, variant="r8"))
+        with self.assertRaisesRegex(EvidenceError, "usable IPv4"):
+            emit(monitor, "RADR_HEALTH ", 2, "wifi_connected", ip="169.254.1.1")
+        emit(monitor, "RADR_HEALTH ", 2, "wifi_connected", ip="192.168.1.9")
+        self.soak(monitor)
+        self.assertTrue(monitor.passed)
+        self.assertEqual([row["title"] for row in observations(monitor)][2], "Usable IPv4 address")
+        self.assertEqual(len(observations(monitor)), 4)
+        with self.assertRaises(StartupTimeout):
+            RadrMonitor(EXPECTED, 0).tick(181)
+
+    def test_other_products_never_parse_lockbox_lines(self):
+        monitor = RadrMonitor(dict(EXPECTED, variant="r8"), 0)
+        emit(monitor, "LKBX_HEALTH ", 1, "boot", **IDENTITY)
+        self.assertIsNone(monitor.boot_id)
+
+
+class OssmCases(unittest.TestCase):
+    def start(self, case, mode=None):
+        monitor = OssmMonitor(dict(EXPECTED, variant="4mb"), 0, case)
+        emit(monitor, "OSSM_HEALTH ", 1, "boot", **dict(IDENTITY, variant="4mb"), hat_mode=mode or case.mode)
+        emit(monitor, "OSSM_HEALTH ", 2, "wifi_connected", ip="192.168.1.30")
+        emit(monitor, "OSSM_HEALTH ", 3, "mqtt_connected", broker=PRODUCTION_MQTT)
+        return monitor
+
+    def beat(self, monitor, now, hat, homed=True, **args):
+        emit(monitor, "OSSM_HEALTH ", now, "heartbeat", main_menu=True, menu_age_ms=4, hat=hat, homed=homed, **args)
+
+    def test_with_hat_waits_for_detection_and_homing(self):
+        monitor = self.start(WITH_HAT)
+        self.beat(monitor, 5, False, False)
+        self.beat(monitor, 10, False, True)
+        self.beat(monitor, 15, True, False)
+        self.assertIsNone(monitor.soak_started)
+        monitor.feed(hat_status(detected=False, passive=False), 16)  # still discovering
+        for now in range(20, 201, 5):
+            self.beat(monitor, now, True)
+            monitor.feed(hat_status(), now + 0.5)
+        self.assertTrue(monitor.passed)
+        rows = case_checks(monitor, prefix="With HAT: ")
+        self.assertTrue(all(row["title"].startswith("With HAT: ") for row in rows))
+        self.assertTrue(all(row["state"] == "passed" for row in rows), rows)
+        self.assertIn("With HAT: HAT mode auto at boot", [row["title"] for row in rows])
+
+    def test_no_hat_needs_detection_off_and_homing(self):
+        monitor = self.start(NO_HAT)
+        self.beat(monitor, 5, False, False)
+        for now in range(10, 191, 5):
+            self.beat(monitor, now, False)
+        self.assertTrue(monitor.passed)
+        self.assertIn("No HAT: HAT detection off, carriage homed on the board's current sensor",
+                      [row["title"] for row in case_checks(monitor, prefix="No HAT: ")])
+        for line in (hat_status(), hat_status(passive=False)):
+            with self.assertRaisesRegex(EvidenceError, "detection was off"):
+                self.start(NO_HAT).feed(line, 4)
+        with self.assertRaisesRegex(EvidenceError, "detection was off"):
+            self.beat(self.start(NO_HAT), 5, True, False)
+
+    def test_wrong_or_missing_boot_hat_mode_fails(self):
+        with self.assertRaisesRegex(EvidenceError, "booted with HAT mode auto, not off"):
+            self.start(NO_HAT, mode="auto")
+        with self.assertRaisesRegex(EvidenceError, "HAT mode"):
+            emit(OssmMonitor(EXPECTED, 0, WITH_HAT), "OSSM_HEALTH ", 1, "boot", **IDENTITY)
+        with self.assertRaisesRegex(EvidenceError, "booted with HAT mode off"):
+            self.start(WITH_HAT, mode="off")
+
+    def soaking(self, case):
+        monitor = self.start(case)
+        for now in range(5, 30, 5):
+            self.beat(monitor, now, case.hat)
+        self.assertIsNotNone(monitor.soak_started)
+        return monitor
+
+    def test_losses_during_the_soak_fail(self):
+        with self.assertRaisesRegex(EvidenceError, "homed"):
+            self.beat(self.soaking(WITH_HAT), 30, True, False)
+        with self.assertRaisesRegex(EvidenceError, "lost its HAT"):
+            self.beat(self.soaking(WITH_HAT), 30, False)
+        with self.assertRaisesRegex(EvidenceError, "driving the RS-485 bus"):
+            self.soaking(WITH_HAT).feed(hat_status(passive=False), 30)
+        with self.assertRaisesRegex(EvidenceError, "safety latch"):
+            self.soaking(NO_HAT).feed(hat_status(detected=False, guardLatched=True, guardFault=16), 30)
+        with self.assertRaisesRegex(EvidenceError, "MQTT connection"):
+            self.soaking(WITH_HAT).feed("E (40) MQTT_CLIENT: Error transport connect", 30)
+        with self.assertRaisesRegex(EvidenceError, "reconnected"):
+            emit(self.soaking(NO_HAT), "OSSM_HEALTH ", 30, "mqtt_connected", broker=PRODUCTION_MQTT)
+        with self.assertRaisesRegex(EvidenceError, "heartbeat did not report"):
+            emit(self.soaking(NO_HAT), "OSSM_HEALTH ", 30, "heartbeat", main_menu=True, menu_age_ms=1)
+
+    def test_mqtt_drop_before_the_soak_needs_a_new_connection(self):
+        monitor = self.start(WITH_HAT)
+        monitor.feed("E (40) MQTT_CLIENT: Error transport connect", 4)
+        self.beat(monitor, 5, True)
+        self.assertIsNone(monitor.soak_started)
+        emit(monitor, "OSSM_HEALTH ", 6, "mqtt_connected", broker=PRODUCTION_MQTT)
+        self.beat(monitor, 10, True)
+        self.assertIsNotNone(monitor.soak_started)
+        with self.assertRaisesRegex(EvidenceError, "unexpected MQTT broker"):
+            emit(self.start(WITH_HAT), "OSSM_HEALTH ", 4, "mqtt_connected", broker="mqtts://x15ff600.ala.us-east-1.emqxsl.com")
+
+    def test_a_hat_poll_reply_inside_a_heartbeat_is_dropped(self):
+        monitor = self.soaking(WITH_HAT)
+        monitor.feed('OSSM_HEALTH {"event":"heartbeat","boot_id":7,' + hat_status() + ',"uptime_ms":31000}', 31)
+        self.beat(monitor, 35, True)
+        with self.assertRaisesRegex(EvidenceError, "Malformed OSSM"):
+            monitor.feed('OSSM_HEALTH {"event":"wifi_connected",' + hat_status(), 36)
+        with self.assertRaisesRegex(EvidenceError, "Malformed OSSM"):
+            self.soaking(WITH_HAT).feed('OSSM_HEALTH {"event":"heartbeat","boot_id":7,', 31)
+        with self.assertRaisesRegex(EvidenceError, "stopped for over 20 seconds"):
+            self.soaking(WITH_HAT).tick(46)
+
+    def test_skipped_case_lists_blocked_checks(self):
+        rows = skipped_checks(NO_HAT, "Not run: With HAT could not run")
+        self.assertTrue(rows and all(row["state"] == "blocked" and row["title"].startswith("No HAT: ") for row in rows))
+        self.assertTrue(all(row["reason"] == "Not run: With HAT could not run" for row in rows))
+
+    def test_failed_case_names_the_failing_check(self):
+        monitor = self.start(NO_HAT)
+        rows = case_checks(monitor, "failed", "OSSM lost its homed position during observation", "No HAT: ", annotate=True)
+        self.assertEqual(rows[-1]["state"], "failed")
+        self.assertIn("homed", rows[-1]["reason"])
+        rows = case_checks(OssmMonitor(EXPECTED, 0, NO_HAT), "blocked", "No boot evidence", "No HAT: ", annotate=True)
+        self.assertEqual((rows[0]["state"], rows[0]["reason"]), ("blocked", "No boot evidence"))
 
 
 if __name__ == "__main__":
