@@ -201,8 +201,17 @@ A damaged record (cut by the reset, merged with the ROM banner, or split by
 another writer) never counts as evidence and never starts or extends a deadline.
 Before this boot's record, damaged records and the previous boot's records are
 ignored. After it, more than five damaged records fail the run; fewer are counted
-in the soak check. A readiness timeout with damaged records after boot is blocked,
-not failed, because a damaged record may have held the missing event.
+in the soak check.
+
+A board that booted the candidate and kept sending heartbeats on time (uptime
+advancing, no reset, fault or identity mismatch) but never became ready within
+180 seconds is **blocked**, not failed: the cause is its environment, such as a
+rig Lockbox whose device key production does not accept. The detail names what
+never arrived, for example "Readiness not reached in 180 s: production MQTT never
+connected; main menu never reached (heartbeats continued)"; OSSM details start
+with the HAT case. A reset, panic, watchdog or brownout, an identity mismatch, a
+heartbeat gap over 20 seconds, uptime that stops, no heartbeat at all, readiness
+lost or a reconnect during the soak, and repeated damaged records still fail.
 
 Every OSSM release job runs two cases on the enrolled board, and passes only if
 both pass. Each case sends a serial HAT setting, which the OSSM acknowledges with

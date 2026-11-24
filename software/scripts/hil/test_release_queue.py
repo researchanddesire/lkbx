@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from monitor import EvidenceError
 from release_admission import require_admission
-from release_health import IncompleteEvidence, NO_HAT, OssmMonitor, PRODUCTION_MQTT, StartupTimeout, WITH_HAT
+from release_health import NO_HAT, OssmMonitor, PRODUCTION_MQTT, ReadinessNotReached, StartupTimeout, WITH_HAT
 import release_queue
 from release_queue import (Blocked, HatSwitchError, LeaseLost, RestoreObserver, Worker, allows_larger_flash,
                            enrolled_devices, matching_board, switch_hat, verify_board)
@@ -320,12 +320,17 @@ class Classification(unittest.TestCase):
              patch("release_queue.observe", side_effect=error):
             return Worker.observe_case({}, observer, None, Path(directory) / "serial.log")
 
-    def test_damage_hiding_an_event_blocks_instead_of_failing(self):
-        self.assertEqual(self.outcome(IncompleteEvidence("readiness; 1 damaged health records were ignored"))[0], "blocked")
-        self.assertEqual(self.outcome(StartupTimeout("readiness"))[0], "failed")
+    def test_readiness_not_reached_blocks_and_device_faults_fail(self):
+        detail = "Readiness not reached in 180 s: production MQTT never connected (heartbeats continued)"
+        self.assertEqual(self.outcome(ReadinessNotReached(detail)), ("blocked", detail))
         self.assertEqual(self.outcome(StartupTimeout("readiness"), booted=False)[0], "blocked")
-        self.assertEqual(self.outcome(EvidenceError("Repeated damaged OSSM health telemetry (6 records after boot)"))[0],
-                         "failed")
+        for fault in ("Lockbox reported a reset, panic, watchdog or brownout",
+                      "Lockbox boot, hardware variant or running image differs from the candidate",
+                      "Menu heartbeat stopped for over 20 seconds", "Lockbox device uptime stopped advancing",
+                      "Lockbox menu task stopped making progress", "Lockbox reconnected during the observation",
+                      "Repeated damaged OSSM health telemetry (6 records after boot)",
+                      "Lockbox sent no heartbeat within 180 seconds of its boot record"):
+            self.assertEqual(self.outcome(EvidenceError(fault)), ("failed", fault))
 
 
 class FakeGuard:
