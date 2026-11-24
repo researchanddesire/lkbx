@@ -243,25 +243,45 @@ void LKBX::startPreflight() const {
     bool backplateClosed = isBackplateClosed();
 #endif
     bool locked = isLocked();
+    // Only read where it decides: a locked box whose sensors disagree.
+    const bool lockHeld =
+        locked && !(paddleLocked && backplateClosed) && isLockHeld();
 
     ESP_LOGI(PREFLIGHT_TAG,
-             "isLocked: %d, isPaddleLocked: %d, isBackplateClosed: %d", locked,
-             paddleLocked, backplateClosed);
+             "isLocked: %d, isPaddleLocked: %d, isBackplateClosed: %d, "
+             "isLockHeld: %d",
+             locked, paddleLocked, backplateClosed, lockHeld);
 
-    if (locked) {
-        if (paddleLocked && backplateClosed) {
+    switch (decidePreflight(locked, paddleLocked, backplateClosed, lockHeld)) {
+        case Preflight::LOCK_CONFIRMED:
+            markLockHeld();
             sm->process_event(Done{});
-        } else if (!paddleLocked) {
+            break;
+        case Preflight::KEEP_CLOSED:
+            // A lock the box had confirmed is being checked again (a
+            // restart, a wake, or the dashboard's answer sent it through
+            // the locking pages) and the sensors disagree. It stays closed
+            // (utils/heldLock.h): the paddle is pressed home again and the
+            // box carries on to its locked page.
+            ESP_LOGW(PREFLIGHT_TAG,
+                     "The check of a held lock failed (paddle %d, backplate "
+                     "%d); keeping the paddle closed",
+                     paddleLocked, backplateClosed);
+            motor.lock(false);
+            sm->process_event(Done{});
+            break;
+        case Preflight::CANNOT_LOCK:
             sm->process_event(Error{.error = ErrorT::CANNOT_LOCK});
-        } else if (!backplateClosed) {
+            break;
+        case Preflight::NO_BACKPLATE:
             sm->process_event(Error{.error = ErrorT::NO_BACKPLATE});
-        }
-    } else {
-        if (!paddleLocked) {
+            break;
+        case Preflight::PADDLE_OPEN:
             sm->process_event(Done{});
-        } else {
+            break;
+        case Preflight::CANNOT_UNLOCK:
             sm->process_event(Error{.error = ErrorT::CANNOT_UNLOCK});
-        }
+            break;
     }
 }
 

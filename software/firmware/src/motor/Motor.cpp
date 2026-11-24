@@ -138,6 +138,12 @@ void Motor::lock(bool saveState) {
     if (saveState == true &&
         xSemaphoreTake(preferencesMutex, portMAX_DELAY) == pdTRUE) {
         preferences.begin(Keys::base, false);
+        // A lock that is only now being stored has not passed its check yet,
+        // whatever the lock before it left behind (utils/heldLock.h).
+        if (!preferences.getBool(Keys::Base::isLocked, false) &&
+            preferences.getBool(Keys::Base::lockHeld, false)) {
+            preferences.putBool(Keys::Base::lockHeld, false);
+        }
         preferences.putBool(Keys::Base::isLocked, true);
         preferences.end();
         xSemaphoreGive(preferencesMutex);
@@ -163,10 +169,17 @@ void Motor::unlock(bool saveState) {
         digitalWrite(3, LOW);
     }
 
-    if (saveState == true &&
-        xSemaphoreTake(preferencesMutex, portMAX_DELAY) == pdTRUE) {
+    // The paddle has been told to open, so the box no longer holds a
+    // confirmed lock, whether or not the stored lock ends with it (a break
+    // and an error page keep it). See utils/heldLock.h.
+    if (xSemaphoreTake(preferencesMutex, portMAX_DELAY) == pdTRUE) {
         preferences.begin(Keys::base, false);
-        preferences.putBool(Keys::Base::isLocked, false);
+        if (preferences.getBool(Keys::Base::lockHeld, false)) {
+            preferences.putBool(Keys::Base::lockHeld, false);
+        }
+        if (saveState == true) {
+            preferences.putBool(Keys::Base::isLocked, false);
+        }
         preferences.end();
         xSemaphoreGive(preferencesMutex);
     }

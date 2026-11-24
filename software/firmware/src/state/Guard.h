@@ -84,6 +84,22 @@ static auto isPaddleUnlocked = []() { return !isPaddleLocked(); };
 
 static auto isLocked = []() { return !isUnlocked(); };
 
+// True while the box holds a lock whose check has passed and whose paddle has
+// not been told to open since (utils/heldLock.h). When the mark cannot be
+// read the lock counts as held: a failed check then keeps the paddle closed.
+static auto isLockHeld = []() {
+    bool held = true;
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::base);
+        held = preferences.getBool(Keys::Base::lockHeld, false);
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+
+    ESP_LOGD(GUARD_TAG, "isLockHeld: %d", held);
+    return held;
+};
+
 static auto isError = [](ErrorT error) {
     return [error](const auto& e) { return e.error == error; };
 };

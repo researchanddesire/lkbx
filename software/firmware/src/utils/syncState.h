@@ -65,6 +65,15 @@ static String createStateMessage(const String& state,
         preferences.begin(Keys::session);
         doc[Str::Json::SESSION_ID] = preferences.getString(Keys::Session::sessionId, "");
         doc[Str::Json::BREAK_LAST] = preferences.getULong64(Keys::Session::breakLast, 0);
+        // While the box is on a break its reports say when that break began,
+        // so the dashboard dates the break from the box and not from the
+        // moment the report arrived. The box compares that date with its own
+        // break stamp when the dashboard reports a break (isStaleServerBreak).
+        const uint64_t breakStart =
+            preferences.getBool(Keys::Session::isActiveBreak, false)
+                ? preferences.getULong64(Keys::Session::breakStart, 0)
+                : 0;
+        if (breakStart != 0) doc[Str::Json::BREAK_START] = breakStart;
         doc["breakEndAccepted"] = preferences.getBool(Keys::Session::breakEndAccepted, false);
         // The box witnessed the accept: carry its own dates in every report
         // so the server can date the session from any of them, not only from
@@ -198,6 +207,10 @@ struct SyncMessage {
     // writes without it): the stored link is then kept. See utils/voteLink.h.
     bool hasVoteUrl;
     String voteUrl;
+    // When the break the dashboard reports began, in ms; 0 when the payload
+    // has none (no break, a break no box has opened for yet, older servers,
+    // BLE writes). See isServerBreakAlreadyTaken in utils/breakTiming.h.
+    uint64_t breakStart;
 };
 
 // Separate persisted metadata from physical transitions. Runtime callers use
@@ -209,6 +222,9 @@ struct SyncOutcome {
     // or locked with no end time): the accept report was lost. The caller
     // repeats the LOCKED report, which now carries the box's own dates.
     bool serverMissedLock = false;
+    // The dashboard reports a break this box has already taken and closed
+    // (utils/breakTiming.h). The caller must not open for it again.
+    bool breakAlreadyTaken = false;
     // What the caller must route: nothing, a timer repaint, a freeze change, or
     // the motor sequence. See classifySyncEffect.
     SyncEffect effect = SyncEffect::NONE;
@@ -312,6 +328,10 @@ static SyncResult clearState() {
         preferences.begin(Keys::base, false);
         preferences.putBool(Keys::Base::isLocked, false);
         preferences.putBool(Keys::Base::isLockTimer, false);
+        // No lock is stored, so none is held (utils/heldLock.h).
+        if (preferences.getBool(Keys::Base::lockHeld, false)) {
+            preferences.putBool(Keys::Base::lockHeld, false);
+        }
         preferences.end();
         xSemaphoreGive(preferencesMutex);
     }
@@ -356,10 +376,18 @@ static SyncResult saveState(SyncMessage lockSession,
     const uint64_t savedLockEnd = preferences.getULong64(Keys::Session::lockEnd, 0);
     const uint64_t savedLockStart = preferences.getULong64(Keys::Session::lockStart, 0);
     if (outcome) {
+        const bool onBreak =
+            preferences.getBool(Keys::Session::isActiveBreak, false);
         outcome->serverMissedLock = serverMissedLock(
-            sameSession, savedState.c_str(),
-            preferences.getBool(Keys::Session::isActiveBreak, false), savedLockEnd,
+            sameSession, savedState.c_str(), onBreak, savedLockEnd,
             lockSession.lockState.c_str(), lockSession.lockEnd);
+        // A break the box is on now is not one it has finished: the
+        // dashboard's messages about it (an end request among them) apply.
+        outcome->breakAlreadyTaken =
+            sameSession && !onBreak &&
+            isServerBreakAlreadyTaken(
+                lockSession.breakStart,
+                preferences.getULong64(Keys::Session::breakLast, 0));
     }
     if (keepLocalDeadline(sameSession, lockSession.lockState.c_str(),
                           lockSession.lockEnd, savedLockEnd)) {
@@ -518,6 +546,10 @@ static SyncResult saveState(SyncMessage lockSession,
     preferences.putBool(Keys::Base::isLocalPlay, false);
     preferences.putBool(Keys::Base::isLocked, !isPending);
     preferences.putBool(Keys::Base::isLockTimer, !isPending);
+    // An offer is not locked, so nothing is held (utils/heldLock.h).
+    if (isPending && preferences.getBool(Keys::Base::lockHeld, false)) {
+        preferences.putBool(Keys::Base::lockHeld, false);
+    }
     // A new session with a "locked" state but no deadline is a permanent lock:
     // keep isLockTimer clear so a reboot routes straight into "locked" instead
     // of the countdown page. A timed lock always keeps it set.
@@ -580,6 +612,17 @@ static bool serverBreakOnCooldown() {
         ((uint64_t)tv.tv_sec) * 1000 + ((uint64_t)tv.tv_usec) / 1000;
 
     return isServerBreakEcho(breakLast, now);
+}
+
+// Whether a break the dashboard reports must not open the box: it is the echo
+// of the break just ended (serverBreakOnCooldown) or a break the box has
+// already taken and closed (SyncOutcome::breakAlreadyTaken). Asked wherever
+// the dashboard's word arrives: the MQTT sync, the state read after a
+// reconnect, and the read at boot. The boot's read had no such check, so a
+// box that restarted while the dashboard still showed a finished break opened
+// again.
+static bool serverBreakIsStale(const SyncOutcome& outcome) {
+    return outcome.breakAlreadyTaken || serverBreakOnCooldown();
 }
 
 // Applies the dashboard's answer to a state request. Shared by the pull that
@@ -657,6 +700,7 @@ static SyncResult applySessionResponse(int httpResponseCode,
     applyVoteUrlSync(lockSession, session);
     session.breakKeyholderOnly =
         lockSession[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
+    session.breakStart = lockSession[Str::Json::BREAK_START].as<uint64_t>();
 
     // saveState() resolves the result from lockState (LOCKED / BREAK / FAILED).
     return saveState(session, outcome);

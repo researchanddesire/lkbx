@@ -157,6 +157,62 @@ void test_server_break_never_echo_without_previous_break(void) {
     TEST_ASSERT_FALSE(isServerBreakEcho(0, 2000));
 }
 
+// --- isServerBreakAlreadyTaken / isStaleServerBreak --------------------------
+// The dashboard dates the break it reports. A break that began no later than
+// the box's last moment on a break is one the box has taken and closed; the
+// dashboard still shows it when the box's LOCKED report was lost or could not
+// be recorded. A restart or a reconnect must not open the box for it again.
+
+namespace {
+const uint64_t kBreakBegan = 1795000000000ULL;      // dashboard's breakStart
+const uint64_t kBoxClosed = kBreakBegan + 5 * 60 * 1000;  // box's breakLast
+const uint64_t kHour = 60ULL * 60 * 1000;
+}  // namespace
+
+void test_a_break_the_box_closed_is_not_opened_again_after_a_restart(void) {
+    // Hours later, long past the echo floor, the dashboard still says "break".
+    const uint64_t restartAt = kBoxClosed + 3 * kHour;
+    TEST_ASSERT_FALSE(isServerBreakEcho(kBoxClosed, restartAt));
+    TEST_ASSERT_TRUE(isServerBreakAlreadyTaken(kBreakBegan, kBoxClosed));
+    TEST_ASSERT_TRUE(isStaleServerBreak(kBreakBegan, kBoxClosed, restartAt));
+}
+
+void test_a_break_dated_by_the_box_itself_is_already_taken(void) {
+    // The box reports its own start, and stamps breakLast from then on, so
+    // even a break ended at once has start <= breakLast.
+    TEST_ASSERT_TRUE(isServerBreakAlreadyTaken(kBreakBegan, kBreakBegan));
+}
+
+void test_a_break_that_began_after_the_box_last_closed_is_new(void) {
+    // A keyholder or Chaster opens the lock again three hours later.
+    const uint64_t newBreak = kBoxClosed + 3 * kHour;
+    TEST_ASSERT_FALSE(isServerBreakAlreadyTaken(newBreak, kBoxClosed));
+    TEST_ASSERT_FALSE(isStaleServerBreak(newBreak, kBoxClosed, newBreak + 1000));
+}
+
+void test_a_break_without_a_start_is_left_to_the_echo_floor(void) {
+    // A break no box has opened for yet carries no start. It opens the box,
+    // except right after the box ended a break.
+    TEST_ASSERT_FALSE(isServerBreakAlreadyTaken(0, kBoxClosed));
+    TEST_ASSERT_FALSE(isStaleServerBreak(0, kBoxClosed, kBoxClosed + kHour));
+    TEST_ASSERT_TRUE(isStaleServerBreak(
+        0, kBoxClosed, kBoxClosed + kServerBreakCooldownFloorMs - 1));
+}
+
+void test_a_first_break_is_never_already_taken(void) {
+    // The box has never been on a break in this session.
+    TEST_ASSERT_FALSE(isServerBreakAlreadyTaken(kBreakBegan, 0));
+    TEST_ASSERT_FALSE(isStaleServerBreak(kBreakBegan, 0, kBreakBegan + 1000));
+}
+
+void test_a_new_break_inside_the_echo_floor_is_still_held_off(void) {
+    // Unchanged: within a minute of ending a break the box ignores a pushed
+    // break, whenever that break says it began.
+    const uint64_t newBreak = kBoxClosed + 10 * 1000;
+    TEST_ASSERT_FALSE(isServerBreakAlreadyTaken(newBreak, kBoxClosed));
+    TEST_ASSERT_TRUE(isStaleServerBreak(newBreak, kBoxClosed, newBreak + 1000));
+}
+
 // --- evaluateBreakPreflight -------------------------------------------------
 
 void test_preflight_allows_after_interval(void) {
@@ -213,6 +269,12 @@ int runUnityTests(void) {
     RUN_TEST(test_server_break_at_floor_is_real);
     RUN_TEST(test_keyholder_break_inside_wearer_interval_is_real);
     RUN_TEST(test_server_break_never_echo_without_previous_break);
+    RUN_TEST(test_a_break_the_box_closed_is_not_opened_again_after_a_restart);
+    RUN_TEST(test_a_break_dated_by_the_box_itself_is_already_taken);
+    RUN_TEST(test_a_break_that_began_after_the_box_last_closed_is_new);
+    RUN_TEST(test_a_break_without_a_start_is_left_to_the_echo_floor);
+    RUN_TEST(test_a_first_break_is_never_already_taken);
+    RUN_TEST(test_a_new_break_inside_the_echo_floor_is_still_held_off);
     RUN_TEST(test_preflight_allows_after_interval);
     RUN_TEST(test_preflight_too_soon_inside_interval);
     RUN_TEST(test_preflight_refuses_wearer_when_keyholder_only);

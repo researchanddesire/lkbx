@@ -45,10 +45,17 @@ void initMotorGPIO() {
     digitalWrite(48, HIGH);
     delay(50);
 
-    pinMode(Pins::MOTOR::A, OUTPUT);
-    pinMode(38, OUTPUT);
-    pinMode(Pins::MOTOR::B, OUTPUT);
-    pinMode(3, OUTPUT);
+    // The motor is off until the state machine restores the stored lock. A
+    // restart that is not a power cycle keeps the levels the pins last had,
+    // so a restart in the middle of a movement would otherwise leave the
+    // motor driven until the first movement of this boot. The level is set
+    // before the pin becomes an output.
+    const int motorPins[] = {Pins::MOTOR::A, 38, Pins::MOTOR::B, 3};
+    for (const int pin : motorPins) {
+        digitalWrite(pin, LOW);
+        pinMode(pin, OUTPUT);
+        digitalWrite(pin, LOW);
+    }
 }
 
 void initPowerDetect() {

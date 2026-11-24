@@ -34,6 +34,9 @@ namespace Keys {
         constexpr char isLocalPlay[] = "isLocalPlay";
         constexpr char isLocked[] = "isLocked";
         constexpr char isLockTimer[] = "isLockTimer";
+        // The box holds a lock whose check has passed (utils/heldLock.h).
+        // Cleared whenever the paddle is told to open.
+        constexpr char lockHeld[] = "lockHeld";
         constexpr char isEBlocked[] = "isEBlocked";
 
         constexpr char isMotorCalibrated[] = "isMTRCalibrated";

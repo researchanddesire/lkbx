@@ -39,6 +39,20 @@ auto clearLocalPlay = []() {
     }
 };
 
+// The box holds a lock whose check has passed (utils/heldLock.h). Written
+// once per lock: the paddle being told to open is what clears it.
+auto markLockHeld = []() {
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::base, false);
+        if (!preferences.getBool(Keys::Base::lockHeld, false)) {
+            preferences.putBool(Keys::Base::lockHeld, true);
+            ESP_LOGI(ACTIONS_TAG, "Lock confirmed: it is held from here on");
+        }
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+};
+
 auto clearCalibration = []() {
     ESP_LOGD(ACTIONS_TAG, "Clearing calibration");
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {

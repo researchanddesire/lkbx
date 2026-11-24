@@ -67,6 +67,30 @@ inline bool isServerBreakEcho(uint64_t breakLast, uint64_t now) {
     return isWithinBreakCooldown(breakLast, kServerBreakCooldownFloorMs, now);
 }
 
+// The dashboard dates the break it reports: `breakStart` is when that break
+// began (the box's own start once the box has reported it, Chaster's opening
+// time for a break Chaster started) and 0 for a break no box has opened for
+// yet. The box stamps breakLast for as long as it is on a break. So a reported
+// break that began no later than the box's last moment on a break is one the
+// box has already taken and closed, however long ago: the dashboard has not
+// yet heard, or could not record, that it ended. Opening for it again would
+// open a locked box on every restart and reconnect until the dashboard caught
+// up. Only for a box that is not on a break now; an unknown start (0) says
+// nothing and leaves the decision to the echo floor above.
+inline bool isServerBreakAlreadyTaken(uint64_t serverBreakStart,
+                                      uint64_t breakLast) {
+    return serverBreakStart > 0 && breakLast > 0 &&
+           serverBreakStart <= breakLast;
+}
+
+// Whether a break the dashboard reports must not open a box that is locked:
+// it is the echo of the break just ended, or one already taken.
+inline bool isStaleServerBreak(uint64_t serverBreakStart, uint64_t breakLast,
+                               uint64_t now) {
+    return isServerBreakEcho(breakLast, now) ||
+           isServerBreakAlreadyTaken(serverBreakStart, breakLast);
+}
+
 // Outcome of the wearer pressing the break button.
 enum class BreakPreflight : uint8_t {
     ALLOWED,
