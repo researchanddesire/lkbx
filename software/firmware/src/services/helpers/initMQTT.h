@@ -272,6 +272,8 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                 applyVoteUrlSync(doc, session);
                 session.breakKeyholderOnly =
                     doc[Str::Json::BREAK_KEYHOLDER_ONLY] | false;
+                session.breakStart =
+                    doc[Str::Json::BREAK_START].as<uint64_t>();
 
                 SyncOutcome outcome;
                 saveState(session, &outcome);
@@ -290,11 +292,14 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                     lkbx->sm->process_event(LockOffered{});
                 } else if (outcome.effect == SyncEffect::BREAK) {
                     // Ignore a server-pushed break that lands right after the
-                    // device ended one (the stale-"break" echo).
-                    if (serverBreakOnCooldown()) {
+                    // device ended one (the stale-"break" echo), and one the
+                    // device has already taken and closed.
+                    if (serverBreakIsStale(outcome)) {
                         ESP_LOGW(MQTT_TAG,
-                                 "Ignoring server break -- within post-break "
-                                 "cooldown");
+                                 "Ignoring server break -- %s",
+                                 outcome.breakAlreadyTaken
+                                     ? "the box has already taken it"
+                                     : "within post-break cooldown");
                     } else {
                         lkbx->sm->process_event(Break{});
                     }

@@ -363,7 +363,8 @@ void LKBX::syncLockStateOnBootTask(void *pvParameters) {
         return;
     }
 
-    SyncResult result = pullSession();
+    SyncOutcome outcome;
+    SyncResult result = pullSession(&outcome);
     ESP_LOGI(SYNC_LOCK_STATE_TAG, "pullSession result: %d",
              static_cast<int>(result));
     switch (result) {
@@ -375,6 +376,22 @@ void LKBX::syncLockStateOnBootTask(void *pvParameters) {
             plkbx->sm->process_event(LockTimer{});
             break;
         case SyncResult::BREAK:
+            // The dashboard can still show a break the box has finished: its
+            // report that it is locked again was lost, or has not been
+            // recorded yet. A restart must not open the box for that break a
+            // second time, so the same rule applies here as to a break that
+            // arrives while the box is running. The stored lock is restored
+            // through the home state, and its LOCKED report tells the
+            // dashboard again that the box is closed.
+            if (serverBreakIsStale(outcome)) {
+                ESP_LOGW(SYNC_LOCK_STATE_TAG,
+                         "Server reports a break the box has %s -- staying "
+                         "locked",
+                         outcome.breakAlreadyTaken ? "already taken"
+                                                   : "only just ended");
+                plkbx->sm->process_event(Done{});
+                break;
+            }
             ESP_LOGI(SYNC_LOCK_STATE_TAG, "Server reports active break");
             plkbx->sm->process_event(Break{});
             break;
@@ -693,10 +710,19 @@ void LKBX::serviceStateRead() {
         // the box has ended a break, before the dashboard has heard of it.
         // That stale "break" must not open the box again: the same rule as
         // for a break that arrives by MQTT.
-        if (outcome.effect == SyncEffect::BREAK && serverBreakOnCooldown()) {
+        // Nor may a break the box has already taken and closed, which the
+        // dashboard still shows when the box's LOCKED report was lost. That
+        // report is repeated, so the dashboard hears again that the box is
+        // closed.
+        if (outcome.effect == SyncEffect::BREAK && serverBreakIsStale(outcome)) {
             ESP_LOGW(MQTT_TAG,
-                     "Ignoring the break in the state read -- within "
-                     "post-break cooldown");
+                     "Ignoring the break in the state read -- %s",
+                     outcome.breakAlreadyTaken
+                         ? "the box has already taken it"
+                         : "within post-break cooldown");
+            if (outcome.breakAlreadyTaken && isLocked() && !isOnActiveBreak()) {
+                sendMessage(Str::Protocol::LOCKED);
+            }
         } else {
             applyReconciledEffect(this, outcome.effect);
         }

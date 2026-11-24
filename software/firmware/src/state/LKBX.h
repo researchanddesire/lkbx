@@ -37,6 +37,7 @@
 #include "utils/emergencyReport.h"
 #include "utils/emergencyStore.h"
 #include "utils/getPairingCode.h"
+#include "utils/heldLock.h"
 #include "utils/lockMenuCountdown.h"
 #include "utils/lockedReport.h"
 #include "utils/logBacklog.h"

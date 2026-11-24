@@ -352,6 +352,7 @@ namespace Str {
         constexpr char LOCK_NAME[] PROGMEM = "lockName";
         constexpr char REQUESTED_BY[] PROGMEM = "requestedBy";
         constexpr char BREAK_LAST[] PROGMEM = "breakLast";
+        constexpr char BREAK_START[] PROGMEM = "breakStart";
         constexpr char IS_ACTIVITY_LOG[] PROGMEM = "isActivityLog";
         constexpr char CURRENT_STATE[] PROGMEM = "currentState";
         constexpr char TMR1[] PROGMEM = "tmr1";

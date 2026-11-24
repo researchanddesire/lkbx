@@ -39,6 +39,31 @@ auto clearLocalPlay = []() {
     }
 };
 
+// The box holds a lock whose check has passed (utils/heldLock.h). Written
+// once per lock: the paddle being told to open is what clears it. A box that
+// is closed and confirmed is not on a break, so a break record still standing
+// here was left behind and is removed: it would otherwise end the next break
+// at once, as one that ran out long ago.
+auto markLockHeld = []() {
+    if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
+        preferences.begin(Keys::base, false);
+        if (!preferences.getBool(Keys::Base::lockHeld, false)) {
+            preferences.putBool(Keys::Base::lockHeld, true);
+            ESP_LOGI(ACTIONS_TAG, "Lock confirmed: it is held from here on");
+        }
+        preferences.end();
+        preferences.begin(Keys::session, false);
+        if (preferences.getBool(Keys::Session::isActiveBreak, false)) {
+            preferences.putBool(Keys::Session::isActiveBreak, false);
+            preferences.putULong64(Keys::Session::breakStart, 0);
+            ESP_LOGW(ACTIONS_TAG,
+                     "Removed a break record left beside a confirmed lock");
+        }
+        preferences.end();
+        xSemaphoreGive(preferencesMutex);
+    }
+};
+
 auto clearCalibration = []() {
     ESP_LOGD(ACTIONS_TAG, "Clearing calibration");
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
