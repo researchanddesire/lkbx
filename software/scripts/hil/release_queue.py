@@ -34,6 +34,7 @@ IDLE_SECONDS = 15
 HAT_ACK_SECONDS = 20
 HAT_SETTLE_SECONDS = 120
 RELEASE_VARIANTS = {"ossm": {"v1": "4mb", "v2": "16mb"}, "radr": {"default": "r8"}}
+PRODUCT_NAMES = {"lkbx": "Lockbox", "dtt": "DTT", "ossm": "OSSM", "radr": "Radar"}
 
 
 class Blocked(Exception):
@@ -86,6 +87,38 @@ class Client:
 class Bench(Client):
     def command(self, action, **args):
         return self.request("/command", {"action": action, "args": args})
+
+
+class ReleaseFamilies:
+    """Operator setting: the release families this rig runs release jobs for.
+
+    `release-worker/release-families.json` is a JSON array such as ["radr"].
+    Without the file every family runs. An invalid file pauses them all.
+    """
+    def __init__(self, allowed=None, error=None):
+        self.allowed = allowed
+        self.error = error
+
+    @classmethod
+    def load(cls, path):
+        if not path.exists():
+            return cls()
+        try:
+            # Windows PowerShell writes UTF-8 with a byte order mark.
+            families = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as error:
+            return cls(error=f"{path.name} could not be read ({type(error).__name__})")
+        if not isinstance(families, list) or not all(isinstance(f, str) and f in PRODUCT_NAMES for f in families):
+            return cls(error=f"{path.name} must be a JSON array of " + ", ".join(f'"{f}"' for f in PRODUCT_NAMES))
+        return cls(allowed=frozenset(families))
+
+    def refusal(self, family):
+        """Why a release job for this family may not run, or None."""
+        if self.error:
+            return f"Release testing is paused on this rig: {self.error} (operator setting)"
+        if self.allowed is not None and family not in self.allowed:
+            return f"Release testing for {PRODUCT_NAMES.get(family, family)} is paused on this rig (operator setting)"
+        return None
 
 
 def enrolled_devices(fixture):
@@ -299,12 +332,13 @@ class RestoreObserver:
 
 
 class Worker:
-    def __init__(self, queue, bench, home, runner, motion_devices=(), sleep=time.sleep):
+    def __init__(self, queue, bench, home, runner, motion_devices=(), sleep=time.sleep, release_families=None):
         self.queue = queue
         self.bench = bench
         self.home = home
         self.runner = runner
         self.motion = set(motion_devices)
+        self.families = release_families or ReleaseFamilies()
         self.sleep = sleep
         # ACL-protected directory outside the GitHub runner's writable directories.
         self.state = home / "release-worker" / "current.json"
@@ -364,6 +398,10 @@ class Worker:
             self.sleep(2)
 
     def release_test(self, job, targets, status):
+        # Before any download, lock, flash or other hardware step.
+        paused = self.families.refusal(job.get("deviceType"))
+        if paused:
+            raise Blocked(paused)
         if job.get("kind") != "firmware" or job["track"] != "main":
             raise Blocked("Production Test Bench requires a registered main firmware release")
         family = job["deviceType"]
@@ -663,9 +701,13 @@ def main():
     if not token or not re.fullmatch(r"[\w.-]{1,128}", args.runner):
         parser.error("A configured rig name and token are required")
     motion = config / "motion-devices.json"
-    motion_devices = json.loads(motion.read_text()) if motion.exists() else []
+    motion_devices = json.loads(motion.read_text(encoding="utf-8-sig")) if motion.exists() else []
+    families = ReleaseFamilies.load(config / "release-families.json")
+    if families.error:
+        logging.warning("Release jobs are paused: %s", families.error)
     bench = Bench(BENCH_ORIGIN, (directory / "agent.token").read_text().strip(), "firmware-queue:" + args.runner)
-    worker = Worker(Client(ORIGINS[args.track], token), bench, args.home, args.runner, motion_devices)
+    worker = Worker(Client(ORIGINS[args.track], token), bench, args.home, args.runner, motion_devices,
+                    release_families=families)
     with rig_lock(config / "worker.lock"):
         while True:
             try:

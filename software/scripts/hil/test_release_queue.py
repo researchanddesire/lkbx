@@ -14,8 +14,8 @@ from monitor import EvidenceError
 from release_admission import require_admission
 from release_health import NO_HAT, OssmMonitor, PRODUCTION_MQTT, ReadinessNotReached, StartupTimeout, WITH_HAT
 import release_queue
-from release_queue import (Blocked, HatSwitchError, LeaseLost, RestoreObserver, Worker, allows_larger_flash,
-                           enrolled_devices, matching_board, switch_hat, verify_board)
+from release_queue import (Blocked, HatSwitchError, LeaseLost, ReleaseFamilies, RestoreObserver, Worker,
+                           allows_larger_flash, enrolled_devices, matching_board, switch_hat, verify_board)
 
 
 DIGEST = "a"*64
@@ -522,6 +522,86 @@ def restore(observer):
     send(1, "boot", hat_mode="auto", device_id=observer.expected["device_id"])
     send(5, "heartbeat", homed=True)
     assert observer.passed
+
+
+class ReleaseFamilyTests(unittest.TestCase):
+    """release-families.json: the operator pauses release jobs per product."""
+    def setUp(self):
+        temp = TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name)
+        (self.home / "release-admission").mkdir()
+        (self.home / "release-admission" / "enabled").touch()
+        self.path = self.home / "release-families.json"
+
+    def load(self, text=None, raw=None):
+        if raw is not None:
+            self.path.write_bytes(raw)
+        elif text is not None:
+            self.path.write_text(text, encoding="utf-8")
+        return ReleaseFamilies.load(self.path)
+
+    def test_absent_file_allows_every_family(self):
+        families = self.load()
+        self.assertTrue(all(families.refusal(f) is None for f in ("lkbx", "dtt", "ossm", "radr")))
+
+    def test_listed_families_run_and_others_are_paused(self):
+        families = self.load('["radr"]')
+        self.assertIsNone(families.refusal("radr"))
+        for family, name in (("lkbx", "Lockbox"), ("dtt", "DTT"), ("ossm", "OSSM")):
+            self.assertEqual(families.refusal(family),
+                             f"Release testing for {name} is paused on this rig (operator setting)")
+        self.assertIsNotNone(self.load("[]").refusal("radr"))
+        # Windows PowerShell's UTF-8 adds a byte order mark.
+        self.assertIsNone(self.load(raw=b'\xef\xbb\xbf["dtt", "radr"]').refusal("dtt"))
+
+    def test_an_invalid_file_pauses_every_family(self):
+        for text in ('["radar"]', '"radr"', '{"radr": true}', '[1]', '["RADR"]', '["radr",', ''):
+            with self.subTest(text=text):
+                families = self.load(text)
+                for family in ("lkbx", "dtt", "ossm", "radr"):
+                    refusal = families.refusal(family)
+                    self.assertTrue(refusal and refusal.startswith("Release testing is paused on this rig: "
+                                                                   "release-families.json"), refusal)
+        self.assertIn('must be a JSON array of "lkbx", "dtt", "ossm", "radr"', self.load('["radar"]').refusal("radr"))
+        self.assertIn("could not be read (JSONDecodeError)", self.load("[").refusal("radr"))
+
+    def test_a_paused_job_is_blocked_before_any_lock_download_or_bench_command(self):
+        job = {"source": "merge", "kind": "firmware", "releaseId": str(uuid4()), "jobId": str(uuid4()),
+               "leaseToken": str(uuid4()), "version": "1.0.108", "buildSha": SHA, "deviceType": "dtt",
+               "hardwareVariant": "v2", "track": "main", "artifacts": []}
+        queue, bench = Queue(job), Bench()  # this Bench fails on any command or non-status read
+        worker = Worker(queue, bench, self.home, "rig", release_families=self.load('["radr"]'))
+        fixture = dict(DTT_V2, product="dtt")
+        with patch("release_queue.enrolled_devices", return_value={("dtt", "v2"): fixture}), \
+             patch("release_queue.rig_lock") as lock, patch("release_queue.build_opener") as http, \
+             patch("release_queue.observe") as observe:
+            worker.tick()
+        result = queue.requests[-1]
+        self.assertEqual((result["action"], result["status"]), ("complete", "blocked"))
+        self.assertEqual(result["summary"], {"detail": "Release testing for DTT is paused on this rig (operator setting)"})
+        lock.assert_not_called(); http.assert_not_called(); observe.assert_not_called()
+        self.assertEqual(bench.reads, ["/status"])
+        self.assertFalse(worker.state.exists())
+
+    def test_pull_requests_and_lanes_are_unaffected(self):
+        paused = self.load("[]")
+        queue, bench = Queue(PULL), Bench()
+        worker = Worker(queue, bench, self.home, "rig", release_families=paused)
+        queue.admitted = True
+        with patch("release_queue.enrolled_devices", return_value={}):
+            worker.tick()
+            worker.tick()
+        self.assertTrue(worker.receipt.exists())
+        worker.state.unlink()  # the PR's lease ended; the rig is idle again
+        fixture = dict(DTT_V2, product="dtt")
+        board = dict(connected=True, family="dtt", vid=4292, pid=60000, location="1-4.4", serial=None)
+        bench.request = lambda route: {"operator": None, "jobs": [], "devices": [board], "activeRun": None}
+        idle = Queue(None)
+        worker = Worker(idle, bench, self.home, "rig", release_families=paused)
+        with patch("release_queue.enrolled_devices", return_value={("dtt", "v2"): fixture}):
+            worker.tick()
+        self.assertEqual(idle.requests[-1]["capabilities"], [{"deviceType": "dtt", "hardwareVariant": "v2"}])
 
 
 if __name__ == "__main__":
