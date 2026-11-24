@@ -238,6 +238,17 @@ boot, homing and the soak:
    current sensor. Boot reports `hat_mode` `off`; heartbeats need `hat: false`
    and `homed: true`.
 
+The rig's Radar is kept away from the OSSM for the whole job. A running Radar
+connects to a booting OSSM over BLE and asks for a mode, which starts a second
+homing that the guard latches on. Before the OSSM is probed, flashed or reset,
+the worker takes `radr.lock` (it never preempts a holder), stops bench monitoring
+of the Radar and holds the enrolled Radar in its ROM loader, checking that it
+answers with its factory MAC. The Radar stays there through both cases and the
+restore, and is then reset into its application and monitored again, on every
+path out. If the Radar is not enrolled, its lock is held or it cannot be held,
+the OSSM job is blocked before anything moves. The evidence lists "Radar held in
+its bootloader so it cannot connect to the OSSM" and whether it was released.
+
 Afterwards, including after a failure, the worker sends `hat auto`, resets and
 waits for the homed boot. If the guard is not ready at that point it never
 resets the board: it parks the OSSM in its ROM loader and reports the job

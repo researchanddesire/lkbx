@@ -194,6 +194,9 @@ DTT_V1 = dict(product="dtt", enrolled=True, chip="esp32", flash_bytes=16<<20, ps
               usb_vid=4292, usb_pid=60000, usb_location="1-4.3.3", allow_larger_flash=True)
 DTT_V2 = dict(DTT_V1, device_id="142B2FF69F98", usb_location="1-4.4")
 del DTT_V2["allow_larger_flash"]
+RADR_ID = "A4CB8FC2DCB8"
+RADR = dict(product="radr", enrolled=True, chip="esp32s3", flash_bytes=16<<20, psram="r8", device_id=RADR_ID,
+            usb_vid=4292, usb_pid=60000, usb_serial="0001")
 
 
 class Lanes(unittest.TestCase):
@@ -361,7 +364,8 @@ class OssmRelease(unittest.TestCase):
         self.queue = Queue(None)
         self.worker = Worker(self.queue, Bench(), self.home, "rig", motion_devices=[OSSM_ID])
 
-    def run_job(self, variant="v1", observe=None, guard_ready=None, image_events=(b"boot", b"heartbeat"), hat_switch=True):
+    def run_job(self, variant="v1", observe=None, guard_ready=None, image_events=(b"boot", b"heartbeat"), hat_switch=True,
+                radar=True, radar_lock_held=False, radar_mac=RADR_ID, radar_fails=None, flash_error=None):
         image = bytearray(64)
         image[0] = 0xe9
         image.extend(b" ".join(b'OSSM_HEALTH {"event":"' + event + b'"' for event in image_events))
@@ -379,24 +383,52 @@ class OssmRelease(unittest.TestCase):
         usb = dict(id="ossm-board", label="OSSM", connected=True, family="ossm", vid=4292, pid=60000,
                    location="1-4.3.4.2:x.0", monitoring=False,
                    identity=dict(macAddress="4C:C3:82:10:11:DC", flashSizeBytes=16<<20, chipFamily="ESP32"))
+        radar_board = dict(id="radar-board", label="RADR", connected=True, family="radr", vid=4292, pid=60000,
+                           serial="0001", location="1-4.2", monitoring=True)
         self.commands, self.modes, self.observed, self.held = [], [], [], []
+        # One timeline of every hardware step, to check the Radar hold brackets the OSSM.
+        self.timeline, self.locks = [], []
         def status(route):
-            return {"operator": None, "devices": [usb], "activeRun": None, "fixtureValidationProtocol": 1,
+            return {"operator": None, "devices": [usb, radar_board], "activeRun": None, "fixtureValidationProtocol": 1,
                     "jobs": [dict(id="local-job", status="completed", verifiedApplicationSha256=digest)]}
         def command(action, **args):
             self.commands.append((action, args))
+            self.timeline.append(action + (":radar" if args.get("deviceId") == "radar-board" else ""))
             return {"id": "local-job"}
         def switch(port, mode, guard=None, **kwargs):
             self.modes.append(mode)
+            self.timeline.append("hat " + mode)
             return True
         def watched(device, port, monitor, log, guard):
             self.observed.append(getattr(monitor, "case", None) if isinstance(monitor, OssmMonitor) else "restore")
+            self.timeline.append("observe")
             if isinstance(monitor, RestoreObserver):
                 return restore(monitor)
             return (observe or passing)(monitor)
-        with patch("release_queue.enrolled_devices", return_value={("ossm", "v1"): OSSM, ("ossm", "v2"): OSSM}), \
-             patch("release_queue.rig_lock", return_value=nullcontext()), \
-             patch("release_queue.find_port", return_value="COM6"), \
+        def esptool(port, before, after, log, timeout=60):
+            self.timeline.append(f"radar {before}/{after} on {port}")
+            if radar_fails and radar_fails[0] == after:
+                raise radar_fails[1]
+            return radar_mac
+        def lock(path, **kwargs):
+            self.locks.append(Path(path).name)
+            if radar_lock_held and Path(path).name == "radr.lock":
+                raise RuntimeError("another process owns this physical fixture")
+            return nullcontext()
+        def port(device):
+            return "COM4" if device is RADR else "COM6"
+        targets = {("ossm", "v1"): OSSM, ("ossm", "v2"): OSSM}
+        if radar:
+            targets[("radr", "default")] = RADR
+        def failing(action, **args):
+            command(action, **args)
+            if flash_error and action == "firmware.flash":
+                raise flash_error
+            return {"id": "local-job"}
+        with patch("release_queue.enrolled_devices", return_value=targets), \
+             patch("release_queue.rig_lock", side_effect=lock), \
+             patch("release_queue.radar_esptool", side_effect=esptool), \
+             patch("release_queue.find_port", side_effect=port), \
              patch("release_queue.GuardWatch", FakeGuard), \
              patch("release_queue.guard_ready", side_effect=guard_ready or (lambda guard: guard.check())), \
              patch("release_queue.open_console", return_value=FakePort(lambda c: b"")), \
@@ -404,13 +436,91 @@ class OssmRelease(unittest.TestCase):
              patch("release_queue.hold_in_loader", side_effect=lambda port, log: self.held.append(port)), \
              patch("release_queue.time.monotonic", return_value=1_000.0), \
              patch.object(self.worker.bench, "request", side_effect=status), \
-             patch.object(self.worker.bench, "command", create=True, side_effect=command), \
+             patch.object(self.worker.bench, "command", create=True, side_effect=failing), \
              patch("release_queue.build_opener") as http, patch("release_queue.observe", side_effect=watched):
             http.return_value.open.return_value = io.BytesIO(data)
             self.worker.tick()
         result = self.queue.requests[-1]
         self.assertEqual(result["action"], "complete")
         return result
+
+    HOLD = "radar default_reset/no_reset on COM4"
+    RELEASE = "radar default_reset/hard_reset on COM4"
+
+    def assert_released_once(self):
+        self.assertEqual(self.timeline.count(self.RELEASE), 1)
+        self.assertEqual(self.timeline.index("monitor.start:radar"), self.timeline.index(self.RELEASE) + 1)
+
+    def test_radar_is_held_before_the_ossm_is_touched_and_released_after_the_restore(self):
+        result = self.run_job("v2")
+        self.assertEqual(result["status"], "success", result["summary"]["detail"])
+        self.assertEqual(self.locks, ["ossm.lock", "radr.lock"])
+        line = self.timeline
+        # The bench stops monitoring the Radar, then it is parked before the OSSM probe, flash or any reset.
+        self.assertLess(line.index("monitor.stop:radar"), line.index(self.HOLD))
+        self.assertLess(line.index(self.HOLD), line.index("device.probe"))
+        self.assertLess(line.index(self.HOLD), line.index("firmware.flash"))
+        # Held through both cases and the restore; released, then monitored again.
+        last_observe = len(line) - 1 - line[::-1].index("observe")
+        self.assertEqual(self.observed[-1], "restore")
+        self.assertLess(last_observe, line.index(self.RELEASE))
+        self.assert_released_once()
+        states = {c["title"]: c["state"] for c in result["summary"]["checks"]}
+        self.assertEqual(states["Radar held in its bootloader so it cannot connect to the OSSM"], "passed")
+        self.assertEqual(states["Radar released into its application afterwards"], "passed")
+
+    def test_radar_is_released_on_every_failure_path(self):
+        def case_fails(monitor):
+            raise EvidenceError("OSSM lost its homed position during observation")
+        def guard_unready(guard):
+            raise RuntimeError("RS-485 safety guard: the guard has latched the motor off")
+        for name, kwargs, status in (
+                ("failed case", dict(observe=case_fails), "failed"),
+                ("guard not ready", dict(guard_ready=guard_unready), "blocked"),
+                ("flash refused", dict(flash_error=Blocked("Fixture has a different installed partition table")), "blocked"),
+                ("bench lost", dict(flash_error=OSError("bench connection reset")), "blocked")):
+            with self.subTest(name):
+                self.setUp()
+                result = self.run_job("v1", **kwargs)
+                self.assertEqual(result["status"], status, result["summary"])
+                self.assertIn(self.HOLD, self.timeline)
+                self.assert_released_once()
+
+    def test_a_held_radar_lock_blocks_before_any_hardware_step(self):
+        result = self.run_job("v2", radar_lock_held=True)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("radr.lock is held", result["summary"]["detail"])
+        self.assertEqual(self.timeline, [])
+
+    def test_an_unenrolled_radar_blocks_the_ossm(self):
+        result = self.run_job("v2", radar=False)
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["summary"]["detail"],
+                         "The rig's Radar is not enrolled, so it cannot be held away from the OSSM")
+        self.assertEqual((self.timeline, self.locks), ([], ["ossm.lock"]))
+
+    def test_a_radar_that_cannot_be_held_blocks_and_is_still_released(self):
+        for kwargs, reason in ((dict(radar_fails=("no_reset", RuntimeError("esptool exited with 2"))), "esptool exited"),
+                               (dict(radar_mac="AABBCCDDEEFF"), "factory MAC")):
+            with self.subTest(reason):
+                self.setUp()
+                result = self.run_job("v2", **kwargs)
+                self.assertEqual(result["status"], "blocked")
+                self.assertIn("could not be held in its bootloader", result["summary"]["detail"])
+                self.assertIn(reason, result["summary"]["detail"])
+                self.assertNotIn("device.probe", self.timeline)
+                self.assertNotIn("firmware.flash", self.timeline)
+                self.assert_released_once()
+
+    def test_a_radar_release_failure_is_reported_without_changing_the_result(self):
+        result = self.run_job("v2", radar_fails=("hard_reset", RuntimeError("esptool exited with 2")))
+        self.assertEqual(result["status"], "success")
+        self.assertIn("The Radar was not released: reset into its application failed", result["summary"]["detail"])
+        released = result["summary"]["checks"][-1]
+        self.assertEqual((released["title"], released["state"]), ("Radar released into its application afterwards", "blocked"))
+        # Bench monitoring still restarts, and the cleanup does not try a second time.
+        self.assertEqual(self.timeline.count(self.RELEASE), 1)
+        self.assertIn("monitor.start:radar", self.timeline)
 
     def test_v1_release_runs_both_cases_and_restores_hat_auto(self):
         result = self.run_job("v1")
@@ -423,7 +533,9 @@ class OssmRelease(unittest.TestCase):
         self.assertEqual(titles[0], "Physical application SHA-256 readback")
         self.assertIn("With HAT: Continuous application and network observation", titles)
         self.assertIn("No HAT: HAT detection off, carriage homed on the board's current sensor", titles)
-        self.assertEqual(titles[-1], "HAT detection restored for the next run")
+        self.assertEqual(titles[1], "Radar held in its bootloader so it cannot connect to the OSSM")
+        self.assertEqual(titles[-2:], ["HAT detection restored for the next run",
+                                       "Radar released into its application afterwards"])
         self.assertTrue(all(check["state"] == "passed" for check in result["summary"]["checks"]))
         self.assertEqual([c["outcome"] for c in result["summary"]["cases"]], ["success", "success"])
 
@@ -491,7 +603,7 @@ class OssmRelease(unittest.TestCase):
             result = self.run_job("v1")
         self.assertEqual(result["status"], "blocked")
         self.assertIn("HAT auto was not restored", result["summary"]["detail"])
-        restored = result["summary"]["checks"][-1]
+        restored = next(c for c in result["summary"]["checks"] if c["title"] == "HAT detection restored for the next run")
         self.assertEqual((restored["state"], restored["reason"]), ("blocked", unanswered))
 
     def test_ossm_without_the_hat_switch_or_health_line_is_blocked_before_flashing(self):
