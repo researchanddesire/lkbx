@@ -194,16 +194,20 @@ def _record(line, prefix):
     return record if isinstance(record, dict) else None
 
 
-def switch_hat(port, mode, guard=None, clock=time.monotonic,
-               ack_seconds=HAT_ACK_SECONDS, settle_seconds=HAT_SETTLE_SECONDS):
+def switch_hat(port, mode, guard=None, clock=time.monotonic, ack_seconds=HAT_ACK_SECONDS,
+               settle_seconds=HAT_SETTLE_SECONDS, resend_seconds=2):
     """Store an OSSM HAT mode for the next boot over its running console.
 
-    Waits for the acknowledgement, then for the carriage to report it is homed
-    (at most settle_seconds), so the reset that follows never cuts a homing move.
-    Returns whether the board reported homed.
+    The reply names the stored mode. A refused write (the ESP32 motor guard
+    is armed, or NVS failed) adds "error" and names the unchanged mode, so
+    only a reply naming the requested mode counts; refusals are retried until
+    settle_seconds. After that the carriage must report it is homed (at most
+    settle_seconds from the start), so the reset that follows never cuts a
+    homing move. Returns whether the board reported homed.
     """
     started = clock()
     acknowledged = homed = False
+    refused = None
     next_send = started
     pending = bytearray()
     while True:
@@ -213,23 +217,36 @@ def switch_hat(port, mode, guard=None, clock=time.monotonic,
         if acknowledged and (homed or now - started >= settle_seconds):
             return homed
         if not acknowledged:
-            if now - started >= ack_seconds:
-                raise HatSwitchError(f"The OSSM did not acknowledge the serial command 'hat {mode}'")
+            if now - started >= (settle_seconds if refused else ack_seconds):
+                raise HatSwitchError(f"The OSSM refused 'hat {mode}' ({refused})" if refused else
+                                     f"The OSSM did not acknowledge the serial command 'hat {mode}'")
             if now >= next_send:
                 port.write(f"\nhat {mode}\n".encode())
-                next_send = now + 2
+                next_send = now + resend_seconds
         pending.extend(port.read(port.in_waiting or 1))
         if len(pending) > 65536:
             raise RuntimeError("serial line exceeded bounded framing")
         while b"\n" in pending:
             raw, _, rest = pending.partition(b"\n"); pending = bytearray(rest)
             line = raw.decode("utf-8", errors="replace").rstrip("\r")
-            reply = _record(line, HAT_PREFIX) if line.startswith(HAT_PREFIX) else None
-            if reply and reply.get("mode") == mode and reply.get("applies") == "next_boot":
-                acknowledged = True
+            reply = _record(line, HAT_PREFIX)
+            # The plain `hat` report also names a mode (this boot's); only the
+            # switch reply says when it applies.
+            if reply and reply.get("applies") == "next_boot" and not acknowledged:
+                if reply.get("mode") == mode:
+                    acknowledged = True
+                else:
+                    error = reply.get("error")
+                    refused = error if error in ("motor_armed", "storage") else "a different mode is stored"
             heartbeat = _record(line, OssmMonitor.PREFIX)
             if heartbeat and heartbeat.get("event") == "heartbeat" and heartbeat.get("homed") is True:
                 homed = True
+
+
+def reset_board(port, device):
+    """The same hardware reset observe() uses, on an open console."""
+    from esptool.reset import HardReset
+    HardReset(port, uses_usb=device["usb_vid"] == 0x303a and device["usb_pid"] == 0x1001)()
 
 
 def guard_ready(guard):
@@ -457,7 +474,15 @@ class Worker:
         guard_ready(guard)
         port = open_console(find_port(fixture))
         try:
-            switch_hat(port, mode, guard)
+            try:
+                switch_hat(port, mode, guard)
+            except HatSwitchError:
+                # The armed motor guard refuses flash writes. Write the setting in the
+                # seconds after a reset, while the OSSM is still discovering its HAT and
+                # before it homes; that boot still homes in full before the case's reset.
+                guard_ready(guard)
+                reset_board(port, fixture)
+                switch_hat(port, mode, guard, ack_seconds=15, resend_seconds=0.5)
         finally:
             port.close()
         # Checked again right before the reset that applies the setting.

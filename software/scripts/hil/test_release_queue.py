@@ -271,6 +271,47 @@ class HatSwitch(unittest.TestCase):
         self.assertEqual(len(port.written), 1)
 
 
+class HatRefusals(unittest.TestCase):
+    def test_a_refused_write_is_retried_until_the_guard_disarms(self):
+        replies = iter([b'RAD_HAT {"mode":"auto","applies":"next_boot","error":"motor_armed"}\n'] * 3 +
+                       [b'RAD_HAT {"mode":"off","applies":"next_boot"}\n'])
+        port = FakePort(lambda command: next(replies))
+        self.assertFalse(switch_hat(port, "off", clock=Clock(), settle_seconds=40))
+        self.assertEqual(len(port.written), 4)
+
+    def test_a_write_still_refused_after_homing_is_reported(self):
+        port = FakePort(lambda command: b'RAD_HAT {"mode":"auto","applies":"next_boot","error":"motor_armed"}\n')
+        with self.assertRaisesRegex(HatSwitchError, "refused 'hat off' \\(motor_armed\\)"):
+            switch_hat(port, "off", clock=Clock(), settle_seconds=30)
+
+    def test_a_refusal_naming_the_requested_mode_is_already_stored(self):
+        port = FakePort(lambda command: b'RAD_HAT {"mode":"auto","applies":"next_boot","error":"storage"}\n')
+        self.assertFalse(switch_hat(port, "auto", clock=Clock(), settle_seconds=5))
+
+    def test_the_plain_hat_report_is_not_a_reply(self):
+        report = ('RAD_HAT {"detected":false,"fresh":false,"passive":false,"guardReady":true,"guardArmed":false,'
+                  '"guardLatched":false,"outputDisabled":true,"guardFault":0,"mode":"off"}\n').encode()
+        with self.assertRaises(HatSwitchError):
+            switch_hat(FakePort(lambda command: report), "off", clock=Clock(), ack_seconds=5)
+
+    def test_refusal_falls_back_to_the_window_before_homing(self):
+        worker = Worker(Queue(None), Bench(), Path("."), "rig")
+        calls = []
+        def switch(port, mode, guard=None, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise HatSwitchError("The OSSM refused 'hat off' (motor_armed)")
+            return True
+        with patch("release_queue.find_port", return_value="COM6"), \
+             patch("release_queue.open_console", return_value=FakePort(lambda c: b"")), \
+             patch("release_queue.guard_ready") as ready, patch("release_queue.switch_hat", side_effect=switch), \
+             patch("release_queue.reset_board") as reset:
+            worker.prepare_case(OSSM, "off", FakeGuard(None, None), lambda: None)
+        reset.assert_called_once()
+        self.assertEqual(calls[1]["resend_seconds"], 0.5)
+        self.assertEqual(ready.call_count, 3)  # before the console, before the reset, before the case's reset
+
+
 class FakeGuard:
     def __init__(self, path, output, *args):
         self.path = path

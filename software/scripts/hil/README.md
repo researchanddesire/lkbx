@@ -199,8 +199,12 @@ of any of them during the soak fails the run:
 
 Every OSSM release job runs two cases on the enrolled board, and passes only if
 both pass. Each case sends a serial HAT setting, which the OSSM acknowledges with
-`RAD_HAT {"mode":...,"applies":"next_boot"}`, waits for the carriage to finish
-homing, checks the guard again, then resets and observes boot, homing and the soak:
+`RAD_HAT {"mode":...,"applies":"next_boot"}`. Only a reply naming the requested
+mode counts: a refused write adds `error` and names the unchanged mode. Refusals
+are retried while the carriage homes; if the armed motor guard still refuses, the
+worker resets the board and writes the setting before homing starts. It then waits
+for the carriage to finish homing, checks the guard again, and resets and observes
+boot, homing and the soak:
 
 1. **With HAT**: `hat auto`. The guard polls the servo, so the HAT only listens
    and motion stays on STEP/DIR, as in PR runs. Boot reports `hat_mode` `auto`;
