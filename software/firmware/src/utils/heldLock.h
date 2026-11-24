@@ -45,4 +45,14 @@ inline Preflight decidePreflight(bool locked, bool paddleLocked,
     return paddleLocked ? Preflight::NO_BACKPLATE : Preflight::CANNOT_LOCK;
 }
 
+// Whether a stored break record (`session/isActiveBreak`) is a break the box
+// is on. A restart resumes such a break, which opens the paddle. Every break
+// opens the paddle through Motor::unlock, which clears the held mark, so a
+// record that stands beside a held lock was left behind by a break that has
+// ended: resuming it would open a locked box. The lock wins, and the record
+// is removed when the lock is next confirmed.
+inline bool breakRecordStands(bool activeBreak, bool locked, bool lockHeld) {
+    return activeBreak && locked && !lockHeld;
+}
+
 #endif  // LOCKBOX_HELD_LOCK_H

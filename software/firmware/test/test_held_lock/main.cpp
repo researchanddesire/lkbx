@@ -169,6 +169,36 @@ void test_a_new_lock_does_not_inherit_the_mark_of_the_last(void) {
     TEST_ASSERT_EQUAL(Preflight::NO_BACKPLATE, stale.check(true, false));
 }
 
+// --- A break record across restarts -------------------------------------------
+
+// A box that restarts in the middle of a break goes back to its break page:
+// the paddle is open, and nothing holds the lock.
+void test_a_restart_during_a_break_resumes_the_break(void) {
+    TEST_ASSERT_TRUE(breakRecordStands(true, true, false));
+}
+
+// A record that outlived its break stands beside a lock the box has since
+// confirmed. Resuming it at the next restart would open the box.
+void test_a_break_record_beside_a_held_lock_does_not_open_the_box(void) {
+    TEST_ASSERT_FALSE(breakRecordStands(true, true, true));
+}
+
+void test_no_break_record_means_no_break(void) {
+    TEST_ASSERT_FALSE(breakRecordStands(false, true, false));
+    TEST_ASSERT_FALSE(breakRecordStands(false, true, true));
+    // An unlocked box is never on a break.
+    TEST_ASSERT_FALSE(breakRecordStands(true, false, false));
+}
+
+// A break always opens the paddle, which drops the mark: a box that is on a
+// break can never look like one that holds its lock.
+void test_a_real_break_never_stands_beside_a_held_lock(void) {
+    Box box = heldLock();
+    box.openPaddle();  // locked.break
+    TEST_ASSERT_FALSE(box.lockHeld);
+    TEST_ASSERT_TRUE(breakRecordStands(true, box.locked, box.lockHeld));
+}
+
 int runUnityTests(void) {
     UNITY_BEGIN();
     RUN_TEST(test_a_locked_box_with_agreeing_sensors_is_confirmed);
@@ -180,6 +210,10 @@ int runUnityTests(void) {
     RUN_TEST(test_a_first_lock_without_its_backplate_still_opens);
     RUN_TEST(test_the_lock_after_a_break_is_checked_as_a_new_one);
     RUN_TEST(test_a_new_lock_does_not_inherit_the_mark_of_the_last);
+    RUN_TEST(test_a_restart_during_a_break_resumes_the_break);
+    RUN_TEST(test_a_break_record_beside_a_held_lock_does_not_open_the_box);
+    RUN_TEST(test_no_break_record_means_no_break);
+    RUN_TEST(test_a_real_break_never_stands_beside_a_held_lock);
     return UNITY_END();
 }
 

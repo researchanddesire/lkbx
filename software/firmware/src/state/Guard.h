@@ -12,6 +12,7 @@
 #include "services/wm.h"
 #include "utils/chasterAsk.h"
 #include "utils/freezeState.h"
+#include "utils/heldLock.h"
 
 static auto isOnline = []() { return WiFiClass::status() == WL_CONNECTED; };
 static auto isOffline = []() { return !isOnline(); };
@@ -288,6 +289,7 @@ static auto isBreakEndRequested = []() {
 static auto isOnActiveBreak = []() {
     bool isActiveBreak = false;
     bool deviceIsLocked = false;
+    bool lockHeld = false;
 
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
         preferences.begin(Keys::session);
@@ -297,12 +299,20 @@ static auto isOnActiveBreak = []() {
 
         preferences.begin(Keys::base);
         deviceIsLocked = preferences.getBool(Keys::Base::isLocked, false);
+        lockHeld = preferences.getBool(Keys::Base::lockHeld, false);
         preferences.end();
 
         xSemaphoreGive(preferencesMutex);
     }
 
-    bool stillOnBreak = isActiveBreak && deviceIsLocked;
+    // A break record beside a held lock is left over from a break that has
+    // ended; resuming it would open a locked box (utils/heldLock.h).
+    bool stillOnBreak =
+        breakRecordStands(isActiveBreak, deviceIsLocked, lockHeld);
+    if (isActiveBreak && deviceIsLocked && lockHeld) {
+        ESP_LOGW(GUARD_TAG,
+                 "Ignoring a break record left beside a held lock");
+    }
 
     ESP_LOGD(GUARD_TAG, "isOnActiveBreak: %d", stillOnBreak);
 

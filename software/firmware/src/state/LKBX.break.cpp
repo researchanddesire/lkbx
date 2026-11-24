@@ -53,6 +53,11 @@ static void runBreakTimer(LKBX *plkbx) {
     // keyholder or the wearer ends the break.
     bool chasterControlled = false;
 
+    // Whether the break page is still up. Read before the preferences are
+    // taken, so this task never waits on the state machine while holding
+    // them.
+    const bool onBreakPage = isInCorrectState(plkbx);
+
     // Check if we're resuming from a previous break (after wake-up from sleep)
     // or starting a new break.
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
@@ -75,18 +80,23 @@ static void runBreakTimer(LKBX *plkbx) {
         if (shouldResumeBreak(wasActiveBreak, savedBreakStart)) {
             breakStart = savedBreakStart;
             ESP_LOGD(BREAK_TIMER_TAG, "Resuming break from %llu", breakStart);
-        } else {
+        } else if (onBreakPage) {
             // Start new break - persist the start time and set active flag
             breakStart = currentDatetimeMs;
             preferences.putULong64(Keys::Session::breakStart, breakStart);
             preferences.putBool(Keys::Session::isActiveBreak, true);
             ESP_LOGD(BREAK_TIMER_TAG, "Starting new break at %llu", breakStart);
+        } else {
+            // The break page was left before this task ran, and leaving it
+            // removed the break's record. Writing one now would leave a
+            // record with no break, which the next restart would resume.
+            breakStart = currentDatetimeMs;
         }
         preferences.end();
         xSemaphoreGive(preferencesMutex);
     }
 
-    if (breakStart == 0) {
+    if (breakStart == 0 && onBreakPage) {
         breakStart = currentDatetimeMs;
         ESP_LOGW(BREAK_TIMER_TAG, "breakStart was 0 after init, using %llu",
                  breakStart);
