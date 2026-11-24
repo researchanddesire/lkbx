@@ -1,5 +1,6 @@
 """Exercise admission, exact-variant intake and fail-closed physical results offline."""
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from hashlib import sha256
 import io
 import json
@@ -253,13 +254,12 @@ class Clock:
 
 
 class HatSwitch(unittest.TestCase):
-    def test_waits_for_the_acknowledgement_and_homing(self):
+    def test_returns_as_soon_as_the_reply_names_the_mode(self):
         def replies(command):
             mode = command.split()[-1]
-            return (f'RAD_HAT {{"mode":"{mode}","applies":"next_boot"}}\n'
-                    'OSSM_HEALTH {"event":"heartbeat","boot_id":1,"uptime_ms":9,"homed":true}\n').encode()
+            return f'RAD_HAT {{"mode":"{mode}","applies":"next_boot"}}\n'.encode()
         port = FakePort(replies)
-        self.assertTrue(switch_hat(port, "off", clock=Clock()))
+        self.assertIsNone(switch_hat(port, "off", clock=Clock()))
         self.assertEqual(port.written, [b"\nhat off\n"])
 
     def test_a_wrong_or_missing_reply_is_not_an_acknowledgement(self):
@@ -268,10 +268,11 @@ class HatSwitch(unittest.TestCase):
             switch_hat(port, "off", clock=Clock(), ack_seconds=10)
         self.assertGreater(len(port.written), 1)  # resent while unanswered
 
-    def test_settles_without_homing_after_the_limit(self):
-        port = FakePort(lambda command: b'RAD_HAT {"mode":"auto","applies":"next_boot"}\n')
-        self.assertFalse(switch_hat(port, "auto", clock=Clock(), settle_seconds=30))
-        self.assertEqual(len(port.written), 1)
+    def test_sends_repeatedly_until_the_console_answers(self):
+        answers = iter([b"", b"", b'RAD_HAT {"mode":"auto","applies":"next_boot"}\n'])
+        port = FakePort(lambda command: next(answers))
+        self.assertIsNone(switch_hat(port, "auto", clock=Clock(), resend_seconds=0.5))
+        self.assertEqual(len(port.written), 3)
 
 
 class HatRefusals(unittest.TestCase):
@@ -279,17 +280,17 @@ class HatRefusals(unittest.TestCase):
         replies = iter([b'RAD_HAT {"mode":"auto","applies":"next_boot","error":"motor_armed"}\n'] * 3 +
                        [b'RAD_HAT {"mode":"off","applies":"next_boot"}\n'])
         port = FakePort(lambda command: next(replies))
-        self.assertFalse(switch_hat(port, "off", clock=Clock(), settle_seconds=40))
+        self.assertIsNone(switch_hat(port, "off", clock=Clock(), refused_seconds=40))
         self.assertEqual(len(port.written), 4)
 
     def test_a_write_still_refused_after_homing_is_reported(self):
         port = FakePort(lambda command: b'RAD_HAT {"mode":"auto","applies":"next_boot","error":"motor_armed"}\n')
         with self.assertRaisesRegex(HatSwitchError, "refused 'hat off' \\(motor_armed\\)"):
-            switch_hat(port, "off", clock=Clock(), settle_seconds=30)
+            switch_hat(port, "off", clock=Clock(), refused_seconds=30)
 
     def test_a_refusal_naming_the_requested_mode_is_already_stored(self):
         port = FakePort(lambda command: b'RAD_HAT {"mode":"auto","applies":"next_boot","error":"storage"}\n')
-        self.assertFalse(switch_hat(port, "auto", clock=Clock(), settle_seconds=5))
+        self.assertIsNone(switch_hat(port, "auto", clock=Clock()))
 
     def test_the_plain_hat_report_is_not_a_reply(self):
         report = ('RAD_HAT {"detected":false,"fresh":false,"passive":false,"guardReady":true,"guardArmed":false,'
@@ -297,22 +298,20 @@ class HatRefusals(unittest.TestCase):
         with self.assertRaises(HatSwitchError):
             switch_hat(FakePort(lambda command: report), "off", clock=Clock(), ack_seconds=5)
 
-    def test_refusal_falls_back_to_the_window_before_homing(self):
+    def test_a_setting_write_boot_is_parked_and_cleared_before_the_observed_boot(self):
         worker = Worker(Queue(None), Bench(), Path("."), "rig")
-        calls = []
-        def switch(port, mode, guard=None, **kwargs):
-            calls.append(kwargs)
-            if len(calls) == 1:
-                raise HatSwitchError("The OSSM refused 'hat off' (motor_armed)")
-            return True
-        with patch("release_queue.find_port", return_value="COM6"), \
+        steps = []
+        guard = FakeGuard(None, None)
+        guard.wait_session_clear = lambda: steps.append("wait clear")
+        with TemporaryDirectory() as directory, patch("release_queue.find_port", return_value="COM6"), \
              patch("release_queue.open_console", return_value=FakePort(lambda c: b"")), \
-             patch("release_queue.guard_ready") as ready, patch("release_queue.switch_hat", side_effect=switch), \
-             patch("release_queue.reset_board") as reset:
-            worker.prepare_case(OSSM, "off", FakeGuard(None, None), lambda: None)
-        reset.assert_called_once()
-        self.assertEqual(calls[1]["resend_seconds"], 0.5)
-        self.assertEqual(ready.call_count, 3)  # before the console, before the reset, before the case's reset
+             patch("release_queue.guard_ready", side_effect=lambda g: steps.append("guard ready")), \
+             patch("release_queue.park", side_effect=lambda *a: steps.append("park")), \
+             patch("release_queue.reset_board", side_effect=lambda *a: steps.append("boot to write hat")), \
+             patch("release_queue.switch_hat", side_effect=lambda port, mode, guard: steps.append("hat " + mode)):
+            worker.prepare_case(OSSM, "off", guard, lambda: steps.append("renew"), Path(directory) / "hold.log")
+        self.assertEqual(steps, ["renew", "park", "wait clear", "guard ready", "boot to write hat", "hat off",
+                                 "park", "wait clear", "guard ready"])
 
 
 class Classification(unittest.TestCase):
@@ -337,10 +336,22 @@ class Classification(unittest.TestCase):
 
 
 class FakeGuard:
+    timeline = None
+    clear_failures = ()
+
     def __init__(self, path, output, *args):
         self.path = path
         self.failure = None
         self.closed = False
+        self.waits = 0
+
+    def wait_session_clear(self):
+        self.waits += 1
+        if FakeGuard.timeline is not None:
+            FakeGuard.timeline.append("wait clear")
+        if self.waits in FakeGuard.clear_failures:
+            raise RuntimeError("RS-485 safety guard: its homing session did not clear within 30 s of parking "
+                               "the OSSM (contacts: lower; carriage still)")
 
     def require(self, *args, **kwargs):
         pass
@@ -366,7 +377,7 @@ class OssmRelease(unittest.TestCase):
 
     def run_job(self, variant="v1", observe=None, guard_ready=None, image_events=(b"boot", b"heartbeat"), hat_switch=True,
                 radar=True, radar_lock_held=False, radar_mac=RADR_ID, radar_fails=None, flash_error=None,
-                park_error=None, ossm_monitored=False):
+                park_error=None, ossm_monitored=False, clear_failures=(), contacts=("lower", "upper")):
         image = bytearray(64)
         image[0] = 0xe9
         image.extend(b" ".join(b'OSSM_HEALTH {"event":"' + event + b'"' for event in image_events))
@@ -389,6 +400,11 @@ class OssmRelease(unittest.TestCase):
         self.commands, self.modes, self.observed, self.held = [], [], [], []
         # One timeline of every hardware step, to check the Radar hold brackets the OSSM.
         self.timeline, self.locks = [], []
+        FakeGuard.timeline, FakeGuard.clear_failures = self.timeline, clear_failures
+        self.addCleanup(setattr, FakeGuard, "timeline", None)
+        status = self.home / "rs485-guard" / "status.json"
+        status.parent.mkdir(exist_ok=True)
+        status.write_text(json.dumps({"time": datetime.now(timezone.utc).isoformat(), "contacts": list(contacts)}))
         def status(route):
             return {"operator": None, "devices": [usb, radar_board], "activeRun": None, "fixtureValidationProtocol": 1,
                     "jobs": [dict(id="local-job", status="completed", verifiedApplicationSha256=digest)]}
@@ -408,7 +424,8 @@ class OssmRelease(unittest.TestCase):
             return (observe or passing)(monitor)
         def parked(device, spec, log):
             self.timeline.append(f"park {device['product']}")
-            if park_error:
+            # A park failure is injected only for the final park, after the restore.
+            if park_error and self.observed and self.observed[-1] == "restore":
                 raise park_error
         def esptool(port, before, after, log, timeout=60):
             self.timeline.append(f"radar {before}/{after} on {port}")
@@ -434,6 +451,7 @@ class OssmRelease(unittest.TestCase):
              patch("release_queue.rig_lock", side_effect=lock), \
              patch("release_queue.radar_esptool", side_effect=esptool), \
              patch("release_queue.park", side_effect=parked), \
+             patch("release_queue.reset_board", side_effect=lambda *a: self.timeline.append("boot to write hat")), \
              patch("release_queue.find_port", side_effect=port), \
              patch("release_queue.GuardWatch", FakeGuard), \
              patch("release_queue.guard_ready", side_effect=guard_ready or (lambda guard: guard.check())), \
@@ -456,9 +474,20 @@ class OssmRelease(unittest.TestCase):
     def assert_released_once(self):
         # The OSSM is parked first, then the Radar is reset and monitored again.
         self.assertEqual(self.timeline.count(self.RELEASE), 1)
-        self.assertEqual(self.timeline.count("park ossm"), 1)
-        self.assertEqual(self.timeline.index("park ossm") + 1, self.timeline.index(self.RELEASE))
+        self.assertEqual(self.timeline[self.timeline.index(self.RELEASE) - 1], "park ossm")
         self.assertEqual(self.timeline.index("monitor.start:radar"), self.timeline.index(self.RELEASE) + 1)
+
+    BOOTS = ("device.probe", "boot to write hat", "observe")
+
+    def assert_one_homing_per_guard_session(self):
+        """Every OSSM boot that homes follows a park and a cleared guard session, and is parked after."""
+        steps = [t for t in self.timeline if t in self.BOOTS + ("firmware.flash", "park ossm", "wait clear")]
+        for i, step in enumerate(steps):
+            if step in self.BOOTS:
+                self.assertEqual(steps[i-2:i], ["park ossm", "wait clear"], (i, steps))
+            if step in ("firmware.flash", "boot to write hat", "observe") and i + 1 < len(steps):
+                self.assertEqual(steps[i+1], "park ossm", (i, steps))
+        self.assertEqual(steps[-1], "park ossm")
 
     def test_radar_is_held_before_the_ossm_is_touched_and_released_after_the_restore(self):
         result = self.run_job("v2")
@@ -471,16 +500,18 @@ class OssmRelease(unittest.TestCase):
         self.assertLess(line.index(self.HOLD), line.index("firmware.flash"))
         # Held through both cases and the restore; released, then monitored again.
         last_observe = len(line) - 1 - line[::-1].index("observe")
+        last_park = len(line) - 1 - line[::-1].index("park ossm")
         self.assertEqual(self.observed[-1], "restore")
-        self.assertLess(last_observe, line.index(self.RELEASE))
+        self.assertLess(last_observe, last_park)
+        self.assertLess(last_park, line.index(self.RELEASE))
         self.assert_released_once()
+        self.assert_one_homing_per_guard_session()
         states = {c["title"]: c["state"] for c in result["summary"]["checks"]}
         self.assertEqual(states["Radar held in its bootloader so it cannot connect to the OSSM"], "passed")
         self.assertEqual(states["OSSM parked in its bootloader before the Radar was released"], "passed")
         self.assertEqual(states["Radar released into its application afterwards"], "passed")
-        # The park comes after the hat-auto restore and its observed boot.
-        self.assertLess(last_observe, line.index("park ossm"))
-        self.assertLess(line.index("hat auto", line.index("hat off")), line.index("park ossm"))
+        # The final park comes after the hat-auto restore and its observed boot.
+        self.assertLess(line.index("hat auto", line.index("hat off")), last_park)
 
     def test_radar_is_released_on_every_failure_path(self):
         def case_fails(monitor):
@@ -524,6 +555,40 @@ class OssmRelease(unittest.TestCase):
                 self.assertNotIn("device.probe", self.timeline)
                 self.assertNotIn("firmware.flash", self.timeline)
                 self.assert_released_once()
+
+    def test_every_homing_boot_is_the_only_one_in_its_guard_session(self):
+        result = self.run_job("v1")
+        self.assertEqual(result["status"], "success", result["summary"]["detail"])
+        self.assert_one_homing_per_guard_session()
+        # Bench probe, three setting writes (two cases and the restore) and three observed boots.
+        self.assertEqual([t for t in self.timeline if t in self.BOOTS],
+                         ["device.probe"] + ["boot to write hat", "observe"] * 3)
+        rows = {c["title"]: c for c in result["summary"]["checks"]}
+        for case in ("With HAT", "No HAT"):
+            row = rows[f"{case}: Homing was the only one in its guard session (two hard-stop contacts)"]
+            self.assertEqual((row["state"], row["evidenceCount"]), ("passed", 2))
+
+    def test_a_third_contact_is_reported_on_the_case(self):
+        result = self.run_job("v2", contacts=("lower",))
+        row = next(c for c in result["summary"]["checks"] if c["title"].startswith("With HAT: Homing was the only"))
+        self.assertEqual((row["state"], row["reason"]), ("blocked", "1 contacts: lower"))
+
+    def test_a_guard_session_that_never_clears_blocks_before_the_next_boot(self):
+        # The second wait is the one before With HAT's setting-write boot.
+        result = self.run_job("v2", clear_failures=(2,))
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("did not clear within 30 s", result["summary"]["detail"])
+        self.assertNotIn("boot to write hat", self.timeline[:self.timeline.index("wait clear", self.timeline.index("firmware.flash"))])
+        self.assert_one_homing_per_guard_session()
+        self.assert_released_once()
+
+    def test_a_session_that_never_clears_before_the_probe_blocks_the_job(self):
+        result = self.run_job("v2", clear_failures=(1,))
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("did not clear within 30 s", result["summary"]["detail"])
+        self.assertNotIn("device.probe", self.timeline)
+        self.assertNotIn("firmware.flash", self.timeline)
+        self.assert_released_once()
 
     def test_an_ossm_that_cannot_be_parked_keeps_the_radar_held(self):
         result = self.run_job("v2", park_error=RuntimeError("esptool exited with 2"))

@@ -165,6 +165,14 @@ be parked, the Radar stays held. The timeline and `results.json` (`radar`) recor
 each step, and `results/radar-hold.log` keeps the esptool output. A rig without
 an enrolled Radar skips the hold and says so in the log.
 
+The guard allows one homing (two hard-stop contacts, lower and upper) per homing
+session, and ends a session only after 10 seconds without motion. Two homings
+inside one session trip "Unexpected repeated hard-stop contact". Flashing leaves
+the OSSM in its loader; before its observed boot the run waits, for 30 seconds
+at most, until the guard reports no contacts and the carriage has been still for
+longer than that. The boot's homing is then the only one in its session. If the
+session never clears, the run fails before the reset.
+
 ### Install the release queue worker
 
 Use the reviewed LKBX checkout as the source of the shared worker. Upgrade the
@@ -234,13 +242,22 @@ heartbeat gap over 20 seconds, uptime that stops, no heartbeat at all, readiness
 lost or a reconnect during the soak, and repeated damaged records still fail.
 
 Every OSSM release job runs two cases on the enrolled board, and passes only if
-both pass. Each case sends a serial HAT setting, which the OSSM acknowledges with
-`RAD_HAT {"mode":...,"applies":"next_boot"}`. Only a reply naming the requested
-mode counts: a refused write adds `error` and names the unchanged mode. Refusals
-are retried while the carriage homes; if the armed motor guard still refuses, the
-worker resets the board and writes the setting before homing starts. It then waits
-for the carriage to finish homing, checks the guard again, and resets and observes
-boot, homing and the soak:
+both pass. Every OSSM boot that homes gets a guard homing session of its own (see
+"OSSM RS-485 interlock"): before it the OSSM is parked in its ROM loader and the
+worker waits until the guard's session is empty, and after it the OSSM is parked
+again. That covers the bench's probe and flash, which start from a parked board
+and are parked right after. Each case then:
+
+- boots the OSSM only to store its HAT setting: `hat auto` or `hat off` is sent
+  the moment the console starts, until the OSSM acknowledges it with
+  `RAD_HAT {"mode":...,"applies":"next_boot"}`. Only a reply naming the requested
+  mode counts; a refused write adds `error` and names the unchanged mode, and is
+  retried. The OSSM is parked at once, before or while its homing starts;
+- waits for the guard's session to clear again and checks the guard;
+- resets the OSSM and observes boot, homing and the soak. That homing is the
+  only one in its session, and the evidence counts its contacts (two expected).
+
+The cases:
 
 1. **With HAT**: `hat auto`. The guard polls the servo, so the HAT only listens
    and motion stays on STEP/DIR, as in PR runs. Boot reports `hat_mode` `auto`;
