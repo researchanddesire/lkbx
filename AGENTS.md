@@ -44,6 +44,12 @@
 - Keep assembly docs as English Fumadocs MDX with `meta.json`; keep `_bom/` CSV, provenance and generated JSON together. Hardware sources live in `hardware/cad/`, `hardware/pcb/` and `hardware/cables/`. Do not commit generated assembly-site output, rendered BOM HTML, `.DS_Store`, `cable-export/` or cable render outputs.
 - Product BOMs list cable harnesses as top-level assemblies; link Wireviz `.bom.tsv` output instead of copying child cable rows into `hardware/bom.csv`.
 
+## Mechanical CAD
+
+- Use `hardware/cad/lockbox-assembly.FCStd` for mechanical edits in FreeCAD. It uses the placements from the June 12, 2026 Onshape `LockBox V1` assembly STEP and includes the recessed SW3 housing, slider and snap-in keeper.
+- When changing a part, remodel it from dimensioned base sketches and native FreeCAD features. Update its assembly link, verify the part in place, then remove the replaced imported source and standalone STEP. Update any BOM and documentation links to the removed file.
+- The SW3 keeper uses a rigid toe that slides into an undercut groove and a flexible hook that engages a gusseted ledge rooted in the sidewall. Install the keeper before lowering the PCB. See `hardware/cad/README.md` for the print orientation and assembly order.
+
 ## Technician Build PC
 
 - Use the `$build-pc` skill for the Windows workstation technicians use to build and flash devices for sale. Keep its checkout on a clean, current `main`; preserve unexpected work before synchronizing.
