@@ -435,7 +435,14 @@ void LKBX::drawAskAnswer() {
     const char* title = Str::Screen::CHASTER_NO_ANSWER_TITLE;
     String body = forBreak ? Str::Screen::BREAK_NO_ANSWER_DESC
                            : Str::Screen::UNLOCK_NO_ANSWER_DESC;
-    if (refused) {
+    if (refused && !forBreak && !isChasterSession()) {
+        // The dashboard's own end time has not passed: time was added that
+        // this box had not heard of.
+        title = Str::Screen::STILL_LOCKED_TITLE;
+        body = askReason[0] != '\0' ? askReason
+                                    : Str::Screen::STILL_LOCKED_DEFAULT;
+        body += Str::Screen::STILL_LOCKED_SUFFIX;
+    } else if (refused) {
         title = forBreak ? Str::Screen::BREAK_REFUSED_TITLE
                          : Str::Screen::UNLOCK_REFUSED_TITLE;
         if (askReason[0] != '\0') {

@@ -10,8 +10,10 @@
 #include "utils/getEfuseMac.h"
 
 // A Chaster session asks the dashboard before it opens for a break or unlocks
-// at the end of its timer. The rules, the wire format and the offline
-// behaviour are in utils/chasterAsk.h; the pages and transitions are in
+// at the end of its timer. Any other session of the dashboard asks before it
+// unlocks at the end of its timer, and opens on its own end time when nobody
+// answers. The rules, the wire format and the offline behaviour are in
+// utils/chasterAsk.h; the pages and transitions are in
 // ChasterAskTransitions.inc.
 //
 // The question runs on the delay task (LKBX::delayTask), in steps that never
@@ -27,6 +29,8 @@ namespace {
         uint32_t order = kNoAskOrder;
         AskAction action = AskAction::UNLOCK;
         String sessionId;
+        // Chaster controls the session: only an answer opens the box.
+        bool chaster = true;
         // The request at the HTTP worker, until its answer has been taken.
         HttpPending *pending = nullptr;
         // The request has still to be handed to the HTTP worker.
@@ -48,9 +52,25 @@ namespace {
         return sessionId;
     }
 
+    // Whether Chaster controls the held session. When that cannot be read
+    // the session counts as Chaster's: no answer then keeps the box locked.
+    bool heldByChaster() {
+        bool chaster = true;
+        if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) ==
+            pdTRUE) {
+            preferences.begin(Keys::session);
+            chaster =
+                preferences.getBool(Keys::Session::chasterControlled, false);
+            preferences.end();
+            xSemaphoreGive(preferencesMutex);
+        }
+        return chaster;
+    }
+
     // Hands one question to the HTTP worker. Null when the worker could not
     // take it.
-    HttpPending *sendAsk(AskAction action, const String &sessionId) {
+    HttpPending *sendAsk(AskAction action, const String &sessionId,
+                         int timeoutMs) {
         JsonDocument request;
         String url = String(RAD_SERVER) + Str::Api::LOCKBOX_ASK;
         const String token =
@@ -68,7 +88,7 @@ namespace {
         request[chasterAsk::kSessionId] = sessionId;
         request[chasterAsk::kAction] = askActionText(action);
 
-        return postDetached(url, request, chasterAsk::kTimeoutMs);
+        return postDetached(url, request, timeoutMs);
     }
 
     // One question, one answer. Anything that is not a complete answer to
@@ -106,6 +126,7 @@ void LKBX::serviceChasterAsk() {
         ask.order = newest;
         ask.action = askOrderAction(newest);
         ask.sessionId = heldSessionId();
+        ask.chaster = heldByChaster();
         ask.toSend = true;
         ask.sendAtMs = millis();
         ask.sendAttempts = 0;
@@ -115,14 +136,29 @@ void LKBX::serviceChasterAsk() {
         if (static_cast<int32_t>(millis() - ask.sendAtMs) < 0) return;
         ask.toSend = false;
 
-        // Nobody to ask about, or no way to ask: that is no answer.
-        if (ask.sessionId.isEmpty() || WiFiClass::status() != WL_CONNECTED) {
+        // Nobody to ask about: that is no answer.
+        if (ask.sessionId.isEmpty()) {
+            answerChasterAsk(AskAnswer{});
+            return;
+        }
+        // No way to ask. A box that has just started may still be joining
+        // its Wi-Fi, and its own end time may be out of date: the unlock
+        // question of a session Chaster does not control waits for the
+        // station a little. Otherwise that is no answer.
+        if (WiFiClass::status() != WL_CONNECTED) {
+            if (askWaitsForWifi(ask.chaster, ask.action, millis())) {
+                ask.toSend = true;
+                ask.sendAtMs = millis() + chasterAsk::kWifiPollMs;
+                return;
+            }
             answerChasterAsk(AskAnswer{});
             return;
         }
 
         ++ask.sendAttempts;
-        ask.pending = sendAsk(ask.action, ask.sessionId);
+        ask.pending = sendAsk(ask.action, ask.sessionId,
+                              ask.chaster ? chasterAsk::kTimeoutMs
+                                          : chasterAsk::kOwnRulesTimeoutMs);
         if (ask.pending != nullptr) return;
 
         ESP_LOGW(CHASTER_ASK_TAG,
@@ -172,9 +208,37 @@ void LKBX::answerChasterAsk(const AskAnswer &answer) {
     askOutcome = answer.outcome;
     copyBoundedString(askReason, sizeof(askReason), answer.reason);
 
+    // Opens at the end of the timer. The deadline, a freeze and a pending
+    // offer are checked again before the motor moves. acceptNaturalUnlock
+    // records the session as completed, so it runs only for a question
+    // still waiting.
+    auto unlockIfStillReady = [this]() {
+        switch (unlockGrantStep(sm->is("locked.asking"_s),
+                                sm->is("locked.asking"_s) &&
+                                    acceptNaturalUnlock())) {
+            case UnlockGrant::UNLOCK:
+                sm->process_event(Unlock{});
+                break;
+            case UnlockGrant::RETURN:
+                sm->process_event(Error{.error = ErrorT::ASK_RETURN});
+                break;
+            case UnlockGrant::DROP:
+            default:
+                ESP_LOGW(CHASTER_ASK_TAG,
+                         "Nobody is waiting for the unlock answer");
+                break;
+        }
+    };
+    // A session Chaster does not control opens on the box's own end time
+    // when the dashboard gave no usable answer, as it does offline.
+    const bool ownRules =
+        action == AskAction::UNLOCK &&
+        unlockWithoutAnswer(ask.chaster) == NoAnswer::OWN_RULES;
+
     switch (answer.outcome) {
         case AskOutcome::GRANTED:
-            ESP_LOGI(CHASTER_ASK_TAG, "Chaster allows the %s",
+            ESP_LOGI(CHASTER_ASK_TAG, "%s allows the %s",
+                     ask.chaster ? "Chaster" : "The dashboard",
                      askActionText(action));
             if (action == AskAction::BREAK) {
                 // A granted break is the dashboard starting the break: it
@@ -183,31 +247,24 @@ void LKBX::answerChasterAsk(const AskAnswer &answer) {
                 sm->process_event(Break{});
                 break;
             }
-            // The deadline, a freeze and a pending offer are checked again
-            // before the motor moves. acceptNaturalUnlock records the session
-            // as completed, so it runs only for a question still waiting.
-            switch (unlockGrantStep(sm->is("locked.asking"_s),
-                                    sm->is("locked.asking"_s) &&
-                                        acceptNaturalUnlock())) {
-                case UnlockGrant::UNLOCK:
-                    sm->process_event(Unlock{});
-                    break;
-                case UnlockGrant::RETURN:
-                    sm->process_event(Error{.error = ErrorT::ASK_RETURN});
-                    break;
-                case UnlockGrant::DROP:
-                default:
-                    ESP_LOGW(CHASTER_ASK_TAG,
-                             "Nobody is waiting for the unlock answer");
-                    break;
-            }
+            unlockIfStillReady();
             break;
         case AskOutcome::REFUSED:
-            ESP_LOGI(CHASTER_ASK_TAG, "Chaster refuses the %s: %s",
+            ESP_LOGI(CHASTER_ASK_TAG, "%s refuses the %s: %s",
+                     ask.chaster ? "Chaster" : "The dashboard",
                      askActionText(action), answer.reason);
             sm->process_event(Error{.error = ErrorT::ASK_ANSWERED});
             break;
         case AskOutcome::STALE_SESSION:
+            if (ownRules) {
+                // The dashboard holds no such session, so nothing there keeps
+                // the box locked. Its unlock report gets the clear.
+                ESP_LOGW(CHASTER_ASK_TAG,
+                         "The dashboard does not know this session -- "
+                         "unlocking on the box's own end time");
+                unlockIfStillReady();
+                break;
+            }
             // The dashboard holds no such session. Its own state says what
             // the box should hold instead, including nothing at all.
             ESP_LOGW(CHASTER_ASK_TAG,
@@ -218,6 +275,13 @@ void LKBX::answerChasterAsk(const AskAnswer &answer) {
             break;
         case AskOutcome::UNANSWERED:
         default:
+            if (ownRules) {
+                ESP_LOGW(CHASTER_ASK_TAG,
+                         "The unlock question got no answer; unlocking on the "
+                         "box's own end time");
+                unlockIfStillReady();
+                break;
+            }
             ESP_LOGW(CHASTER_ASK_TAG,
                      "The %s question got no answer; staying locked",
                      askActionText(action));

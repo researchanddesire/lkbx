@@ -17,6 +17,9 @@ namespace Str { namespace Protocol { constexpr const char* BREAK = "break"; } }
 
 struct Context {
     bool chaster = true;
+    // The dashboard gave the box this session (it is not a timer the wearer
+    // started on the box). True for every Chaster session.
+    bool dashboard = true;
     // The box's own timer is complete and nothing holds it.
     bool ready = true;
     // What the transition into "locked.asking" said the box is asking.
@@ -32,7 +35,9 @@ struct Context {
 
 struct Fixture {
     auto operator()() const {
-        auto isChasterSession = [](Context& c) { return c.chaster; };
+        auto asksDashboardBeforeUnlock = [](Context& c) {
+            return asksBeforeUnlock(c.chaster, c.dashboard);
+        };
         auto acceptNaturalUnlock = [](Context& c) { return c.ready; };
         auto isError = [](ErrorT expected) {
             return [expected](const auto& e) { return e.error == expected; };
@@ -85,15 +90,81 @@ void test_chaster_session_asks_instead_of_unlocking() {
     TEST_ASSERT_EQUAL_INT(1, c.askingPages);
 }
 
-void test_other_sessions_unlock_as_before() {
+// A timer the wearer started on the box is the box's own.
+void test_the_boxs_own_timer_unlocks_as_before() {
     Context c;
     c.chaster = false;
+    c.dashboard = false;
     Machine machine{c};
     machine.set_current_states("locked.ready"_s);
     TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
     TEST_ASSERT_TRUE(machine.is("locking"_s));
     TEST_ASSERT_EQUAL_INT(1, c.unlocks);
     TEST_ASSERT_EQUAL_INT(0, c.asks);
+}
+
+// A session of the dashboard that Chaster does not control asks too: the end
+// time the box holds may be older than the dashboard's (rad-app#2782).
+void test_dashboard_session_asks_before_unlocking() {
+    Context c;
+    c.chaster = false;
+    Machine machine{c};
+    machine.set_current_states("locked.ready"_s);
+    TEST_ASSERT_TRUE(machine.process_event(ButtonPress{}));
+    TEST_ASSERT_TRUE(machine.is("locked.asking"_s));
+    TEST_ASSERT_TRUE(c.asked == AskAction::UNLOCK);
+    TEST_ASSERT_EQUAL_INT(0, c.unlocks);
+    TEST_ASSERT_EQUAL_INT(1, c.asks);
+
+    // "Time was added": the box stays locked on the answer page.
+    TEST_ASSERT_TRUE(machine.process_event(kAnswered));
+    TEST_ASSERT_TRUE(machine.is("locked.askAnswer"_s));
+    TEST_ASSERT_EQUAL_INT(0, c.unlocks);
+}
+
+void test_who_asks_before_unlocking() {
+    TEST_ASSERT_TRUE(asksBeforeUnlock(true, true));
+    TEST_ASSERT_TRUE(asksBeforeUnlock(false, true));
+    // Chaster's flag alone is enough, whatever else could not be read.
+    TEST_ASSERT_TRUE(asksBeforeUnlock(true, false));
+    TEST_ASSERT_FALSE(asksBeforeUnlock(false, false));
+}
+
+// Without an answer Chaster's session stays locked, and any other session
+// opens on the end time the box holds, as it does offline.
+void test_no_answer_opens_only_a_session_chaster_does_not_control() {
+    TEST_ASSERT_TRUE(unlockWithoutAnswer(true) == NoAnswer::STAY_LOCKED);
+    TEST_ASSERT_TRUE(unlockWithoutAnswer(false) == NoAnswer::OWN_RULES);
+
+    // The box's own rules are then checked as a granted answer is: only
+    // while the question is still waiting and the timer is still complete.
+    Context c;
+    c.chaster = false;
+    Machine machine{c};
+    machine.set_current_states("locked.asking"_s);
+    TEST_ASSERT_TRUE(unlockGrantStep(true, c.ready) == UnlockGrant::UNLOCK);
+    TEST_ASSERT_TRUE(machine.process_event(Unlock{}));
+    TEST_ASSERT_TRUE(machine.is("locking"_s));
+    TEST_ASSERT_EQUAL_INT(1, c.unlocks);
+}
+
+// A box woken from sleep can be asked to unlock before its Wi-Fi is up. The
+// question waits for the station then; later, no station means offline.
+void test_unlock_question_waits_for_wifi_only_just_after_start() {
+    using chasterAsk::kStartupWifiWaitMs;
+    TEST_ASSERT_TRUE(askWaitsForWifi(false, AskAction::UNLOCK, 0));
+    TEST_ASSERT_TRUE(
+        askWaitsForWifi(false, AskAction::UNLOCK, kStartupWifiWaitMs - 1));
+    TEST_ASSERT_FALSE(
+        askWaitsForWifi(false, AskAction::UNLOCK, kStartupWifiWaitMs));
+    TEST_ASSERT_FALSE(askWaitsForWifi(false, AskAction::UNLOCK, 3600000));
+    // Chaster's questions never wait: no station is no answer, and the box
+    // stays locked on a page that says so.
+    TEST_ASSERT_FALSE(askWaitsForWifi(true, AskAction::UNLOCK, 0));
+    TEST_ASSERT_FALSE(askWaitsForWifi(true, AskAction::BREAK, 0));
+    TEST_ASSERT_FALSE(askWaitsForWifi(false, AskAction::BREAK, 0));
+    // The wait is shorter than the answer the box gives up on.
+    TEST_ASSERT_TRUE(chasterAsk::kOwnRulesTimeoutMs < chasterAsk::kTimeoutMs);
 }
 
 // The asking task reports a granted unlock as Unlock, after it has checked
@@ -627,7 +698,11 @@ void test_chaster_break_does_not_end_at_the_boxs_deadline() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_chaster_session_asks_instead_of_unlocking);
-    RUN_TEST(test_other_sessions_unlock_as_before);
+    RUN_TEST(test_the_boxs_own_timer_unlocks_as_before);
+    RUN_TEST(test_dashboard_session_asks_before_unlocking);
+    RUN_TEST(test_who_asks_before_unlocking);
+    RUN_TEST(test_no_answer_opens_only_a_session_chaster_does_not_control);
+    RUN_TEST(test_unlock_question_waits_for_wifi_only_just_after_start);
     RUN_TEST(test_granted_unlock_opens_once);
     RUN_TEST(test_granted_unlock_rechecks_the_session);
     RUN_TEST(test_refused_or_unanswered_unlock_never_opens);

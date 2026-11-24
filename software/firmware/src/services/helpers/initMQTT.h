@@ -19,6 +19,7 @@
 #include "state/LKBX.h"
 #include "structs/Version.h"
 #include "utils/dashboard.hpp"
+#include "utils/decisionReport.h"
 #include "utils/emergencyReport.h"
 #include "utils/emergencyStore.h"
 #include "utils/heldSession.h"
@@ -95,9 +96,11 @@ void mqtt_event_handler(void* handler_args, esp_event_base_t base,
             esp_mqtt_client_subscribe(mqttClient, mqttTopic, 2);
             mqttConnected = true;
             // An unconfirmed LOCKED report gets a fresh retry budget, and so
-            // does an emergency report that is still owed.
+            // does an emergency report that is still owed. A decision the box
+            // still holds is reported at once on the new connection.
             lockedReport::tracker.onConnected();
             emergencyReport::owed.onConnected();
+            decisionReport::tracker.onConnected();
             {
                 const auto token = firmware::provenance::currentToken();
                 JsonDocument provenance;

@@ -14,8 +14,12 @@
 // Error) and both questions share one asking state and one answer page.
 
 // Unlock at the end of the timer. The first row wins for a Chaster session, so
-// such a session never reaches the wearer's own unlock in the second.
-"locked.ready"_s + buttonPress[isChasterSession] / setAskUnlock = "locked.asking"_s,
+// such a session never reaches the wearer's own unlock in the second. Any
+// other session of the dashboard takes the first row too: the dashboard is
+// asked whether its own end time has passed, and with no answer the box opens
+// on the end time it holds (LKBX::answerChasterAsk). The second row is left
+// for a timer the wearer started on the box.
+"locked.ready"_s + buttonPress[asksDashboardBeforeUnlock] / setAskUnlock = "locked.asking"_s,
 "locked.ready"_s + buttonPress[acceptNaturalUnlock] / (clearLocalPlay, unlockAction) = "locking"_s,
 // A break from the wearer's menu: startBreakPreflight reports ASK_CHASTER
 // instead of opening once the box's own rules allow the break.
