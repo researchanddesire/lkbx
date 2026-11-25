@@ -1,13 +1,16 @@
-#include <Arduino.h>
-#include <unity.h>
-
 #include <initializer_list>
 #include <string>
+
+// Before Arduino.h: this header reads <mutex>, and the test build's Arduino.h
+// defines round and abs as macros, which <chrono> declares as functions.
+#include "../../src/utils/naturalUnlock.h"
+
+#include <Arduino.h>
+#include <unity.h>
 
 #include "../../src/state/Events.h"
 #include "../../src/utils/heldLock.h"
 #include "../../src/utils/heldSession.h"
-#include "../../src/utils/naturalUnlock.h"
 #include "../../src/utils/syncEffect.h"
 
 using namespace sml;
@@ -593,12 +596,12 @@ void test_a_restart_before_the_check_does_not_finish_the_session() {
     // The paddle had been told to open, so this lock is checked as a new
     // one: with the backplate already off, the paddle opens to let it be
     // fitted.
-    Box open;
-    holdSession(open);
-    open.unlockAtEndOfTimer();
-    open.restart();
-    TEST_ASSERT_TRUE(open.check(true, false) == Preflight::NO_BACKPLATE);
-    TEST_ASSERT_EQUAL_STRING("locked", open.state.c_str());
+    Box unfitted;
+    holdSession(unfitted);
+    unfitted.unlockAtEndOfTimer();
+    unfitted.restart();
+    TEST_ASSERT_TRUE(unfitted.check(true, false) == Preflight::NO_BACKPLATE);
+    TEST_ASSERT_EQUAL_STRING("locked", unfitted.state.c_str());
 }
 
 // --- Other sessions and other unlocks -------------------------------------------
