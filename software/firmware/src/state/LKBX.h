@@ -42,6 +42,7 @@
 #include "utils/lockedReport.h"
 #include "utils/logBacklog.h"
 #include "utils/missingTask.h"
+#include "utils/naturalUnlock.h"
 #include "utils/normalizeOption.h"
 #include "utils/psram.h"
 #include "utils/savedTimerSleep.h"
@@ -500,7 +501,20 @@ class LKBX {
                 o.motor.lock();
                 switchToTimer();
             };
-            auto unlockAction = [](LKBX &o) { o.motor.unlock(); };
+            // An unlock the box accepted at the end of the session's timer
+            // (acceptExpiredTimer) tells the paddle to open and stores
+            // nothing: the session is finished only once the check has seen
+            // the paddle open (utils/naturalUnlock.h). Any other unlock ends
+            // the stored lock here, as it always has.
+            auto unlockAction = [](LKBX &o) {
+                if (naturalUnlock::tracker.begin(millis())) {
+                    const bool wasHeld = isLockHeld();
+                    o.motor.unlock(false);
+                    naturalUnlock::tracker.opening(o.motor.lockId, wasHeld);
+                    return;
+                }
+                o.motor.unlock();
+            };
             auto movePaddleToLock = [](LKBX &o) { o.motor.lock(false); };
             auto movePaddleToUnlock = [](LKBX &o) { o.motor.unlock(false); };
             auto emergencyUnlockAction = [](LKBX &o) {
@@ -918,7 +932,7 @@ class LKBX {
                 "locking.preflight"_s + done[isLocked] / sendMessage(Str::Protocol::LOCKED) = "locked"_s,
                 "locking.preflight"_s + done / sendMessage(Str::Protocol::UNLOCKED) = "home"_s,
                 "locking.preflight"_s + error[isError(ErrorT::CANNOT_LOCK)] / (movePaddleToUnlock) = "locking.errorLock"_s,
-                "locking.preflight"_s + error[isError(ErrorT::CANNOT_UNLOCK)] / (movePaddleToLock) = "locking.errorUnlock"_s,
+                // CANNOT_UNLOCK is in UnlockErrorTransitions.inc, below.
                 "locking.preflight"_s + error[isError(ErrorT::NO_BACKPLATE)] / (movePaddleToUnlock) = "locking.errorBackplate"_s,
                 "locking.preflight"_s + forceUpdate = "update"_s,
 
@@ -929,11 +943,7 @@ class LKBX {
                 "locking.errorLock"_s + backPress / clearCalibration = "calibrate"_s,
                 "locking.errorLock"_s + forceUpdate = "update"_s,
 
-                "locking.errorUnlock"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
-                "locking.errorUnlock"_s + on_entry<_> / (drawErrorUnlock),
-                "locking.errorUnlock"_s + buttonPress = "restart"_s,
-                "locking.errorUnlock"_s + backPress / clearCalibration = "calibrate"_s,
-                "locking.errorUnlock"_s + forceUpdate = "update"_s,
+#include "UnlockErrorTransitions.inc"
 
                 "locking.errorBackplate"_s + lockOffered / (clearActiveBreak, movePaddleToUnlock) = "acceptLock"_s,
                 "locking.errorBackplate"_s + on_entry<_> / (movePaddleToUnlock, drawErrorNoBackplateQR),

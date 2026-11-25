@@ -63,9 +63,17 @@ void drawLockAnimationTask(void* pvParameters) {
 
     ESP_LOGD(LKBX_TAG, "hueShiftAmount: %d", hueShiftAmount);
 
+    // The unlock at the end of a session's timer leaves the lock and the
+    // local flag stored until its paddle is seen open (utils/naturalUnlock.h).
+    // It is drawn as the unlock it is, as it was while both were cleared
+    // before the motor moved.
+    const bool endingSession =
+        naturalUnlock::tracker.isOpening(lkbx->motor.lockId);
+    if (endingSession) isLocalPlay = false;
+
     // Lock animation plays the frames forwards; unlock plays them in reverse
     // and therefore holds on the first frame instead of the last.
-    const bool animateAsLock = isLocked();
+    const bool animateAsLock = isLocked() && !endingSession;
     const int lastIndex = lock_icons_length - 1;
 
     const ui::FrameSequence sequence = {

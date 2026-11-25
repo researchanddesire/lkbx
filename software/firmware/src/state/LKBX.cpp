@@ -243,6 +243,40 @@ void LKBX::startPreflight() const {
     bool backplateClosed = isBackplateClosed();
 #endif
     bool locked = isLocked();
+
+    // The unlock at the end of a session's timer stores nothing until this
+    // check has seen the paddle open (utils/naturalUnlock.h). Any motor
+    // movement since that unlock, whatever asked for it, has replaced it.
+    const naturalUnlock::Opening opening =
+        naturalUnlock::tracker.take(motor.lockId);
+    switch (naturalUnlock::checkPaddle(opening.underWay, locked,
+                                       paddleLocked)) {
+        case naturalUnlock::Check::OPENED:
+            // The session is finished now, and not before. The box goes home
+            // as an unlocked one and reports UNLOCKED on the way.
+            finishNaturalUnlock();
+            locked = false;
+            ESP_LOGI(PREFLIGHT_TAG,
+                     "The paddle opened at the end of the session: the "
+                     "session is finished");
+            break;
+        case naturalUnlock::Check::STILL_CLOSED:
+            // The paddle did not open. The session runs on: it is still
+            // stored as locked, the dashboard's messages for it apply, and a
+            // restart restores the lock. The error page's transition presses
+            // the paddle home again.
+            keepLockAfterFailedUnlock(opening.wasHeld);
+            ESP_LOGW(PREFLIGHT_TAG,
+                     "The paddle did not open at the end of the session "
+                     "(backplate %d, lock was held %d); the session stays "
+                     "locked",
+                     backplateClosed, opening.wasHeld);
+            sm->process_event(Error{.error = ErrorT::CANNOT_UNLOCK});
+            return;
+        case naturalUnlock::Check::NOT_UNDER_WAY:
+            break;
+    }
+
     // Only read where it decides: a locked box whose sensors disagree.
     const bool lockHeld =
         locked && !(paddleLocked && backplateClosed) && isLockHeld();
