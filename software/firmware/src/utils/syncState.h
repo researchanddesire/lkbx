@@ -24,6 +24,7 @@
 #include "utils/freezeState.h"
 #include "utils/generateId.h"
 #include "utils/lockReportReconcile.h"
+#include "utils/naturalUnlock.h"
 #include "utils/offeredLock.h"
 #include "utils/syncEffect.h"
 #include "utils/getEfuseMac.h"
@@ -479,8 +480,10 @@ static SyncResult saveState(SyncMessage lockSession,
         (!lockSession.sessionId.isEmpty() && !sameSession) ||
         (sameSession && savedState == Str::Protocol::PENDING);
     // MQTT retries / HTTP reconciliation must not undo the wearer's decision.
-    if ((sameSession && (savedState == Str::Protocol::ABANDONED ||
-                        savedState == Str::Protocol::COMPLETED)) ||
+    // A session is only stored as completed once its paddle has opened, so
+    // one whose unlock failed is still locked here and takes the sync
+    // (utils/naturalUnlock.h).
+    if (boxEndedSession(sameSession, savedState.c_str()) ||
         (isPending && preserveOfferedDecision(
             sameSession,
             savedState == Str::Protocol::LOCKED || savedState == Str::Protocol::BREAK ||

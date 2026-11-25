@@ -17,6 +17,7 @@
 #include "services/wm.h"
 #include "tasks/TaskParams.h"
 #include "tasks/TaskStart.h"
+#include "utils/naturalUnlock.h"
 #include "utils/syncState.h"
 
 auto setLocalPlay = []() {
@@ -30,6 +31,11 @@ auto setLocalPlay = []() {
 };
 
 auto clearLocalPlay = []() {
+    // The unlock at the end of a timer stores nothing until its paddle has
+    // opened (utils/naturalUnlock.h): this action runs in front of that
+    // unlock, and a local timer whose paddle then stays closed must still be
+    // the wearer's own. finishNaturalUnlock clears the flag instead.
+    if (naturalUnlock::tracker.isAccepted(millis())) return;
     ESP_LOGD(ACTIONS_TAG, "Clearing local play");
     if (xSemaphoreTake(preferencesMutex, portTICK_PERIOD_MS * 1000) == pdTRUE) {
         preferences.begin(Keys::base, false);
@@ -137,6 +143,12 @@ auto acceptBreakEnd = []() {
     return true;
 };
 
+// Accepts the unlock at the end of a session's timer. Nothing is stored here:
+// the session is stored as finished only once the check after the motor
+// movement has seen the paddle open (finishNaturalUnlock, below). Stored at
+// this point, as it used to be, a session whose paddle then stayed closed was
+// finished on the box while the wearer was still locked in, and ignored the
+// dashboard from then on (utils/naturalUnlock.h).
 inline bool acceptExpiredTimer(bool localOnly) {
     // A keyholder freeze can land between the transition guard and this action,
     // so the frozen check is repeated while the session namespace is held. The
@@ -153,7 +165,7 @@ inline bool acceptExpiredTimer(bool localOnly) {
         xSemaphoreGive(preferencesMutex);
         return false;
     }
-    preferences.begin(Keys::session, false);
+    preferences.begin(Keys::session);
     const uint64_t end = preferences.getULong64(Keys::Session::lockEnd, 0);
     struct timeval tv{};
     lockboxGetTimeOfDay(&tv, nullptr);
@@ -162,14 +174,57 @@ inline bool acceptExpiredTimer(bool localOnly) {
     const bool ready = end != 0 && end <= now &&
         preferences.getString(Keys::Session::lockState, "") != Str::Protocol::PENDING &&
         !preferences.getBool(Keys::Session::isFrozen, false);
-    if (ready) {
-        preferences.putString(Keys::Session::lockState, Str::Protocol::COMPLETED);
-        preferences.putBool(Keys::Session::isActiveBreak, false);
-        preferences.putULong64(Keys::Session::breakStart, 0);
+    preferences.end();
+    xSemaphoreGive(preferencesMutex);
+    // The unlock action that follows opens the paddle without ending the
+    // stored lock.
+    if (ready) naturalUnlock::tracker.accept(millis());
+    return ready;
+}
+
+// The check after the motor movement saw the paddle open at the end of the
+// session's timer: the session is finished. Stores what the accept and the
+// unlock used to store before the paddle had moved. Waits for the settings as
+// Motor::unlock does, because the paddle is open and that must be on record.
+inline void finishNaturalUnlock() {
+    if (xSemaphoreTake(preferencesMutex, portMAX_DELAY) != pdTRUE) return;
+    preferences.begin(Keys::base, false);
+    const bool locked = preferences.getBool(Keys::Base::isLocked, false);
+    if (locked) preferences.putBool(Keys::Base::isLocked, false);
+    if (preferences.getBool(Keys::Base::isLocalPlay, false)) {
+        preferences.putBool(Keys::Base::isLocalPlay, false);
+    }
+    preferences.end();
+    // A session that replaced this one since the paddle was told to open is
+    // an offer, and is stored unlocked: it is not the one that ran out.
+    if (locked) {
+        preferences.begin(Keys::session, false);
+        if (preferences.getString(Keys::Session::lockState, "") != Str::Protocol::PENDING) {
+            preferences.putString(Keys::Session::lockState, Str::Protocol::COMPLETED);
+            preferences.putBool(Keys::Session::isActiveBreak, false);
+            preferences.putULong64(Keys::Session::breakStart, 0);
+        }
+        preferences.end();
+    }
+    xSemaphoreGive(preferencesMutex);
+}
+
+// The check after the motor movement saw the paddle still closed at the end
+// of the session's timer. The session and the stored lock are as they were;
+// only the held mark was cleared, when the paddle was told to open. A lock
+// that was held is held again: the paddle has not left its place, so a failed
+// check after the next restart must still keep it closed (utils/heldLock.h).
+// A lock that was not held (the box was on a break) is left as it was.
+inline void keepLockAfterFailedUnlock(bool wasHeld) {
+    if (!wasHeld) return;
+    if (xSemaphoreTake(preferencesMutex, portMAX_DELAY) != pdTRUE) return;
+    preferences.begin(Keys::base, false);
+    if (preferences.getBool(Keys::Base::isLocked, false) &&
+        !preferences.getBool(Keys::Base::lockHeld, false)) {
+        preferences.putBool(Keys::Base::lockHeld, true);
     }
     preferences.end();
     xSemaphoreGive(preferencesMutex);
-    return ready;
 }
 
 auto acceptNaturalUnlock = []() { return acceptExpiredTimer(false); };
