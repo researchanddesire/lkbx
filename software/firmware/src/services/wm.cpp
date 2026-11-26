@@ -219,6 +219,14 @@ void processWifiTask(void *pvParameters) {
         wm.process();
     }
     if (!mqttResumed) resumeMqttAfterPortal();
+    // The most this task ever needed of its stack, for the rig: Tasks::wifi
+    // is sized from this line, and R8 often has no free block much larger
+    // than that stack.
+    ESP_LOGI(WIFI_SETUP_TAG,
+             "Wi-Fi setup closed: at least %u bytes of its %u-byte stack "
+             "have stayed free",
+             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+             static_cast<unsigned>(Tasks::wifi.stackSize));
     TaskHandles::wifi = nullptr;
     portalTaskAlive.store(false);
     vTaskDelete(nullptr);
@@ -255,7 +263,7 @@ void serviceWifiPortal() {
     if (!opened) {
         // No block for the portal's stack. The client's task is kept so that
         // it never has to be created again, but its 10 KB stack is what the
-        // portal's 8.3 KB one fits into, so it is given up now. The client
+        // portal's own one fits into, so it is given up now. The client
         // then needs a new task after the portal, and if that cannot be
         // created for two minutes the box restarts at rest
         // (utils/networkRecovery.h).
@@ -269,10 +277,14 @@ void serviceWifiPortal() {
                                     kPortalTaskWaitMs);
     }
     if (opened) {
+        // This measures the task that opens the portal, not the portal's own
+        // task (that one reports its stack when it closes, above), so the
+        // line names the task it measured.
         ESP_LOGI(WIFI_SETUP_TAG,
-                 "Wi-Fi setup opening: at least %u bytes of the activity log "
-                 "task's stack have stayed free",
-                 static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+                 "Wi-Fi setup opening: at least %u bytes of %s's stack have "
+                 "stayed free",
+                 static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+                 pcTaskGetName(nullptr));
         // The portal now runs beside the client's task, so what is left for
         // it goes to the log for the rig.
         ESP_LOGI(WIFI_SETUP_TAG,

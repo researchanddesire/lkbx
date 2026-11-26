@@ -16,7 +16,13 @@ namespace Tasks {
 
     constexpr TaskParams wifi = {
         .name = "wifiTask",
-        .stackSize = 10 * configMINIMAL_STACK_SIZE,
+        // The Wi-Fi setup portal (services/wm.cpp). Its stack is one block of
+        // internal RAM, and when a setup page opens on R8 the largest free
+        // block is 7,680 to 8,192 bytes (Test Rig, 2026-11-25). The former
+        // 8,280 bytes at times needed three tries there, and if every try
+        // fails the MQTT client's task is stopped to make room. Each portal
+        // logs what it left free ("Wi-Fi setup closed: at least N bytes").
+        .stackSize = 9 * configMINIMAL_STACK_SIZE,
         .priority = 1,
         .core = 1,
     };
@@ -258,6 +264,12 @@ namespace Tasks {
     };
 
 }  // namespace Tasks
+
+// A request of up to the reported largest free block always fits it, and R8's
+// lowest when a Wi-Fi setup page opened was 7,680 bytes. A larger portal stack
+// does not always fit beside the MQTT client's task.
+static_assert(Tasks::wifi.stackSize <= 7680,
+              "the Wi-Fi setup task's stack must fit R8's 7,680-byte blocks");
 
 // ── Task handles (defined in TaskParams.cpp) ────────────────────────────────
 namespace TaskHandles {
